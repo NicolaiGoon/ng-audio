@@ -1,0 +1,203 @@
+#include "Session.h"
+
+namespace ng
+{
+namespace
+{
+    const juce::Identifier roleProp ("ngRole");
+    const juce::Identifier ownStripProp ("ngOwnStrip");
+
+    juce::String colourToString (juce::Colour c)
+    {
+        return "#" + c.toDisplayString (false);
+    }
+}
+
+juce::String toString (Session::Role role)
+{
+    switch (role)
+    {
+        case Session::Role::channel:  return "channel";
+        case Session::Role::strip:    return "strip";
+        case Session::Role::none:     break;
+    }
+
+    return {};
+}
+
+//==============================================================================
+Session::Session (te::Engine& e)
+    : engine (e)
+{
+    te::Edit::Options options { engine };
+    options.editState = te::createEmptyEdit (engine);
+    options.editProjectItemID = te::ProjectItemID::createNewID (0);
+    options.numAudioTracks = 0;
+    edit = te::Edit::createEdit (std::move (options));
+
+    // Tracktion creates the scene list lazily, inside the first track insertion. That
+    // nested change lands in the undo history out of order, so the first undo would
+    // fail. Create it now, before the history starts.
+    edit->getSceneList();
+    edit->getUndoManager().clearUndoHistory();
+}
+
+Session::~Session()
+{
+    edit->getTransport().stop (false, true);
+}
+
+//==============================================================================
+Session::Role Session::getRole (const te::Track& track)
+{
+    auto value = track.state[roleProp].toString();
+
+    if (value == "channel")  return Role::channel;
+    if (value == "strip")    return Role::strip;
+
+    return Role::none;
+}
+
+void Session::setRole (te::Track& track, Role role)
+{
+    track.state.setProperty (roleProp, toString (role), &getUndoManager());
+}
+
+juce::Array<te::AudioTrack*> Session::getChannels() const
+{
+    juce::Array<te::AudioTrack*> result;
+
+    for (auto t : te::getAudioTracks (*edit))
+        if (getRole (*t) == Role::channel)
+            result.add (t);
+
+    return result;
+}
+
+juce::Array<te::AudioTrack*> Session::getStrips() const
+{
+    juce::Array<te::AudioTrack*> result;
+
+    for (auto t : te::getAudioTracks (*edit))
+        if (getRole (*t) == Role::strip)
+            result.add (t);
+
+    return result;
+}
+
+te::AudioTrack* Session::findTrack (const juce::String& idOrName, Role role) const
+{
+    auto tracks = role == Role::channel ? getChannels() : getStrips();
+
+    for (auto t : tracks)
+        if (t->itemID.toString() == idOrName)
+            return t;
+
+    for (auto t : tracks)
+        if (t->getName() == idOrName)
+            return t;
+
+    return nullptr;
+}
+
+te::AudioTrack* Session::getOwnStrip (const te::AudioTrack& channel) const
+{
+    auto id = te::EditItemID::fromProperty (channel.state, ownStripProp);
+
+    if (! id.isValid())
+        return nullptr;
+
+    return dynamic_cast<te::AudioTrack*> (te::findTrackForID (*edit, id));
+}
+
+void Session::setOwnStrip (te::AudioTrack& channel, te::AudioTrack* strip)
+{
+    if (strip != nullptr)
+        channel.state.setProperty (ownStripProp, strip->itemID.toString(), &getUndoManager());
+    else
+        channel.state.removeProperty (ownStripProp, &getUndoManager());
+}
+
+te::AudioTrack* Session::getDestinationStrip (const te::AudioTrack& channel) const
+{
+    return channel.getOutput().getDestinationTrack();
+}
+
+bool Session::isLinked (const te::AudioTrack& channel) const
+{
+    auto own = getOwnStrip (channel);
+    return own != nullptr && getDestinationStrip (channel) == own;
+}
+
+//==============================================================================
+juce::var Session::toVar() const
+{
+    juce::Array<juce::var> channels, strips;
+
+    for (auto c : getChannels())
+    {
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("id", c->itemID.toString());
+        obj->setProperty ("name", c->getName());
+        obj->setProperty ("colour", colourToString (c->getColour()));
+
+        if (auto dest = getDestinationStrip (*c))
+            obj->setProperty ("output", dest->itemID.toString());
+        else
+            obj->setProperty ("output", "master");
+
+        obj->setProperty ("linked", isLinked (*c));
+
+        juce::Array<juce::var> plugins;
+
+        for (auto p : c->pluginList)
+            if (! (dynamic_cast<te::VolumeAndPanPlugin*> (p) || dynamic_cast<te::LevelMeterPlugin*> (p)))
+                plugins.add (p->getPluginType());
+
+        obj->setProperty ("plugins", plugins);
+        obj->setProperty ("clips", c->getClips().size());
+        channels.add (juce::var (obj));
+    }
+
+    for (auto s : getStrips())
+    {
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("id", s->itemID.toString());
+        obj->setProperty ("name", s->getName());
+        obj->setProperty ("colour", colourToString (s->getColour()));
+
+        juce::Array<juce::var> inputs;
+
+        for (auto c : getChannels())
+            if (getDestinationStrip (*c) == s)
+                inputs.add (c->itemID.toString());
+
+        obj->setProperty ("inputs", inputs);
+
+        if (auto dest = s->getOutput().getDestinationTrack())
+            obj->setProperty ("output", dest->itemID.toString());
+        else
+            obj->setProperty ("output", "master");
+
+        if (auto vp = s->getVolumePlugin())
+            obj->setProperty ("volume_db", vp->getVolumeDb());
+
+        strips.add (juce::var (obj));
+    }
+
+    auto& transport = edit->getTransport();
+
+    auto transportObj = new juce::DynamicObject();
+    transportObj->setProperty ("playing", transport.isPlaying());
+    transportObj->setProperty ("position_seconds", transport.getPosition().inSeconds());
+    transportObj->setProperty ("looping", transport.looping.get());
+
+    auto root = new juce::DynamicObject();
+    root->setProperty ("tempo_bpm", edit->tempoSequence.getBpmAt (te::TimePosition()));
+    root->setProperty ("channels", channels);
+    root->setProperty ("strips", strips);
+    root->setProperty ("transport", juce::var (transportObj));
+    return juce::var (root);
+}
+
+} // namespace ng
