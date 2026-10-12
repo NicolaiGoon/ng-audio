@@ -64,6 +64,9 @@ ctest --test-dir build --output-on-failure
 
 The app ends up in `build/NgDaw_artefacts/Debug/`.
 
+GitHub Actions runs the same build and tests on Windows (MSVC) and Linux (GCC) for every pull
+request and every push to `main` (`.github/workflows/ci.yml`).
+
 - **macOS:** Xcode command line tools. `-G Xcode` works too.
 - **Windows:** Visual Studio 2022 with the C++ workload. `-G "Visual Studio 17 2022"`.
 - **Linux (Debian/Ubuntu):**
