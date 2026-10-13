@@ -261,6 +261,19 @@ bool Session::isPatternClip (const te::Clip& clip)
     return clip.state["ngPattern"];
 }
 
+juce::String Session::getPositionText() const
+{
+    auto& tempo = edit->tempoSequence;
+    auto position = tempo.toBarsAndBeats (edit->getTransport().getPosition());
+
+    // A small nudge so 2.9999 reads as the next sixteenth, as it will sound.
+    auto beatsInBar = position.beats.inBeats() + 1.0e-6;
+    auto beat = (int) std::floor (beatsInBar);
+    auto sixteenth = (int) std::floor ((beatsInBar - beat) * 4.0);
+
+    return juce::String (position.bars + 1) + "." + juce::String (beat + 1) + "." + juce::String (sixteenth + 1);
+}
+
 te::Clip* Session::findClip (const juce::String& id) const
 {
     for (auto channel : getChannels())
@@ -563,7 +576,9 @@ juce::var Session::toVar() const
     transportObj->setProperty ("playing", transport.isPlaying());
     transportObj->setProperty ("position_seconds", transport.getPosition().inSeconds());
     transportObj->setProperty ("position_beats", std::round (edit->tempoSequence.toBeats (transport.getPosition()).inBeats() * 1.0e6) / 1.0e6);
+    transportObj->setProperty ("position", getPositionText());
     transportObj->setProperty ("looping", transport.looping.get());
+    transportObj->setProperty ("metronome", edit->clickTrackEnabled.get());
 
     auto loopBeats = getLoopBeats();
     transportObj->setProperty ("loop_start_beat", loopBeats.getStart());

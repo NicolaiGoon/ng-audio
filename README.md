@@ -36,8 +36,11 @@ and every action available to AI tools through one command layer.
   moves the selected notes, or all of them, onto the grid. Each edit is one undo step.
 - **A step sequencer.** Each channel has a row of 16 steps (16th notes) under its name; click a
   step to turn it on or off. The step under the playhead is outlined while playing.
-- **A transport** with Play, tempo (type it, click the arrows or drag), time signature and a
-  Loop switch. New projects loop the whole project, rounded up to whole bars.
+- **A transport** with Play, back to the start (|< or Home), tempo (type it, click the arrows
+  or drag), time signature, the song position (bar.beat.sixteenth), a Loop switch and a
+  Metronome that clicks on every beat, louder on the bar. New projects loop the whole project,
+  rounded up to whole bars. The loop region shows in the timeline ruler: drag its edges to
+  change it, Shift+drag to draw a new one, or right-click to loop a bar or the whole project.
 - **A mixer.** Each strip has a fader, pan, mute, solo and a level meter, with a master strip
   on the right. A whole fader drag is one undo step; mute and solo aren't undo steps, as in
   most DAWs.
@@ -63,6 +66,7 @@ and every action available to AI tools through one command layer.
   | `get_notes` / `set_notes` | Reads or replaces a MIDI clip's notes (beats from the clip's start) |
   | `quantize_notes` | Moves a clip's notes (or some of them) onto a grid, optionally with their ends |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
+  | `set_metronome` | Turns the metronome on or off |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
   | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
 

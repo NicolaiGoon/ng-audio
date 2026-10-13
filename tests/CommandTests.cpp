@@ -582,6 +582,21 @@ namespace
         CHECK (near (t["loop_end_beat"], 8.0));
 
         CHECK (! f.dispatcher.execute ("set_loop", obj ({ { "start_beat", 2 } })).ok);
+
+        // The metronome toggles, and like the loop it isn't an undo step.
+        CHECK (! static_cast<bool> (f.state()["transport"]["metronome"]));
+        CHECK (f.dispatcher.execute ("set_metronome", obj ({ { "enabled", true } })).ok);
+        CHECK (static_cast<bool> (f.state()["transport"]["metronome"]));
+        CHECK (! f.session.getEdit().clickTrackRecordingOnly.get());
+        CHECK (f.dispatcher.execute ("set_metronome").ok);
+        CHECK (! static_cast<bool> (f.state()["transport"]["metronome"]));
+
+        // The position reads as bar.beat.sixteenth.
+        CHECK (f.state()["transport"]["position"].toString() == "1.1.1");
+        f.dispatcher.execute ("set_tempo", obj ({ { "bpm", 120 } }));
+        f.dispatcher.execute ("set_position", obj ({ { "beat", 5.75 } }));
+        CHECK (f.state()["transport"]["position"].toString() == "2.2.4");
+        f.dispatcher.execute ("set_position", obj ({ { "beat", 0 } }));
         CHECK (! f.dispatcher.execute ("set_loop", obj ({ { "start_beat", 4 }, { "end_beat", 2 } })).ok);
         CHECK (! f.dispatcher.execute ("set_loop", obj ({ { "start_beat", -1 }, { "end_beat", 2 } })).ok);
     }
