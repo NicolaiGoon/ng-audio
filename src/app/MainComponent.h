@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BrowserPanel.h"
 #include "MixerView.h"
 #include "PianoRoll.h"
 #include "TimelineView.h"
@@ -8,8 +9,8 @@ namespace ng
 {
 
 /**
-    The main window: a transport, the arrangement timeline, a channel rack, a mixer and
-    a command console (hidden until you tick Console). Opening a clip swaps the rack and
+    The main window: a transport, a browser down the left, the arrangement timeline, a
+    channel rack, a mixer and a command console (hidden until you tick Console). Opening a clip swaps the rack and
     mixer for the piano roll until it is closed.
     Every button here calls the command layer rather than touching the Edit directly,
     so the UI does exactly what an AI client or macro could do.
@@ -18,6 +19,9 @@ namespace ng
     handle their own and pass on the rest. The ? button lists them all.
 */
 class MainComponent  : public juce::Component,
+                       public juce::DragAndDropContainer,
+                       public juce::DragAndDropTarget,
+                       public juce::FileDragAndDropTarget,
                        private juce::Timer,
                        private juce::AsyncUpdater,
                        private juce::MidiKeyboardState::Listener,
@@ -31,6 +35,18 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;
+    void paintOverChildren (juce::Graphics&) override;
+
+    /** The channel rack takes instruments, instrument presets, samples and kit folders from
+        the browser (or files from the desktop) and makes a new channel from them. */
+    bool isInterestedInDragSource (const SourceDetails&) override;
+    void itemDragMove (const SourceDetails&) override;
+    void itemDragExit (const SourceDetails&) override;
+    void itemDropped (const SourceDetails&) override;
+    bool isInterestedInFileDrag (const juce::StringArray&) override;
+    void fileDragMove (const juce::StringArray&, int x, int y) override;
+    void fileDragExit (const juce::StringArray&) override;
+    void filesDropped (const juce::StringArray&, int x, int y) override;
 
     /** If there are unsaved changes, asks whether to save them first. Calls onContinue
         once they're saved or the user chose not to save; doesn't call it on Cancel. */
@@ -63,6 +79,9 @@ private:
     void updatePositionDisplay();
     void showAudioSettings();
     void showPluginList();
+    void showBrowser (bool);
+    juce::Array<juce::var> itemsForFiles (const juce::StringArray&) const;
+    void setRackHighlight (bool);
     void setUpTransportControls();
     void updateTransportControls (const juce::var& state);
     void openPianoRoll (const juce::String& clipId);
@@ -79,7 +98,7 @@ private:
                      undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio" }, pluginsButton { "Plugins" }, shortcutsButton { "?" },
                      runButton { "Run" }, closePianoRollButton { "Close" },
                      quantizeButton { "Quantize" };
-    juce::ToggleButton consoleButton { "Console" }, keysButton { "Keys" };
+    juce::ToggleButton consoleButton { "Console" }, keysButton { "Keys" }, browserButton { "Browser" };
     juce::MidiKeyboardState keyboardState;
     juce::MidiKeyboardComponent keyboard { keyboardState, juce::KeyboardComponentBase::horizontalKeyboard };
 
@@ -104,6 +123,11 @@ private:
     TimelineView timeline { session, dispatcher };
     MixerView mixer { session, dispatcher };
     PianoRoll pianoRoll { session, dispatcher };
+    BrowserPanel browserPanel { session, dispatcher };
+
+    /** Where the channel rack is (for drops), and whether something is being dragged over it. */
+    juce::Rectangle<int> rackArea;
+    bool rackHighlight = false, browserNeedsRefresh = false;
     juce::TooltipWindow tooltips { this };
     std::unique_ptr<juce::FileChooser> fileChooser;
 

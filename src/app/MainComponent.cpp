@@ -64,16 +64,28 @@ namespace
     };
 
     //==============================================================================
-    /** One instrument in the channel rack: name, colour, instrument, which strip it feeds. */
-    class ChannelRow  : public juce::Component
+    /** One instrument in the channel rack: name, colour, instrument, which strip it feeds.
+        Takes instruments and presets dropped from the browser, and samples and kit folders
+        (from the browser or the desktop) when it plays the sampler. Right-click it to save its
+        instrument as a preset. */
+    class ChannelRow  : public juce::Component,
+                        public juce::DragAndDropTarget,
+                        public juce::FileDragAndDropTarget
     {
     public:
         /** pluginInstruments: the scanned plugin instruments, as (id, name). */
         ChannelRow (CommandDispatcher& d, const juce::var& channel, const juce::var& strips,
-                    const juce::Array<std::pair<juce::String, juce::String>>& pluginInstruments, const int& playStep)
+                    const juce::Array<std::pair<juce::String, juce::String>>& pluginInstruments, const int& playStep,
+                    const juce::String& audioFileWildcard)
             : dispatcher (d), id (channel["id"].toString()), swatch (d, id, colourFrom (channel["colour"])),
-              grid (d, id, channel["pattern"]["steps"].toString(), colourFrom (channel["colour"]), playStep)
+              grid (d, id, channel["pattern"]["steps"].toString(), colourFrom (channel["colour"]), playStep),
+              audioWildcard (audioFileWildcard), channelName (channel["name"].toString()),
+              isSampler (channel["instrument"] == "sampler"),
+              hasInstrument (channel["instrument"] != "none" && ! static_cast<bool> (channel["instrument_missing"]))
         {
+            name.addMouseListener (this, false);
+            status.addMouseListener (this, false);
+
             setUpNameLabel (name, dispatcher, id, channel["name"].toString());
             setUpDeleteButton (deleteButton, dispatcher, id, "channel");
 
@@ -135,7 +147,6 @@ namespace
             };
 
             auto isPlugin = current != "4osc" && current != "sampler" && current != "none";
-            auto isSampler = current == "sampler";
             editButton.setEnabled ((isPlugin && ! missing) || isSampler);
             editButton.setTooltip (isSampler ? "Open the sampler: add samples or load a drum kit"
                                              : isPlugin ? "Open the plugin's own window" : "The 4OSC synth has no window of its own");
@@ -223,7 +234,81 @@ namespace
             name.setBounds (r);
         }
 
+        //==============================================================================
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            if (! e.mods.isPopupMenu())
+                return;
+
+            juce::PopupMenu menu;
+            menu.addItem ("Save instrument as preset...", hasInstrument, false, [this]
+            {
+                browser::savePresetWithName (dispatcher, this, channelName, makeObject ({ { "channel", id } }));
+            });
+            menu.showMenuAsync (juce::PopupMenu::Options());
+        }
+
+        void paintOverChildren (juce::Graphics& g) override
+        {
+            if (dropHighlight)
+            {
+                g.setColour (juce::Colour (0xff3c8ce0));
+                g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (1.0f), 4.0f, 2.0f);
+            }
+        }
+
+        bool isInterestedInDragSource (const SourceDetails& details) override
+        {
+            return browser::canDropOnChannel (details.description, isSampler);
+        }
+
+        void itemDragEnter (const SourceDetails&) override     { setDropHighlight (true); }
+        void itemDragExit (const SourceDetails&) override      { setDropHighlight (false); }
+
+        void itemDropped (const SourceDetails& details) override
+        {
+            setDropHighlight (false);
+            drop ({ details.description });
+        }
+
+        bool isInterestedInFileDrag (const juce::StringArray& files) override
+        {
+            return isSampler && ! itemsForFiles (files).isEmpty();
+        }
+
+        void fileDragEnter (const juce::StringArray&, int, int) override  { setDropHighlight (true); }
+        void fileDragExit (const juce::StringArray&) override             { setDropHighlight (false); }
+
+        void filesDropped (const juce::StringArray& files, int, int) override
+        {
+            setDropHighlight (false);
+            drop (itemsForFiles (files));
+        }
+
     private:
+        juce::Array<juce::var> itemsForFiles (const juce::StringArray& files) const
+        {
+            juce::Array<juce::var> items;
+
+            for (auto& f : files)
+                if (auto item = browser::itemForFile (juce::File (f), audioWildcard); item.isObject())
+                    items.add (item);
+
+            return items;
+        }
+
+        void setDropHighlight (bool on)
+        {
+            dropHighlight = on;
+            repaint();
+        }
+
+        void drop (const juce::Array<juce::var>& items)
+        {
+            // The rack is rebuilt after the commands (asynchronously), so this row is still here.
+            browser::showDropError (getParentComponent(), browser::dropOnChannel (dispatcher, id, items));
+        }
+
         CommandDispatcher& dispatcher;
         juce::String id;
         ColourSwatch swatch;
@@ -235,6 +320,8 @@ namespace
                          outsButton { "Outs" };
         bool hasOutputs = false;
         StepGrid grid;
+        juce::String audioWildcard, channelName;
+        bool isSampler = false, hasInstrument = false, dropHighlight = false;
     };
 
     //==============================================================================
@@ -274,6 +361,7 @@ namespace
                 { "Ctrl+Shift+S", "Save as" },
                 { "Ctrl+T", "Add an instrument" },
                 { "Ctrl+K", "Show or hide the keyboard" },
+                { "Ctrl+B", "Show or hide the browser" },
                 { "F1", "This list" },
             };
             return rows;
@@ -433,6 +521,11 @@ MainComponent::MainComponent (te::Engine& engine)
         if (! result.ok && result.error.isNotEmpty())
             DBG (name << " failed: " << result.error);
 
+        // A new preset or sample folder shows up in the browser (not straight away: the
+        // browser runs commands itself while it refreshes).
+        if (result.ok && (name == "save_preset" || name == "set_library"))
+            browserNeedsRefresh = true;
+
         triggerAsyncUpdate();
     };
 
@@ -469,6 +562,11 @@ MainComponent::MainComponent (te::Engine& engine)
 
     keysButton.setTooltip ("Show a keyboard to play the armed channel with the mouse or the computer keys (A W S E D ...) (Ctrl+K)");
     keysButton.onClick = [this] { showKeyboard (keysButton.getToggleState()); };
+
+    browserButton.setTooltip ("Show the browser: instruments, effects, presets and samples to drag in (Ctrl+B)");
+    browserButton.onClick = [this] { showBrowser (browserButton.getToggleState()); };
+    addChildComponent (browserPanel);
+    showBrowser (session.getEngine().getPropertyStorage().getPropertiesFile().getBoolValue ("ngBrowserVisible", true));
     keyboardState.addListener (this);
     keyboard.setAvailableRange (24, 108);
     keyboard.setLowestVisibleKey (48);
@@ -535,7 +633,7 @@ MainComponent::MainComponent (te::Engine& engine)
                                                              &addButton, &playButton, &undoButton, &redoButton,
                                                              &returnButton, &recordButton, &keysButton, &tempo, &timeSignature, &positionDisplay,
                                                              &loopButton, &metronomeButton,
-                                                             &settingsButton, &pluginsButton, &shortcutsButton, &consoleButton, &timelineHeader, &timelineHint, &timeline,
+                                                             &settingsButton, &pluginsButton, &shortcutsButton, &consoleButton, &browserButton, &timelineHeader, &timelineHint, &timeline,
                                                              &channelsHeader, &mixerHeader, &addBusButton, &mixer })
         addAndMakeVisible (c);
 
@@ -744,6 +842,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
+    if (key == juce::KeyPress ('b', command, 0))
+    {
+        showBrowser (! browserPanel.isVisible());
+        return true;
+    }
+
     if (key == juce::KeyPress ('k', command, 0))
     {
         keysButton.setToggleState (! keysButton.getToggleState(), juce::dontSendNotification);
@@ -888,6 +992,92 @@ void MainComponent::toggleRecording()
                                          + " button in the channel rack. Its MIDI input is what gets recorded.");
 }
 
+void MainComponent::showBrowser (bool shouldShow)
+{
+    browserButton.setToggleState (shouldShow, juce::dontSendNotification);
+    browserPanel.setVisible (shouldShow);
+    session.getEngine().getPropertyStorage().getPropertiesFile().setValue ("ngBrowserVisible", shouldShow);
+    resized();
+}
+
+//==============================================================================
+void MainComponent::paintOverChildren (juce::Graphics& g)
+{
+    if (rackHighlight && ! rackArea.isEmpty())
+    {
+        g.setColour (juce::Colour (0xff3c8ce0));
+        g.drawRoundedRectangle (rackArea.toFloat().expanded (2.0f), 5.0f, 2.0f);
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawText ("Drop for a new channel", rackArea.removeFromBottom (24), juce::Justification::centred);
+    }
+}
+
+void MainComponent::setRackHighlight (bool on)
+{
+    if (rackHighlight != on)
+    {
+        rackHighlight = on;
+        repaint();
+    }
+}
+
+bool MainComponent::isInterestedInDragSource (const SourceDetails& details)
+{
+    return browser::canDropOnRack (details.description);
+}
+
+void MainComponent::itemDragMove (const SourceDetails& details)
+{
+    setRackHighlight (rackArea.contains (details.localPosition));
+}
+
+void MainComponent::itemDragExit (const SourceDetails&)
+{
+    setRackHighlight (false);
+}
+
+void MainComponent::itemDropped (const SourceDetails& details)
+{
+    setRackHighlight (false);
+
+    if (rackArea.contains (details.localPosition))
+        browser::showDropError (this, browser::dropOnRack (dispatcher, { details.description }));
+}
+
+juce::Array<juce::var> MainComponent::itemsForFiles (const juce::StringArray& files) const
+{
+    juce::Array<juce::var> items;
+
+    for (auto& f : files)
+        if (auto item = browser::itemForFile (juce::File (f), session.getAudioFileWildcard()); item.isObject())
+            items.add (item);
+
+    return items;
+}
+
+bool MainComponent::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    return ! itemsForFiles (files).isEmpty();
+}
+
+void MainComponent::fileDragMove (const juce::StringArray&, int x, int y)
+{
+    setRackHighlight (rackArea.contains (x, y));
+}
+
+void MainComponent::fileDragExit (const juce::StringArray&)
+{
+    setRackHighlight (false);
+}
+
+void MainComponent::filesDropped (const juce::StringArray& files, int x, int y)
+{
+    setRackHighlight (false);
+
+    if (rackArea.contains (x, y))
+        browser::showDropError (this, browser::dropOnRack (dispatcher, itemsForFiles (files)));
+}
+
 void MainComponent::showKeyboard (bool shouldShow)
 {
     keyboard.setVisible (shouldShow);
@@ -972,6 +1162,9 @@ void MainComponent::showPluginList()
 //==============================================================================
 void MainComponent::handleAsyncUpdate()
 {
+    if (std::exchange (browserNeedsRefresh, false))
+        browserPanel.refresh();
+
     rebuildRows();
     updateButtons();
     updateWindowTitle();
@@ -1044,7 +1237,8 @@ void MainComponent::rebuildRows()
         channelRows.clear();
 
         for (auto& c : *state["channels"].getArray())
-            addAndMakeVisible (channelRows.add (new ChannelRow (dispatcher, c, strips, pluginInstruments, playStep)));
+            addAndMakeVisible (channelRows.add (new ChannelRow (dispatcher, c, strips, pluginInstruments, playStep,
+                                                                session.getAudioFileWildcard())));
     }
 
     mixer.update (state);
@@ -1154,8 +1348,17 @@ void MainComponent::resized()
         r.removeFromBottom (10);
     }
 
+    // The browser runs down the left, beside the timeline, rack and mixer.
+    if (browserPanel.isVisible())
+    {
+        browserPanel.setBounds (r.removeFromLeft (230));
+        r.removeFromLeft (10);
+    }
+
     // The timeline gets a bit under half; the rack and mixer share the rest.
     auto timelineTop = r.removeFromTop (24);
+    browserButton.setBounds (timelineTop.removeFromLeft (80));
+    timelineTop.removeFromLeft (6);
     timelineHeader.setBounds (timelineTop.removeFromLeft (120));
     timelineHint.setBounds (timelineTop);
     timeline.setBounds (r.removeFromTop (juce::jmax (140, (r.getHeight() - 10) * 9 / 20)));
@@ -1174,6 +1377,8 @@ void MainComponent::resized()
     for (auto* row : channelRows)
         row->setVisible (! rollOpen);
 
+    rackArea = {};
+
     if (rollOpen)
     {
         auto top = r.removeFromTop (24);
@@ -1191,10 +1396,12 @@ void MainComponent::resized()
         return;
     }
 
-    auto left = r.removeFromLeft (juce::jmax (500, r.getWidth() * 9 / 20)).withTrimmedRight (8);
+    auto left = r.removeFromLeft (juce::jmax (600, r.getWidth() * 9 / 20)).withTrimmedRight (8);
     auto right = r.withTrimmedLeft (8);
 
     channelsHeader.setBounds (left.removeFromTop (24));
+    rackArea = left;
+
     for (auto* row : channelRows)
         row->setBounds (left.removeFromTop (60));
 

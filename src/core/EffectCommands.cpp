@@ -27,77 +27,6 @@ namespace
     constexpr int minDelayMs = 1, maxDelayMs = 2000;
 
     //==============================================================================
-    /** The strip and effect a command names: the effect by its id, its position among the
-        strip's effects (0 is the first), or its name if no other effect there shares it. */
-    struct EffectRef
-    {
-        te::PluginList* list = nullptr;
-        te::Plugin* effect = nullptr;
-        juce::String error;
-    };
-
-    te::PluginList* findList (Session& session, const juce::String& command, const juce::var& p, juce::String& error)
-    {
-        auto ref = params::getString (p, "strip");
-        auto list = session.findEffectList (ref);
-
-        if (list == nullptr)
-            error = command + ": no mixer strip called '" + ref + "' (use a strip id or name, or \"master\")";
-
-        return list;
-    }
-
-    EffectRef findEffect (Session& session, const juce::String& command, const juce::var& p)
-    {
-        EffectRef r;
-        r.list = findList (session, command, p, r.error);
-
-        if (r.list == nullptr)
-            return r;
-
-        auto effects = Session::getEffects (*r.list);
-        auto ref = p["effect"];
-
-        if (isNumber (ref))
-        {
-            auto index = static_cast<int> (ref);
-
-            if (! juce::isPositiveAndBelow (index, effects.size()))
-                r.error = command + ": there's no effect " + juce::String (index) + " (the strip has "
-                            + juce::String (effects.size()) + ", counting from 0)";
-            else
-                r.effect = effects[index];
-
-            return r;
-        }
-
-        auto name = ref.toString();
-        juce::Array<te::Plugin*> byName;
-
-        for (auto e : effects)
-        {
-            if (e->itemID.toString() == name)
-            {
-                r.effect = e;
-                return r;
-            }
-
-            if (e->getName().equalsIgnoreCase (name) || Session::getPluginId (*e).equalsIgnoreCase (name))
-                byName.add (e);
-        }
-
-        if (byName.size() == 1)
-            r.effect = byName.getFirst();
-        else if (byName.size() > 1)
-            r.error = command + ": the strip has " + juce::String (byName.size()) + " effects called '" + name
-                        + "'; use its id or position";
-        else
-            r.error = command + ": the strip has no effect '" + name + "'";
-
-        return r;
-    }
-
-    //==============================================================================
     /** Creates the effect add_effect names: a built-in one, or a scanned plugin effect by id or name. */
     std::variant<te::Plugin::Ptr, juce::String> createEffect (Session& session, const juce::String& name)
     {
@@ -418,6 +347,67 @@ namespace
         return CommandResult::success (object ({ { "effect", r.effect->itemID.toString() },
                                                  { "shown", r.effect->windowState->isWindowShowing() } }));
     }
+}
+
+te::PluginList* findList (Session& session, const juce::String& command, const juce::var& p, juce::String& error)
+{
+    auto ref = params::getString (p, "strip");
+    auto list = session.findEffectList (ref);
+
+    if (list == nullptr)
+        error = command + ": no mixer strip called '" + ref + "' (use a strip id or name, or \"master\")";
+
+    return list;
+}
+
+EffectRef findEffect (Session& session, const juce::String& command, const juce::var& p)
+{
+    EffectRef r;
+    r.list = findList (session, command, p, r.error);
+
+    if (r.list == nullptr)
+        return r;
+
+    auto effects = Session::getEffects (*r.list);
+    auto ref = p["effect"];
+
+    if (isNumber (ref))
+    {
+        auto index = static_cast<int> (ref);
+
+        if (! juce::isPositiveAndBelow (index, effects.size()))
+            r.error = command + ": there's no effect " + juce::String (index) + " (the strip has "
+                        + juce::String (effects.size()) + ", counting from 0)";
+        else
+            r.effect = effects[index];
+
+        return r;
+    }
+
+    auto name = ref.toString();
+    juce::Array<te::Plugin*> byName;
+
+    for (auto e : effects)
+    {
+        if (e->itemID.toString() == name)
+        {
+            r.effect = e;
+            return r;
+        }
+
+        if (e->getName().equalsIgnoreCase (name) || Session::getPluginId (*e).equalsIgnoreCase (name))
+            byName.add (e);
+    }
+
+    if (byName.size() == 1)
+        r.effect = byName.getFirst();
+    else if (byName.size() > 1)
+        r.error = command + ": the strip has " + juce::String (byName.size()) + " effects called '" + name
+                    + "'; use its id or position";
+    else
+        r.error = command + ": the strip has no effect '" + name + "'";
+
+    return r;
 }
 
 void registerEffectCommands (CommandRegistry& registry)
