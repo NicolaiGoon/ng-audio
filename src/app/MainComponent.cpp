@@ -158,6 +158,7 @@ MainComponent::MainComponent (te::Engine& engine)
     {
         mixer.clear();
         timeline.clear();
+        closePianoRoll();
         channelRows.clear();
         channelRackKey = {};
     };
@@ -182,6 +183,17 @@ MainComponent::MainComponent (te::Engine& engine)
     setUpTransportControls();
     runButton.onClick = [this] { runConsoleCommand(); };
 
+    timeline.onOpenClip = [this] (const juce::String& clipId) { openPianoRoll (clipId); };
+    closePianoRollButton.onClick = [this] { closePianoRoll(); };
+    closePianoRollButton.setTooltip ("Back to the channel rack and mixer");
+
+    // Grid sizes in beats: quarter, eighth, sixteenth and thirty-second notes.
+    snapBox.addItemList ({ "1/4", "1/8", "1/16", "1/32" }, 1);
+    snapBox.setSelectedId (3, juce::dontSendNotification);
+    snapBox.setTooltip ("Grid the piano roll snaps to (hold Alt to place freely)");
+    snapBox.onChange = [this] { pianoRoll.setGrid (1.0 / std::pow (2.0, snapBox.getSelectedId() - 1)); };
+    snapLabel.setJustificationType (juce::Justification::centredRight);
+
     consoleButton.setTooltip ("Show the JSON command console");
     consoleButton.onClick = [this]
     {
@@ -191,12 +203,15 @@ MainComponent::MainComponent (te::Engine& engine)
         resized();
     };
 
-    for (auto* l : { &timelineHeader, &channelsHeader, &mixerHeader, &consoleHeader })
+    for (auto* l : { &timelineHeader, &channelsHeader, &mixerHeader, &consoleHeader, &pianoRollHeader })
         l->setFont (juce::FontOptions (15.0f, juce::Font::bold));
 
-    timelineHint.setFont (juce::FontOptions (12.0f));
-    timelineHint.setColour (juce::Label::textColourId, juce::Colours::grey);
-    timelineHint.setJustificationType (juce::Justification::centredRight);
+    for (auto* hint : { &timelineHint, &pianoRollHint })
+    {
+        hint->setFont (juce::FontOptions (12.0f));
+        hint->setColour (juce::Label::textColourId, juce::Colours::grey);
+        hint->setJustificationType (juce::Justification::centredRight);
+    }
 
     consoleInput.setMultiLine (true);
     consoleInput.setReturnKeyStartsNewLine (true);
@@ -214,7 +229,9 @@ MainComponent::MainComponent (te::Engine& engine)
                                                              &channelsHeader, &mixerHeader, &mixer })
         addAndMakeVisible (c);
 
-    for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton })
+    for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton,
+                                                             &pianoRollHeader, &pianoRollHint, &snapLabel, &snapBox,
+                                                             &closePianoRollButton, &pianoRoll })
         addChildComponent (c);
 
     loadStarterProject();
@@ -535,8 +552,43 @@ void MainComponent::rebuildRows()
 
     mixer.update (state);
     timeline.update (state);
+
+    // The clip may have been deleted (or undone away) while open.
+    if (pianoRoll.getClip().isNotEmpty() && ! pianoRoll.update())
+        closePianoRoll();
+
+    updatePianoRollTitle();
     updateTransportControls (state);
     resized();
+}
+
+void MainComponent::openPianoRoll (const juce::String& clipId)
+{
+    pianoRoll.setClip (clipId);
+    updatePianoRollTitle();
+    resized();
+    pianoRoll.grabKeyboardFocus();
+}
+
+void MainComponent::closePianoRoll()
+{
+    pianoRoll.clear();
+    resized();
+}
+
+void MainComponent::updatePianoRollTitle()
+{
+    auto clip = session.findClip (pianoRoll.getClip());
+
+    if (clip == nullptr)
+        return;
+
+    auto title = "Piano roll: " + clip->getName();
+
+    if (auto track = clip->getTrack())
+        title << " on " << track->getName();
+
+    pianoRollHeader.setText (title, juce::dontSendNotification);
 }
 
 void MainComponent::paint (juce::Graphics& g)
@@ -594,6 +646,34 @@ void MainComponent::resized()
     timelineHint.setBounds (timelineTop);
     timeline.setBounds (r.removeFromTop (juce::jmax (140, (r.getHeight() - 10) * 9 / 20)));
     r.removeFromTop (10);
+
+    // Below it, either the piano roll or the channel rack and mixer.
+    auto rollOpen = pianoRoll.getClip().isNotEmpty();
+
+    for (auto* c : std::initializer_list<juce::Component*> { &pianoRollHeader, &pianoRollHint, &snapLabel, &snapBox,
+                                                             &closePianoRollButton, &pianoRoll })
+        c->setVisible (rollOpen);
+
+    for (auto* c : std::initializer_list<juce::Component*> { &channelsHeader, &mixerHeader, &mixer })
+        c->setVisible (! rollOpen);
+
+    for (auto* row : channelRows)
+        row->setVisible (! rollOpen);
+
+    if (rollOpen)
+    {
+        auto top = r.removeFromTop (24);
+        pianoRollHeader.setBounds (top.removeFromLeft (320));
+        closePianoRollButton.setBounds (top.removeFromRight (64));
+        top.removeFromRight (10);
+        snapBox.setBounds (top.removeFromRight (70));
+        snapLabel.setBounds (top.removeFromRight (44));
+        top.removeFromRight (10);
+        pianoRollHint.setBounds (top);
+        r.removeFromTop (4);
+        pianoRoll.setBounds (r);
+        return;
+    }
 
     auto left = r.removeFromLeft (juce::jmax (500, r.getWidth() * 9 / 20)).withTrimmedRight (8);
     auto right = r.withTrimmedLeft (8);

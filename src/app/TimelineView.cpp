@@ -643,7 +643,14 @@ void TimelineView::mouseDoubleClick (const juce::MouseEvent& e)
 {
     auto hit = hitTestLanes (e.position);
 
-    if (hit.lane < 0 || hit.clip >= 0)
+    if (hit.clip >= 0)
+    {
+        selectedClip = lanes[hit.lane].clips[hit.clip].id;
+        openSelected();
+        return;
+    }
+
+    if (hit.lane < 0)
         return;
 
     // A new empty clip, one bar long, at the start of the bar that was clicked.
@@ -668,6 +675,12 @@ bool TimelineView::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
     {
         deleteSelected();
+        return true;
+    }
+
+    if (key == juce::KeyPress::returnKey)
+    {
+        openSelected();
         return true;
     }
 
@@ -697,11 +710,20 @@ void TimelineView::showClipMenu()
     auto canSplit = ! clip->pattern && playhead > clip->startBeat && playhead < clip->startBeat + clip->lengthBeats;
 
     juce::PopupMenu menu;
+    menu.addItem ("Edit notes (Enter)", ! clip->pattern, false, [this] { openSelected(); });
     menu.addItem ("Split at playhead (S)", canSplit, false, [this] { splitSelectedAtPlayhead(); });
     menu.addItem ("Duplicate (Ctrl+D)", [this] { duplicateSelected(); });
     menu.addSeparator();
     menu.addItem ("Delete (Del)", [this] { deleteSelected(); });
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition());
+}
+
+void TimelineView::openSelected()
+{
+    auto clip = findSelectedClip();
+
+    if (clip != nullptr && ! clip->pattern && onOpenClip != nullptr)
+        onOpenClip (clip->id);
 }
 
 void TimelineView::deleteSelected()

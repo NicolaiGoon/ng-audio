@@ -937,6 +937,71 @@ namespace
         CHECK (near (clipsOf (f, 0)[0]["start_beat"], 0.0));
     }
 
+    void testEditingNotes (tracktion::Engine& engine)
+    {
+        std::cout << "notes are read and replaced, timed from the clip's start\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Keys" } }));
+        auto added = f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Keys" }, { "start_beat", 4 }, { "length_beats", 4 },
+                                                                     { "notes", juce::Array<juce::var> { note (64, 2, 1), note (60, 0, 1) } } }));
+        auto id = added.value["clip"].toString();
+
+        auto read = f.dispatcher.execute ("get_notes", obj ({ { "clip", id } }));
+        CHECK (read.ok);
+        CHECK (read.value["notes"].size() == 2);
+        CHECK (static_cast<int> (read.value["notes"][0]["pitch"]) == 60);   // sorted by start
+        CHECK (near (read.value["notes"][1]["start"], 2.0));
+        CHECK (static_cast<int> (read.value["notes"][1]["velocity"]) == 100);
+        CHECK (! f.dispatcher.canRedo());
+
+        // Replacing the notes is one undo step.
+        auto set = f.dispatcher.execute ("set_notes", obj ({ { "clip", id }, { "notes", juce::Array<juce::var> {
+                                                               note (67, 0.5, 0.25), note (72, 3, 1),
+                                                               obj ({ { "pitch", 48 }, { "start", 1 }, { "length", 2 }, { "velocity", 40 } }) } } }));
+        CHECK (set.ok);
+        CHECK (set.value["notes"].size() == 3);
+        CHECK (static_cast<int> (set.value["notes"][1]["velocity"]) == 40);
+        CHECK (static_cast<int> (clipsOf (f, 0)[0]["notes"]) == 3);
+        CHECK (f.dispatcher.undo());
+        CHECK (static_cast<int> (clipsOf (f, 0)[0]["notes"]) == 2);
+        CHECK (f.dispatcher.redo());
+
+        // After trimming the clip's front, notes are still timed from where the clip now starts.
+        CHECK (f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "start_beat", 5 } })).ok);
+        auto trimmed = f.dispatcher.execute ("get_notes", obj ({ { "clip", id } })).value["notes"];
+        CHECK (near (trimmed[0]["start"], -0.5));   // the note at beat 4.5 is now before the clip's start
+        CHECK (near (trimmed[1]["start"], 0.0));
+        CHECK (f.dispatcher.execute ("set_notes", obj ({ { "clip", id }, { "notes", juce::Array<juce::var> { note (60, 1, 1) } } })).ok);
+
+        if (auto midi = dynamic_cast<tracktion::MidiClip*> (f.session.findClip (id)))
+            CHECK (near (midi->getSequence().getNotes()[0]->getStartBeat().inBeats(), 2.0));   // beat 6 of the song
+
+        // Bad notes are refused and change nothing.
+        CHECK (! f.dispatcher.execute ("set_notes", obj ({ { "clip", id }, { "notes", juce::Array<juce::var> { note (128, 0, 1) } } })).ok);
+        CHECK (! f.dispatcher.execute ("set_notes", obj ({ { "clip", id }, { "notes", juce::Array<juce::var> { note (60, 0, 0) } } })).ok);
+        CHECK (! f.dispatcher.execute ("set_notes", obj ({ { "clip", id }, { "notes", juce::Array<juce::var> { note (60, -2, 1) } } })).ok);
+        CHECK (! f.dispatcher.execute ("set_notes", obj ({ { "clip", id } })).ok);
+        CHECK (static_cast<int> (clipsOf (f, 0)[0]["notes"]) == 1);
+
+        // An empty list clears the clip.
+        CHECK (f.dispatcher.execute ("set_notes", obj ({ { "clip", id }, { "notes", juce::Array<juce::var>() } })).ok);
+        CHECK (static_cast<int> (clipsOf (f, 0)[0]["notes"]) == 0);
+
+        // A step pattern's notes come from its steps.
+        f.dispatcher.execute ("set_steps", obj ({ { "channel", "Keys" }, { "steps", "x..." } }));
+        juce::String patternId;
+        auto clips = clipsOf (f, 0);
+
+        for (auto& c : *clips.getArray())
+            if (c["pattern"])
+                patternId = c["id"].toString();
+
+        CHECK (f.dispatcher.execute ("get_notes", obj ({ { "clip", patternId } })).ok);
+        CHECK (! f.dispatcher.execute ("set_notes", obj ({ { "clip", patternId }, { "notes", juce::Array<juce::var>() } })).ok);
+        CHECK (! f.dispatcher.execute ("get_notes", obj ({ { "clip", "nope" } })).ok);
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -1014,6 +1079,7 @@ int main()
         testClipsAndPlayheadInState (engine);
         testClipEditing (engine);
         testPatternCopiesFollowSteps (engine);
+        testEditingNotes (engine);
         testRendersAudio (engine);
     }
 
