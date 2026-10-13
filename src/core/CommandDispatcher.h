@@ -28,6 +28,11 @@ public:
         and returns the result as JSON. This is what an MCP or scripting bridge calls. */
     juce::String executeJson (const juce::String& json);
 
+    /** Groups everything executed until endGesture() into one undo step, e.g. all the
+        set_mixer_strip calls made while a fader is dragged. Commands still apply one by one. */
+    void beginGesture (const juce::String& undoLabel);
+    void endGesture();
+
     bool undo();
     bool redo();
     bool canUndo() const;
@@ -44,6 +49,7 @@ private:
 
     Session& session;
     const CommandRegistry& registry;
+    bool gestureOpen = false;
 };
 
 } // namespace ng

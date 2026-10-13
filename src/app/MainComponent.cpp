@@ -1,89 +1,10 @@
 #include "MainComponent.h"
+#include "Widgets.h"
 
 namespace ng
 {
 namespace
 {
-    juce::var makeObject (std::initializer_list<std::pair<const char*, juce::var>> props)
-    {
-        auto obj = new juce::DynamicObject();
-
-        for (auto& [k, v] : props)
-            obj->setProperty (k, v);
-
-        return juce::var (obj);
-    }
-
-    juce::Colour colourFrom (const juce::var& v)
-    {
-        return juce::Colour::fromString ("ff" + v.toString().removeCharacters ("#"));
-    }
-
-    //==============================================================================
-    /** A colour chip that opens the track palette; picking a colour runs set_track_colour. */
-    class ColourSwatch  : public juce::Component,
-                         public juce::SettableTooltipClient
-    {
-    public:
-        ColourSwatch (CommandDispatcher& d, juce::String trackId, juce::Colour c)
-            : dispatcher (d), id (std::move (trackId)), colour (c)
-        {
-            setTooltip ("Change colour");
-            setMouseCursor (juce::MouseCursor::PointingHandCursor);
-        }
-
-        void paint (juce::Graphics& g) override
-        {
-            g.setColour (colour);
-            g.fillRoundedRectangle (getLocalBounds().toFloat(), 3.0f);
-        }
-
-        void mouseUp (const juce::MouseEvent&) override
-        {
-            juce::PopupMenu menu;
-            auto palette = Session::getPalette();
-
-            for (int i = 0; i < palette.size(); ++i)
-                menu.addColouredItem (i + 1, juce::String::fromUTF8 ("\xe2\x96\xa0  ") + "#" + palette[i].toDisplayString (false),
-                                      palette[i], true, palette[i] == colour);
-
-            menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
-                                [&d = dispatcher, trackId = id, palette] (int result)
-                                {
-                                    if (result > 0)
-                                        d.execute ("set_track_colour", makeObject ({ { "track", trackId },
-                                                                                     { "colour", "#" + palette[result - 1].toDisplayString (false) } }));
-                                });
-        }
-
-    private:
-        CommandDispatcher& dispatcher;
-        juce::String id;
-        juce::Colour colour;
-    };
-
-    /** A name you can double-click to edit; committing the edit runs rename_track. */
-    void setUpNameLabel (juce::Label& label, CommandDispatcher& dispatcher, const juce::String& trackId, const juce::String& name)
-    {
-        label.setText (name, juce::dontSendNotification);
-        label.setEditable (false, true, false);
-        label.setTooltip ("Double-click to rename");
-        label.onTextChange = [&label, &dispatcher, trackId]
-        {
-            dispatcher.execute ("rename_track", makeObject ({ { "track", trackId }, { "name", label.getText() } }));
-        };
-    }
-
-    void setUpDeleteButton (juce::TextButton& button, CommandDispatcher& dispatcher, const juce::String& trackId, const juce::String& what)
-    {
-        button.setButtonText (juce::String::fromUTF8 ("\xc3\x97"));
-        button.setTooltip ("Delete " + what);
-        button.onClick = [&dispatcher, trackId]
-        {
-            dispatcher.execute ("delete_track", makeObject ({ { "track", trackId } }));
-        };
-    }
-
     //==============================================================================
     /** One instrument in the channel rack: name, colour, instrument, which strip it feeds. */
     class ChannelRow  : public juce::Component
@@ -155,48 +76,6 @@ namespace
         juce::ComboBox instrument, output;
         juce::TextButton deleteButton;
     };
-
-    /** One mixer strip and how many channels feed it. */
-    class StripRow  : public juce::Component
-    {
-    public:
-        StripRow (CommandDispatcher& d, const juce::var& strip)
-            : id (strip["id"].toString()), colour (colourFrom (strip["colour"])), swatch (d, id, colour)
-        {
-            setUpNameLabel (name, d, id, strip["name"].toString());
-            setUpDeleteButton (deleteButton, d, id, "mixer strip");
-
-            auto numInputs = strip["inputs"].size();
-            inputs.setText (juce::String (numInputs) + (numInputs == 1 ? " input" : " inputs"), juce::dontSendNotification);
-            inputs.setColour (juce::Label::textColourId, juce::Colours::grey);
-
-            for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &inputs, &deleteButton })
-                addAndMakeVisible (c);
-        }
-
-        void paint (juce::Graphics& g) override
-        {
-            g.setColour (colour.withAlpha (0.25f));
-            g.fillRoundedRectangle (getLocalBounds().reduced (0, 2).toFloat(), 4.0f);
-        }
-
-        void resized() override
-        {
-            auto r = getLocalBounds().reduced (0, 2);
-            swatch.setBounds (r.removeFromLeft (14).reduced (0, 2));
-            r.removeFromLeft (6);
-            deleteButton.setBounds (r.removeFromRight (26).reduced (0, 2));
-            inputs.setBounds (r.removeFromRight (80));
-            name.setBounds (r);
-        }
-
-    private:
-        juce::String id;
-        juce::Colour colour;
-        ColourSwatch swatch;
-        juce::Label name, inputs;
-        juce::TextButton deleteButton;
-    };
 }
 
 //==============================================================================
@@ -237,7 +116,7 @@ MainComponent::MainComponent (te::Engine& engine)
 
     for (auto* c : std::initializer_list<juce::Component*> { &addButton, &playButton, &undoButton, &redoButton,
                                                              &settingsButton, &runButton, &channelsHeader,
-                                                             &mixerHeader, &consoleHeader, &consoleInput,
+                                                             &mixerHeader, &consoleHeader, &consoleInput, &mixer,
                                                              &consoleOutput })
         addAndMakeVisible (c);
 
@@ -245,7 +124,7 @@ MainComponent::MainComponent (te::Engine& engine)
     addInstrument();
     session.getUndoManager().clearUndoHistory();
 
-    setSize (960, 640);
+    setSize (1180, 760);
     startTimerHz (10);
 }
 
@@ -321,15 +200,22 @@ void MainComponent::rebuildRows()
     auto state = session.toVar();
     auto strips = state["strips"];
 
-    channelRows.clear();
-    stripRows.clear();
-
-    for (auto& c : *state["channels"].getArray())
-        addAndMakeVisible (channelRows.add (new ChannelRow (dispatcher, c, strips)));
+    // The rack shows channels and the strip names they can route to; fader moves don't change it.
+    juce::String key = juce::JSON::toString (state["channels"], true);
 
     for (auto& s : *strips.getArray())
-        addAndMakeVisible (stripRows.add (new StripRow (dispatcher, s)));
+        key << "|" << s["id"].toString() << ":" << s["name"].toString();
 
+    if (key != channelRackKey)
+    {
+        channelRackKey = key;
+        channelRows.clear();
+
+        for (auto& c : *state["channels"].getArray())
+            addAndMakeVisible (channelRows.add (new ChannelRow (dispatcher, c, strips)));
+    }
+
+    mixer.update (state);
     resized();
 }
 
@@ -353,7 +239,7 @@ void MainComponent::resized()
     settingsButton.setBounds (toolbar.removeFromRight (120));
     r.removeFromTop (10);
 
-    auto console = r.removeFromBottom (190);
+    auto console = r.removeFromBottom (170);
     consoleHeader.setBounds (console.removeFromTop (24));
     auto consoleTop = console.removeFromTop (60);
     runButton.setBounds (consoleTop.removeFromRight (70).reduced (4, 14));
@@ -362,7 +248,7 @@ void MainComponent::resized()
     consoleOutput.setBounds (console);
     r.removeFromBottom (10);
 
-    auto left = r.removeFromLeft (r.getWidth() / 2).withTrimmedRight (8);
+    auto left = r.removeFromLeft (juce::jmax (500, r.getWidth() * 9 / 20)).withTrimmedRight (8);
     auto right = r.withTrimmedLeft (8);
 
     channelsHeader.setBounds (left.removeFromTop (24));
@@ -370,8 +256,7 @@ void MainComponent::resized()
         row->setBounds (left.removeFromTop (34));
 
     mixerHeader.setBounds (right.removeFromTop (24));
-    for (auto* row : stripRows)
-        row->setBounds (right.removeFromTop (34));
+    mixer.setBounds (right);
 }
 
 } // namespace ng

@@ -100,7 +100,8 @@ juce_add_gui_app(NgDaw
 
 target_sources(NgDaw PRIVATE
     src/app/Main.cpp
-    src/app/MainComponent.cpp)
+    src/app/MainComponent.cpp
+    src/app/MixerView.cpp)
 
 target_link_libraries(NgDaw PRIVATE ng_core juce::juce_recommended_warning_flags)
 
