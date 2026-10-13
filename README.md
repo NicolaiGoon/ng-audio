@@ -21,6 +21,11 @@ and every action available to AI tools through one command layer.
   against a bar ruler, with the loop region and the playhead. Click or drag in the ruler to
   move the playhead. Ctrl + mouse wheel zooms, Shift + wheel scrolls through time, and the view
   follows the playhead while playing.
+- **Clip editing.** On the timeline, drag a clip to move it (onto another channel's lane too),
+  drag its edges to trim it, and double-click an empty spot for a new one-bar clip. Del deletes
+  the selected clip, Ctrl+D duplicates it, S splits it at the playhead, and right-click offers
+  the same. Drags snap to the beat (16ths when zoomed in); hold Alt to place freely. A step
+  pattern can be copied along the timeline, and every copy follows the channel's steps.
 - **A step sequencer.** Each channel has a row of 16 steps (16th notes) under its name; click a
   step to turn it on or off. The step under the playhead is outlined while playing.
 - **A transport** with Play, tempo (type it, click the arrows or drag), time signature and a
@@ -46,6 +51,7 @@ and every action available to AI tools through one command layer.
   | `set_loop` | Loop on/off and the loop region in beats (default: the whole project, in whole bars) |
   | `set_steps` | Sets or toggles a channel's step pattern (`steps`, `step`, `length`, `pitch`) |
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
+  | `move_clip` / `resize_clip` / `split_clip` / `duplicate_clip` / `delete_clip` | Clip editing, by clip id from `get_state` |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
   | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
