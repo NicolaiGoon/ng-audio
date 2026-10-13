@@ -83,6 +83,13 @@ and every action available to AI tools through one command layer.
   closed hat F#1...). Each sample has its key, level and one-shot switch (off stops it when the
   note ends); `set_sample` can also spread a sample across a range of keys to play it pitched.
   The project saves where each sample file is, and marks one that has gone missing.
+- **A browser.** The panel on the left (*Browser*, or Ctrl+B) lists instruments, effects,
+  presets and your sample folders (*+ Folder* adds one), with a search box that finds samples by
+  name. Drag an instrument, instrument preset, sample or kit folder onto the channel rack for a new
+  channel (or double-click it); drop an instrument or preset on a channel to swap its instrument,
+  and samples or a folder on a sampler channel to add them. Drag an effect or effect preset onto a
+  mixer strip. Audio files and folders can also be dropped in from the desktop. Right-click an
+  effect, or a channel's name, to save it as a preset; presets work in every project.
 - **Linked-by-default mixer strips.** Adding an instrument creates a channel *and* a mixer strip
   with the same name and colour, already routed. Pick a different strip in the channel rack to
   detach it; several channels can share one strip; pick its own strip again to re-link it.
@@ -117,6 +124,9 @@ and every action available to AI tools through one command layer.
   | `set_multi_output` | Gives each stereo output of a channel's plugin instrument its own strip, or goes back to one |
   | `add_sample` / `set_sample` / `remove_sample` | A sampler's samples: the file, its key (or range of keys), level, pan and one-shot |
   | `load_drum_kit` | Loads a folder of samples into a sampler as a drum kit, on General MIDI keys where the names say what they are |
+  | `get_library` / `set_library` | The browser's sample folders and preset folder (app settings, not part of the project) |
+  | `find_samples` | Finds audio files in the sample folders by words in their names and folders |
+  | `save_preset` / `list_presets` / `load_preset` | Saves an instrument's or effect's settings as a preset, lists presets, and loads one onto a channel or strip |
   | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
 
   Each editing command is one undo step, a batch of commands is one undo step, and a failing command
@@ -142,10 +152,12 @@ src/core/EffectCommands.cpp   insert effects on mixer strips
 src/core/BusCommands.cpp      buses and sends
 src/core/OutputCommands.cpp   multi-output instruments
 src/core/SamplerCommands.cpp  the sampler's samples and drum kits
+src/core/LibraryCommands.cpp  sample folders, finding samples, and presets
 src/app/                      the JUCE window (timeline, channel rack, mixer, transport, console)
 src/app/MixerView.*           mixer strips: fader, pan, effects, sends, mute/solo, meters, master
 src/app/PluginWindow.*        plugin editor windows, and sliders for built-in effects
 src/app/SamplerEditor.*       the sampler's window: its samples, and dropping files and kits on it
+src/app/BrowserPanel.*        the browser, and what dropping its items on the rack, channels and strips does
 src/app/TimelineView.*        the arrangement timeline: lanes, clips, ruler, playhead, zoom
 src/app/PianoRoll.*           the piano roll: keyboard, note grid, drawing and editing notes
 tests/CommandTests.cpp        headless tests, including an offline render that checks for sound

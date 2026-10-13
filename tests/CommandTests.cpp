@@ -1834,6 +1834,122 @@ namespace
         folder.deleteRecursively();
     }
 
+    void testLibrary (tracktion::Engine& engine)
+    {
+        std::cout << "the library: sample folders, finding samples, and presets\n";
+        Fixture f (engine);
+        auto settle = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil (200); };
+        auto& known = engine.getPluginManager().knownPluginList;
+        known.clear();
+        CHECK (f.dispatcher.execute ("scan_plugins", obj ({ { "folders", juce::Array<juce::var> { NG_TEST_EFFECT_FOLDER,
+                                                                                                    NG_TEST_PLUGIN_FOLDER } } })).ok);
+
+        // The library's settings are the app's, so put them back afterwards.
+        auto original = f.dispatcher.execute ("get_library").value;
+        CHECK (original["preset_folder"].toString().isNotEmpty());
+
+        auto root = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NgDawLibraryTest");
+        root.deleteRecursively();
+        auto samples = root.getChildFile ("Samples"), presets = root.getChildFile ("Presets");
+        CHECK (samples.getChildFile ("808 Kit").createDirectory() && samples.getChildFile ("Loops").createDirectory());
+        auto kick = writeSample (samples.getChildFile ("808 Kit"), "Kick Hard.wav", 60.0, 0.4);
+        writeSample (samples.getChildFile ("808 Kit"), "Snare.wav", 0.0, 0.2);
+        writeSample (samples.getChildFile ("Loops"), "Kick Loop.wav", 80.0, 0.4);
+        samples.getChildFile ("notes.txt").replaceWithText ("kick");
+
+        CHECK (! f.dispatcher.execute ("set_library", obj ({ { "sample_folders", juce::Array<juce::var> { "relative/path" } } })).ok);
+        auto r = f.dispatcher.execute ("set_library", obj ({ { "sample_folders", juce::Array<juce::var> { samples.getFullPathName() } },
+                                                             { "preset_folder", presets.getFullPathName() } }));
+        CHECK (r.ok && r.value["sample_folders"].size() == 1 && r.value["preset_folder"] == presets.getFullPathName());
+
+        // Every word has to match somewhere in the path below the folder.
+        auto find = [&] (const juce::String& query) { return f.dispatcher.execute ("find_samples", obj ({ { "query", query } })).value["samples"]; };
+        CHECK (find ("kick").size() == 2);
+        CHECK (find ("808 kick").size() == 1 && find ("808 kick")[0]["path"] == kick.getFullPathName());
+        CHECK (find ("").size() == 3);
+        CHECK (find ("hat").size() == 0);
+        r = f.dispatcher.execute ("find_samples", obj ({ { "limit", 1 } }));
+        CHECK (r.ok && r.value["samples"].size() == 1 && static_cast<bool> (r.value["truncated"]));
+
+        // An effect preset, loaded onto another strip, brings its settings.
+        CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } })).ok);
+        CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Pad" } })).ok);
+        CHECK (f.dispatcher.execute ("add_effect", obj ({ { "strip", "Lead" }, { "effect", "reverb" } })).ok);
+        CHECK (f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", "reverb" },
+                                                          { "params", obj ({ { "wet level", 0.85 } }) } })).ok);
+        CHECK (! f.dispatcher.execute ("save_preset", obj ({ { "strip", "Lead" }, { "effect", "reverb" } })).ok);   // no name
+        r = f.dispatcher.execute ("save_preset", obj ({ { "name", "Big Room" }, { "strip", "Lead" }, { "effect", "reverb" } }));
+        CHECK (r.ok && r.value["kind"] == "effect" && r.value["plugin"] == "reverb");
+        CHECK (juce::File (r.value["path"].toString()).existsAsFile());
+
+        auto param = [&] (const char* strip, const juce::var& effect, const juce::String& name)
+        {
+            auto all = f.dispatcher.execute ("get_effect", obj ({ { "strip", strip }, { "effect", effect } })).value["params"];
+
+            if (all.isArray())
+                for (auto& p : *all.getArray())
+                    if (p["name"].toString().equalsIgnoreCase (name))
+                        return static_cast<double> (p["value"]);
+
+            return -1.0;
+        };
+
+        CHECK (f.dispatcher.execute ("add_effect", obj ({ { "strip", "Pad" }, { "effect", "eq" } })).ok);
+        r = f.dispatcher.execute ("load_preset", obj ({ { "preset", "big room" }, { "strip", "Pad" }, { "index", 0 } }));
+        CHECK (r.ok && static_cast<int> (r.value["index"]) == 0);
+        CHECK (std::abs (param ("Pad", 0, "wet level") - 0.85) < 0.01);
+        CHECK (f.state()["strips"][1]["effects"].size() == 2);
+        f.dispatcher.undo();
+        CHECK (f.state()["strips"][1]["effects"].size() == 1);
+
+        // Replacing an effect keeps its place; an effect preset doesn't go on a channel.
+        r = f.dispatcher.execute ("load_preset", obj ({ { "preset", "Big Room" }, { "strip", "Pad" }, { "effect", "eq" } }));
+        CHECK (r.ok && f.state()["strips"][1]["effects"].size() == 1 && f.state()["strips"][1]["effects"][0]["type"] == "reverb");
+        CHECK (! f.dispatcher.execute ("load_preset", obj ({ { "preset", "Big Room" }, { "channel", "Pad" } })).ok);
+        CHECK (! f.dispatcher.execute ("load_preset", obj ({ { "preset", "Nothing" }, { "strip", "Pad" } })).ok);
+
+        // A VST3 effect's own settings come with it.
+        CHECK (f.dispatcher.execute ("add_effect", obj ({ { "strip", "Lead" }, { "effect", "Ng Test Gain" } })).ok);
+        CHECK (f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", "Ng Test Gain" },
+                                                          { "params", obj ({ { "Gain", 0.25 } }) } })).ok);
+        renderRms (f);   // a VST3 takes a parameter change in when it next processes audio
+        CHECK (f.dispatcher.execute ("save_preset", obj ({ { "name", "Quiet" }, { "strip", "Lead" }, { "effect", "Ng Test Gain" } })).ok);
+        CHECK (f.dispatcher.execute ("load_preset", obj ({ { "preset", "Quiet" }, { "strip", "master" } })).ok);
+        CHECK (std::abs (param ("master", "Ng Test Gain", "gain") - 0.25) < 0.01);
+
+        // An instrument preset: a sampler with its samples, onto a 4OSC channel.
+        CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Kit" }, { "instrument", "sampler" } })).ok);
+        CHECK (f.dispatcher.execute ("load_drum_kit", obj ({ { "channel", "Kit" }, { "folder", samples.getChildFile ("808 Kit").getFullPathName() } })).ok);
+        r = f.dispatcher.execute ("save_preset", obj ({ { "name", "808" }, { "channel", "Kit" } }));
+        CHECK (r.ok && r.value["kind"] == "instrument" && r.value["plugin"] == "sampler");
+        CHECK (! f.dispatcher.execute ("load_preset", obj ({ { "preset", "808" }, { "strip", "Lead" } })).ok);
+        CHECK (f.dispatcher.execute ("load_preset", obj ({ { "preset", "808" }, { "channel", "Lead" } })).ok);
+        auto lead = [&] { return f.state()["channels"][0]; };
+        CHECK (lead()["instrument"] == "sampler" && lead()["samples"].size() == 2);
+
+        // Loaded and playing; undo gives the 4OSC back.
+        CHECK (f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "length_beats", 4 },
+                                                             { "notes", juce::Array<juce::var> { note (36, 0, 0.1) } } })).ok);
+        settle();
+        CHECK (renderRms (f) > 0.001f);
+        f.dispatcher.undo();
+        f.dispatcher.undo();
+        CHECK (lead()["instrument"] == "4osc");
+
+        // list_presets, all or for one plugin; two presets with one name need a path.
+        auto list = f.dispatcher.execute ("list_presets").value;
+        CHECK (list.size() == 3 && list[0]["plugin_name"].toString().isNotEmpty());
+        CHECK (f.dispatcher.execute ("list_presets", obj ({ { "plugin", "reverb" } })).value.size() == 1);
+        CHECK (f.dispatcher.execute ("save_preset", obj ({ { "name", "Quiet" }, { "strip", "Lead" }, { "effect", "reverb" } })).ok);
+        CHECK (! f.dispatcher.execute ("load_preset", obj ({ { "preset", "Quiet" }, { "strip", "Pad" } })).ok);
+        auto quietPath = f.dispatcher.execute ("list_presets", obj ({ { "plugin", "reverb" } })).value[1]["path"];
+        CHECK (f.dispatcher.execute ("load_preset", obj ({ { "preset", quietPath }, { "strip", "Pad" } })).ok);
+
+        f.dispatcher.execute ("set_library", obj ({ { "sample_folders", original["sample_folders"] },
+                                                    { "preset_folder", original["preset_folder"] } }));
+        root.deleteRecursively();
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -1920,6 +2036,7 @@ int main()
         testBusesAndSends (engine);
         testMultiOutputInstrument (engine);
         testSampler (engine);
+        testLibrary (engine);
         testRendersAudio (engine);
     }
 

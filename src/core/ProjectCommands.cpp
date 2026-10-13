@@ -1489,6 +1489,7 @@ void registerProjectCommands (CommandRegistry& registry)
     registerBusCommands (registry);
     registerOutputCommands (registry);
     registerSamplerCommands (registry);
+    registerLibraryCommands (registry);
 }
 
 } // namespace ng

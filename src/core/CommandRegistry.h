@@ -56,7 +56,7 @@ private:
 /** Registers create_track, route, rename_track, set_track_colour, delete_track, set_instrument, show_plugin_window,
     set_mixer_strip, set_steps, set_tempo, set_time_signature, set_loop, add_midi_clip, move_clip, resize_clip, split_clip,
     duplicate_clip, delete_clip, get_notes, set_notes, quantize_notes, play, stop, record, arm_channel, set_metronome, set_position, new_project,
-    open_project, save_project and get_state, plus the plugin, effect, bus, output and sampler commands below. */
+    open_project, save_project and get_state, plus the plugin, effect, bus, output, sampler and library commands below. */
 void registerProjectCommands (CommandRegistry&);
 
 /** Registers list_plugins and scan_plugins (PluginCommands.cpp). */
@@ -74,6 +74,26 @@ void registerOutputCommands (CommandRegistry&);
 
 /** Registers add_sample, set_sample, remove_sample and load_drum_kit (SamplerCommands.cpp). */
 void registerSamplerCommands (CommandRegistry&);
+
+/** Registers get_library, set_library, find_samples, save_preset, list_presets and
+    load_preset (LibraryCommands.cpp). */
+void registerLibraryCommands (CommandRegistry&);
+
+//==============================================================================
+/** The strip and effect a command names with "strip" and "effect": the effect by its id,
+    its position among the strip's effects (0 is the first), or its name if no other effect
+    there shares it. On failure, effect is nullptr and error says why (EffectCommands.cpp). */
+struct EffectRef
+{
+    te::PluginList* list = nullptr;
+    te::Plugin* effect = nullptr;
+    juce::String error;
+};
+
+EffectRef findEffect (Session&, const juce::String& command, const juce::var& params);
+
+/** The effect list of the strip a command names with "strip" (or "master"), or nullptr and an error. */
+te::PluginList* findList (Session&, const juce::String& command, const juce::var& params, juce::String& error);
 
 //==============================================================================
 /** Small helpers for building schemas and reading params. */
