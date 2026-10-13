@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 #include "Widgets.h"
+#include "PluginWindow.h"
 
 namespace ng
 {
@@ -384,6 +385,10 @@ MainComponent::MainComponent (te::Engine& engine)
 {
     registerProjectCommands (registry);
 
+    // Built-in effects' windows change them through the dispatcher.
+    if (auto windows = dynamic_cast<PluginWindowBehaviour*> (&engine.getUIBehaviour()))
+        windows->setDispatcher (&dispatcher);
+
     dispatcher.onCommandExecuted = [this] (const juce::String& name, const CommandResult& result)
     {
         if (! result.ok && result.error.isNotEmpty())
@@ -509,6 +514,11 @@ MainComponent::MainComponent (te::Engine& engine)
 
 MainComponent::~MainComponent()
 {
+    if (auto windows = dynamic_cast<PluginWindowBehaviour*> (&session.getEngine().getUIBehaviour()))
+        windows->setDispatcher (nullptr);
+
+    // Effect windows can use the dispatcher, which goes before the project does.
+    session.forEachEffect ([] (te::Plugin& effect) { effect.hideWindowForShutdown(); });
     juce::Desktop::getInstance().removeFocusChangeListener (this);
     session.getEngine().getPluginManager().knownPluginList.removeChangeListener (this);
     keyboardState.removeListener (this);

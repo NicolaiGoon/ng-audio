@@ -1230,6 +1230,196 @@ namespace
         CHECK (! f.dispatcher.execute ("show_plugin_window", obj ({ { "channel", "Lead" } })).ok);
     }
 
+    void testEffects (tracktion::Engine& engine)
+    {
+        std::cout << "insert effects on mixer strips\n";
+        Fixture f (engine);
+        auto& known = engine.getPluginManager().knownPluginList;
+        known.clear();
+        CHECK (f.dispatcher.execute ("scan_plugins", obj ({ { "folders", juce::Array<juce::var> { NG_TEST_PLUGIN_FOLDER,
+                                                                                                    NG_TEST_EFFECT_FOLDER } } })).ok);
+        auto effectPlugins = f.dispatcher.execute ("list_plugins", obj ({ { "kind", "effect" } })).value;
+        CHECK (effectPlugins.size() == 1 && effectPlugins[0]["name"] == "Ng Test Gain");
+        auto gainId = effectPlugins[0]["id"].toString();
+        auto synthId = f.dispatcher.execute ("list_plugins", obj ({ { "kind", "instrument" } })).value[0]["id"].toString();
+
+        CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" }, { "instrument", synthId } })).ok);
+        f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "length_beats", 4 },
+                                                      { "notes", juce::Array<juce::var> { note (69, 0, 4) } } }));
+
+        auto effects = [&] { return f.state()["strips"][0]["effects"]; };
+        auto types = [&]
+        {
+            juce::StringArray list;
+            auto all = effects();
+
+            for (auto& e : *all.getArray())
+                list.add (e["type"].toString());
+
+            return list.joinIntoString (",");
+        };
+        auto add = [&] (const juce::String& strip, const juce::String& effect, juce::var index = {})
+        {
+            auto params = obj ({ { "strip", strip }, { "effect", effect } });
+
+            if (! index.isVoid())
+                params.getDynamicObject()->setProperty ("index", index);
+
+            return f.dispatcher.execute ("add_effect", params);
+        };
+
+        CHECK (effects().size() == 0);
+
+        // Adding, inserting, moving and removing are one undo step each.
+        CHECK (add ("Lead", "reverb").ok);
+        CHECK (types() == "reverb");
+        CHECK (add ("Lead", "EQ", 0).ok);
+        CHECK (types() == "eq,reverb");
+        CHECK (f.dispatcher.execute ("move_effect", obj ({ { "strip", "Lead" }, { "effect", "reverb" }, { "index", 0 } })).ok);
+        CHECK (types() == "reverb,eq");
+        f.dispatcher.undo();
+        CHECK (types() == "eq,reverb");
+        f.dispatcher.redo();
+        CHECK (types() == "reverb,eq");
+        CHECK (f.dispatcher.execute ("remove_effect", obj ({ { "strip", "Lead" }, { "effect", 1 } })).ok);
+        CHECK (types() == "reverb");
+        f.dispatcher.undo();
+        CHECK (types() == "reverb,eq");
+        f.dispatcher.undo();
+        f.dispatcher.undo();
+        CHECK (types() == "reverb");
+        f.dispatcher.undo();
+        CHECK (types() == "");
+        f.dispatcher.redo();
+        f.dispatcher.redo();
+        CHECK (types() == "eq,reverb");
+
+        // Effects run before the fader, so the fader still sets the strip's level.
+        auto& stripList = f.session.getStrips()[0]->pluginList;
+        auto volumeIndex = stripList.indexOf (f.session.getStrips()[0]->getVolumePlugin());
+        CHECK (volumeIndex > stripList.indexOf (ng::Session::getEffects (stripList)[1]));
+
+        // Bad requests change nothing.
+        CHECK (! add ("Lead", "Flanger").ok);
+        CHECK (! add ("Nowhere", "reverb").ok);
+        CHECK (! add ("Lead", "Ng Test Synth").ok);   // an instrument
+        CHECK (! f.dispatcher.execute ("remove_effect", obj ({ { "strip", "Lead" }, { "effect", 5 } })).ok);
+        CHECK (! f.dispatcher.execute ("move_effect", obj ({ { "strip", "Lead" }, { "effect", "chorus" }, { "index", 0 } })).ok);
+        CHECK (types() == "eq,reverb");
+
+        // Parameters: listed with their ranges, set by id or name, undoable, checked first.
+        auto reverb = [&] { return f.dispatcher.execute ("get_effect", obj ({ { "strip", "Lead" }, { "effect", "reverb" } })).value; };
+        auto param = [] (const juce::var& effect, const juce::String& id)
+        {
+            auto all = effect["params"];
+
+            for (auto& p : *all.getArray())
+                if (p["id"] == id || p["name"].toString().equalsIgnoreCase (id))
+                    return p;
+
+            return juce::var();
+        };
+
+        auto wet = param (reverb(), "wet level");
+        CHECK (wet.isObject() && near (wet["min"], 0.0) && near (wet["max"], 1.0));
+        auto defaultWet = static_cast<double> (wet["value"]);
+
+        CHECK (f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", "reverb" },
+                                                          { "params", obj ({ { "wet level", 0.9 } }) } })).ok);
+        CHECK (near (param (reverb(), "wet level")["value"], 0.9));
+        f.dispatcher.undo();
+        CHECK (near (param (reverb(), "wet level")["value"], defaultWet));
+        f.dispatcher.redo();
+        CHECK (near (param (reverb(), "wet level")["value"], 0.9));
+        CHECK (f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", "reverb" },
+                                                          { "params", obj ({ { "Room Size", 0.8 } }) } })).ok);
+        CHECK (near (param (reverb(), "room size")["value"], 0.8));
+
+        CHECK (! f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", "reverb" },
+                                                            { "params", obj ({ { "wet level", 0.1 }, { "room size", 4 } }) } })).ok);
+        CHECK (! f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", "reverb" },
+                                                            { "params", obj ({ { "colour", 0.5 } }) } })).ok);
+        CHECK (near (param (reverb(), "wet level")["value"], 0.9));
+
+        // Bypass is undoable too.
+        CHECK (f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", "reverb" }, { "enabled", false } })).ok);
+        CHECK (! static_cast<bool> (effects()[1]["enabled"]));
+        f.dispatcher.undo();
+        CHECK (static_cast<bool> (effects()[1]["enabled"]));
+
+        // The delay's time, which isn't a Tracktion parameter.
+        CHECK (add ("Lead", "delay").ok);
+        CHECK (f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", "delay" },
+                                                          { "params", obj ({ { "length", 300 } }) } })).ok);
+        auto delay = f.dispatcher.execute ("get_effect", obj ({ { "strip", "Lead" }, { "effect", "delay" } })).value;
+        CHECK (near (param (delay, "length")["value"], 300));
+        CHECK (! f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", "delay" },
+                                                            { "params", obj ({ { "length", 0 } }) } })).ok);
+        CHECK (f.dispatcher.execute ("remove_effect", obj ({ { "strip", "Lead" }, { "effect", "delay" } })).ok);
+        CHECK (f.dispatcher.execute ("remove_effect", obj ({ { "strip", "Lead" }, { "effect", "reverb" } })).ok);
+        CHECK (f.dispatcher.execute ("remove_effect", obj ({ { "strip", "Lead" }, { "effect", "eq" } })).ok);
+
+        // A plugin effect: it changes the sound, its parameter is an undo step, and bypass skips it.
+        auto dry = renderRms (f);
+        CHECK (dry > 0.01f);
+        CHECK (add ("Lead", gainId).ok);
+        CHECK (types() == gainId && effects()[0]["name"] == "Ng Test Gain");
+        CHECK (std::abs (renderRms (f) - dry) < 0.001f);
+
+        auto setGain = [&] (double value)
+        {
+            return f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", 0 },
+                                                              { "params", obj ({ { "Gain", value } }) } }));
+        };
+
+        CHECK (setGain (0.0).ok);
+        auto silent = renderRms (f);
+        std::cout << "       dry RMS " << dry << ", through the gain plugin at 0, RMS " << silent << "\n";
+        CHECK (silent < 0.0001f);
+        f.dispatcher.undo();
+        CHECK (std::abs (renderRms (f) - dry) < 0.001f);
+        f.dispatcher.redo();
+        CHECK (renderRms (f) < 0.0001f);
+        CHECK (f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", 0 }, { "enabled", false } })).ok);
+        CHECK (std::abs (renderRms (f) - dry) < 0.001f);
+        CHECK (f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", 0 }, { "enabled", true } })).ok);
+        CHECK (setGain (0.5).ok);
+
+        // The master strip has effects too, ahead of its meter.
+        CHECK (add ("master", "compressor").ok);
+        CHECK (f.state()["master"]["effects"].size() == 1 && f.state()["master"]["effects"][0]["type"] == "compressor");
+        auto& masterList = f.session.getEdit().getMasterPluginList();
+        CHECK (masterList[masterList.size() - 1] == f.session.getMasterMeter());
+
+        // Windows: headless there's no screen, but both kinds have something to show.
+        auto shown = f.dispatcher.execute ("show_effect_window", obj ({ { "strip", "Lead" }, { "effect", 0 } }));
+        CHECK (shown.ok && ! static_cast<bool> (shown.value["shown"]));
+        CHECK (f.dispatcher.execute ("show_effect_window", obj ({ { "strip", "master" }, { "effect", "compressor" } })).ok);
+
+        // Saved and reopened, the effects come back in order with their settings.
+        CHECK (add ("Lead", "reverb").ok);
+        CHECK (f.dispatcher.execute ("set_effect", obj ({ { "strip", "Lead" }, { "effect", "reverb" },
+                                                          { "params", obj ({ { "wet level", 0.7 } }) } })).ok);
+        // A VST3 plugin takes in a parameter change when it next processes audio, which the
+        // app does all the time; here, render once so the saved settings include it.
+        renderRms (f);
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (f.dispatcher.execute ("save_project", obj ({ { "path", path } })).ok);
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (types() == gainId + ",reverb");
+        CHECK (near (param (reverb(), "wet level")["value"], 0.7));
+        auto gain = f.dispatcher.execute ("get_effect", obj ({ { "strip", "Lead" }, { "effect", 0 } })).value;
+        CHECK (near (param (gain, "gain")["value"], 0.5));
+        CHECK (f.state()["master"]["effects"].size() == 1);
+
+        // Without the plugin installed, the project still opens and says it's missing.
+        known.clear();
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (static_cast<bool> (effects()[0]["missing"]) && ! effects()[1].hasProperty ("missing"));
+        CHECK (! f.dispatcher.execute ("show_effect_window", obj ({ { "strip", "Lead" }, { "effect", 0 } })).ok);
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -1312,6 +1502,7 @@ int main()
         testArmingForMidiInput (engine);
         testPluginScanning (engine);
         testPluginInstrument (engine);
+        testEffects (engine);
         testRendersAudio (engine);
     }
 

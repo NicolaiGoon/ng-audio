@@ -63,6 +63,10 @@ and every action available to AI tools through one command layer.
 - **A mixer.** Each strip has a fader, pan, mute, solo and a level meter, with a master strip
   on the right. A whole fader drag is one undo step; mute and solo aren't undo steps, as in
   most DAWs.
+- **Insert effects.** *+ FX* on any strip, master included, adds an EQ, compressor, reverb or
+  delay, or a scanned VST3 effect. Effects run top to bottom, before the fader. Click one to open
+  its window (the plugin's own, or sliders for a built-in effect); right-click it to bypass, move
+  or remove it. Effects and their settings are saved with the project.
 - **Linked-by-default mixer strips.** Adding an instrument creates a channel *and* a mixer strip
   with the same name and colour, already routed. Pick a different strip in the channel rack to
   detach it; several channels can share one strip; pick its own strip again to re-link it.
@@ -90,6 +94,9 @@ and every action available to AI tools through one command layer.
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
   | `scan_plugins` / `list_plugins` | Scans folders for VST3 plugins, and lists the ones found with the ids used to load them |
   | `show_plugin_window` | Opens the editor window of a channel's plugin instrument |
+  | `add_effect` / `remove_effect` / `move_effect` | Insert effects on a strip or `master`: `eq`, `compressor`, `reverb`, `delay`, or a scanned plugin |
+  | `set_effect` / `get_effect` | Bypass an effect and set its parameters; list them with their ranges |
+  | `show_effect_window` | Opens an effect's window |
   | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
 
   Each editing command is one undo step, a batch of commands is one undo step, and a failing command
@@ -110,11 +117,15 @@ src/core/Session.*            the open project: Tracktion Edit + channel/strip m
 src/core/CommandRegistry.*    command specs (name, description, JSON schema, handler)
 src/core/CommandDispatcher.*  runs commands, batches, JSON requests, undo/redo
 src/core/ProjectCommands.cpp  create_track, route, set_steps, add_midi_clip, play, stop, projects, get_state
+src/core/PluginCommands.cpp   scan_plugins, list_plugins
+src/core/EffectCommands.cpp   insert effects on mixer strips
 src/app/                      the JUCE window (timeline, channel rack, mixer, transport, console)
-src/app/MixerView.*           mixer strips: fader, pan, mute/solo, meters, master
+src/app/MixerView.*           mixer strips: fader, pan, effects, mute/solo, meters, master
+src/app/PluginWindow.*        plugin editor windows, and sliders for built-in effects
 src/app/TimelineView.*        the arrangement timeline: lanes, clips, ruler, playhead, zoom
 src/app/PianoRoll.*           the piano roll: keyboard, note grid, drawing and editing notes
 tests/CommandTests.cpp        headless tests, including an offline render that checks for sound
+tests/TestSynth, TestGain     a tiny VST3 instrument and effect the tests load
 ```
 
 `ng_core` is a static library holding JUCE, Tracktion and the command layer, so the app, the
@@ -156,4 +167,4 @@ Releasing this app closed-source needs commercial licences for both.
 - An MCP server executable that wraps `CommandRegistry::describe()` and `executeJson()`
 - Multi-output instruments getting a folder of strips that sums to one bus
 - Tags (`drums`, `bass`, `vox`) that create and route buses automatically
-- VST3 effects on mixer strips, and CLAP support
+- Sends and buses, and CLAP support
