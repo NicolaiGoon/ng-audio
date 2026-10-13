@@ -25,6 +25,15 @@ namespace te = tracktion;
 /** The extension Ng DAW gives project files. They hold a Tracktion Edit as XML. */
 constexpr const char* projectFileExtension = ".ngdaw";
 
+/** A note in a MIDI clip, timed in beats from the clip's start (as the piano roll shows it).
+    A note before 0 or past the clip's end is in a part of the clip that has been trimmed off. */
+struct ClipNote
+{
+    int pitch = 60;
+    double start = 0.0, length = 1.0;
+    int velocity = 100;
+};
+
 class Session
 {
 public:
@@ -114,6 +123,12 @@ public:
 
     /** True for the clip set_steps keeps in sync with a channel's step pattern. */
     static bool isPatternClip (const te::Clip&);
+
+    /** A clip on any channel, by its id. */
+    te::Clip* findClip (const juce::String& id) const;
+
+    /** A MIDI clip's notes, sorted by start and then pitch. */
+    static juce::Array<ClipNote> getNotes (const te::MidiClip&);
 
     //==============================================================================
     /** The loop region in beats. Unless a custom region is set, it covers the whole

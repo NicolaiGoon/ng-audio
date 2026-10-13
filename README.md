@@ -26,6 +26,12 @@ and every action available to AI tools through one command layer.
   the selected clip, Ctrl+D duplicates it, S splits it at the playhead, and right-click offers
   the same. Drags snap to the beat (16ths when zoomed in); hold Alt to place freely. A step
   pattern can be copied along the timeline, and every copy follows the channel's steps.
+- **A piano roll.** Double-click a clip (or select it and press Enter) to edit its notes in
+  place of the rack and mixer. Click to draw a note (drag to set its length), drag a note to
+  move it and its right edge to resize it; right-click or Del deletes. Ctrl+click and Ctrl+drag
+  select several, Ctrl+A selects all, and the arrow keys move the selection (Shift + up/down
+  for an octave). Notes snap to the grid picked in Snap (1/4 to 1/32); hold Alt to place freely.
+  Each edit is one undo step.
 - **A step sequencer.** Each channel has a row of 16 steps (16th notes) under its name; click a
   step to turn it on or off. The step under the playhead is outlined while playing.
 - **A transport** with Play, tempo (type it, click the arrows or drag), time signature and a
@@ -52,6 +58,7 @@ and every action available to AI tools through one command layer.
   | `set_steps` | Sets or toggles a channel's step pattern (`steps`, `step`, `length`, `pitch`) |
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
   | `move_clip` / `resize_clip` / `split_clip` / `duplicate_clip` / `delete_clip` | Clip editing, by clip id from `get_state` |
+  | `get_notes` / `set_notes` | Reads or replaces a MIDI clip's notes (beats from the clip's start) |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
   | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
@@ -77,6 +84,7 @@ src/core/ProjectCommands.cpp  create_track, route, set_steps, add_midi_clip, pla
 src/app/                      the JUCE window (timeline, channel rack, mixer, transport, console)
 src/app/MixerView.*           mixer strips: fader, pan, mute/solo, meters, master
 src/app/TimelineView.*        the arrangement timeline: lanes, clips, ruler, playhead, zoom
+src/app/PianoRoll.*           the piano roll: keyboard, note grid, drawing and editing notes
 tests/CommandTests.cpp        headless tests, including an offline render that checks for sound
 ```
 

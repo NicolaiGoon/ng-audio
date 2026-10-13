@@ -10,7 +10,7 @@ namespace ng
     with the playhead on top. Click or drag in the ruler to move the playhead.
 
     Clips: drag to move (to another lane too), drag an edge to trim, double-click an empty
-    spot for a new one-bar clip. Delete removes the selected clip, Ctrl+D duplicates it and
+    spot for a new one-bar clip, and double-click a clip (or press Enter) to edit its notes. Delete removes the selected clip, Ctrl+D duplicates it and
     S splits it at the playhead; right-click for the same actions. Drags snap to the beat
     (to 16ths when zoomed in); hold Alt to place freely. Each edit is one command, so one
     undo step.
@@ -43,6 +43,9 @@ public:
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     bool keyPressed (const juce::KeyPress&) override;
+
+    /** Called to open a clip's notes in the piano roll. Step patterns are edited in the rack instead. */
+    std::function<void (const juce::String& clipId)> onOpenClip;
 
     /** The selected clip's id, or empty. */
     juce::String getSelectedClip() const        { return selectedClip; }
@@ -91,6 +94,7 @@ private:
     double snap (double beat, const juce::ModifierKeys&) const;
     const Clip* findSelectedClip (int* laneIndex = nullptr) const;
     void showClipMenu();
+    void openSelected();
     void deleteSelected();
     void duplicateSelected();
     void splitSelectedAtPlayhead();
