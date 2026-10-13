@@ -41,6 +41,11 @@ and every action available to AI tools through one command layer.
   Metronome that clicks on every beat, louder on the bar. New projects loop the whole project,
   rounded up to whole bars. The loop region shows in the timeline ruler: drag its edges to
   change it, Shift+drag to draw a new one, or right-click to loop a bar or the whole project.
+- **MIDI input.** Arm a channel with its ● button in the channel rack, and any MIDI keyboard
+  plays it (one channel is armed at a time). No keyboard? Tick Keys for an on-screen one you can
+  play with the mouse or the computer keys (A W S E D F T G ...). Rec records what you play into
+  the armed channel from the playhead; Rec again or Stop finishes, and the recording becomes a
+  clip in one undo step.
 - **A mixer.** Each strip has a fader, pan, mute, solo and a level meter, with a master strip
   on the right. A whole fader drag is one undo step; mute and solo aren't undo steps, as in
   most DAWs.
@@ -67,6 +72,7 @@ and every action available to AI tools through one command layer.
   | `quantize_notes` | Moves a clip's notes (or some of them) onto a grid, optionally with their ends |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
   | `set_metronome` | Turns the metronome on or off |
+  | `arm_channel` / `record` | Arms a channel for MIDI input, and records into it until `stop` |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
   | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
 

@@ -1068,6 +1068,46 @@ namespace
         CHECK (! f.dispatcher.execute ("set_notes", obj ({ { "clip", id }, { "notes", edited } })).ok);
     }
 
+    void testArmingForMidiInput (tracktion::Engine& engine)
+    {
+        std::cout << "one channel at a time is armed for MIDI input\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } }));
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Bass" } }));
+        auto armedAt = [&] (int i) { return static_cast<bool> (f.state()["channels"][i]["armed"]); };
+
+        CHECK (! armedAt (0) && ! armedAt (1));
+        CHECK (! f.dispatcher.execute ("record").ok);   // nowhere to record to yet
+        CHECK (f.state()["midi_inputs"].isArray());
+
+        CHECK (f.dispatcher.execute ("arm_channel", obj ({ { "channel", "Lead" } })).ok);
+        CHECK (armedAt (0) && ! armedAt (1));
+        CHECK (f.dispatcher.execute ("arm_channel", obj ({ { "channel", "Bass" } })).ok);
+        CHECK (! armedAt (0) && armedAt (1));
+
+        // Disarming a channel that isn't armed leaves the armed one alone.
+        CHECK (f.dispatcher.execute ("arm_channel", obj ({ { "channel", "Lead" }, { "armed", false } })).ok);
+        CHECK (armedAt (1));
+        CHECK (f.dispatcher.execute ("arm_channel", obj ({ { "channel", "Bass" }, { "armed", false } })).ok);
+        CHECK (! armedAt (1));
+        CHECK (! f.dispatcher.execute ("arm_channel", obj ({ { "channel", "Nobody" } })).ok);
+
+        // Arming isn't part of the song: no undo step, no unsaved changes.
+        f.session.markAsSaved();
+        auto couldUndo = f.dispatcher.canUndo();
+        CHECK (f.dispatcher.execute ("arm_channel", obj ({ { "channel", "Lead" } })).ok);
+        CHECK (f.dispatcher.canUndo() == couldUndo);
+        CHECK (! f.session.hasUnsavedChanges());
+
+        // Deleting the armed channel leaves nothing armed.
+        CHECK (f.dispatcher.execute ("delete_track", obj ({ { "track", "Lead" } })).ok);
+        CHECK (f.session.getArmedChannel() == nullptr);
+        CHECK (! f.dispatcher.execute ("record").ok);
+        CHECK (f.dispatcher.undo());
+        CHECK (f.session.getArmedChannel() != nullptr);
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -1147,6 +1187,7 @@ int main()
         testPatternCopiesFollowSteps (engine);
         testEditingNotes (engine);
         testQuantizeAndVelocity (engine);
+        testArmingForMidiInput (engine);
         testRendersAudio (engine);
     }
 
