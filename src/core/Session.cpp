@@ -257,6 +257,39 @@ juce::String Session::getSteps (const te::AudioTrack& channel)
     return steps.isEmpty() ? juce::String::repeatedString (".", 16) : steps;
 }
 
+te::Plugin* Session::getInstrument (const te::AudioTrack& channel)
+{
+    // A plugin that failed to load can't say it's a synth, but a channel only holds its
+    // instrument (and its volume and meter), so any external plugin is the instrument.
+    for (auto p : channel.pluginList)
+        if (p->isSynth() || dynamic_cast<te::ExternalPlugin*> (p) != nullptr)
+            return p;
+
+    return nullptr;
+}
+
+juce::String Session::getInstrumentId (const te::Plugin* instrument)
+{
+    if (instrument == nullptr)
+        return "none";
+
+    // The id list_plugins gave it. The description saved with the plugin can differ in
+    // details (such as how its file is written), which would change the id, so match it
+    // against the scanned list the way Tracktion does when loading it.
+    if (auto external = dynamic_cast<const te::ExternalPlugin*> (instrument))
+    {
+        auto& saved = external->desc;
+
+        for (auto& d : external->edit.engine.getPluginManager().knownPluginList.getTypes())
+            if (d.pluginFormatName == saved.pluginFormatName && d.uniqueId == saved.uniqueId && d.name == saved.name)
+                return d.createIdentifierString();
+
+        return saved.createIdentifierString();
+    }
+
+    return dynamic_cast<const te::FourOscPlugin*> (instrument) != nullptr ? "4osc" : "none";
+}
+
 bool Session::isPatternClip (const te::Clip& clip)
 {
     return clip.state["ngPattern"];
@@ -600,13 +633,13 @@ juce::var Session::toVar() const
 
         obj->setProperty ("plugins", plugins);
 
-        juce::String instrument ("none");
+        auto instrument = getInstrument (*c);
+        obj->setProperty ("instrument", getInstrumentId (instrument));
+        obj->setProperty ("instrument_name", instrument != nullptr ? instrument->getName() : juce::String ("No instrument"));
 
-        for (auto p : c->pluginList)
-            if (p->isSynth())
-                instrument = p->getPluginType();
-
-        obj->setProperty ("instrument", instrument);
+        // A plugin the project uses that isn't installed (or failed to load) on this computer.
+        if (instrument != nullptr && instrument->isMissing())
+            obj->setProperty ("instrument_missing", true);
         auto pattern = new juce::DynamicObject();
         pattern->setProperty ("steps", getSteps (*c));
         pattern->setProperty ("pitch", getStepPitch (*c));

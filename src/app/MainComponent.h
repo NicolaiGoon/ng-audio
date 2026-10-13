@@ -21,7 +21,8 @@ class MainComponent  : public juce::Component,
                        private juce::Timer,
                        private juce::AsyncUpdater,
                        private juce::MidiKeyboardState::Listener,
-                       private juce::FocusChangeListener
+                       private juce::FocusChangeListener,
+                       private juce::ChangeListener
 {
 public:
     explicit MainComponent (te::Engine&);
@@ -44,6 +45,7 @@ private:
     void showKeyboard (bool);
     void showShortcuts();
     void globalFocusChanged (juce::Component*) override;
+    void changeListenerCallback (juce::ChangeBroadcaster*) override     { triggerAsyncUpdate(); }
     void restoreFocus();
 
     void addInstrument();

@@ -1,8 +1,9 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 /**
-    The smallest useful instrument plugin: a sine voice per note. The tests build it as a
-    VST3 so plugin scanning and loading can be checked against a real plugin.
+    The smallest useful instrument plugin: one sine voice with a Volume parameter, which it
+    saves with its state. The tests build it as a VST3 so plugin scanning, loading and
+    saving can be checked against a real plugin.
 */
 class TestSynth  : public juce::AudioProcessor
 {
@@ -10,6 +11,7 @@ public:
     TestSynth()
         : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true))
     {
+        addParameter (volume = new juce::AudioParameterFloat (juce::ParameterID { "volume", 1 }, "Volume", 0.0f, 1.0f, 1.0f));
     }
 
     const juce::String getName() const override     { return "Ng Test Synth"; }
@@ -47,7 +49,7 @@ public:
 
         for (int i = 0; i < buffer.getNumSamples(); ++i)
         {
-            auto sample = level * (float) std::sin (phase);
+            auto sample = level * volume->get() * (float) std::sin (phase);
             phase = std::fmod (phase + delta, juce::MathConstants<double>::twoPi);
 
             for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
@@ -68,12 +70,21 @@ public:
     const juce::String getProgramName (int) override        { return {}; }
     void changeProgramName (int, const juce::String&) override {}
 
-    void getStateInformation (juce::MemoryBlock&) override  {}
-    void setStateInformation (const void*, int) override    {}
+    void getStateInformation (juce::MemoryBlock& data) override
+    {
+        juce::MemoryOutputStream (data, true).writeFloat (volume->get());
+    }
+
+    void setStateInformation (const void* data, int size) override
+    {
+        if (size >= (int) sizeof (float))
+            *volume = juce::MemoryInputStream (data, (size_t) size, false).readFloat();
+    }
 
 private:
     double sampleRate = 44100.0, frequency = 440.0, phase = 0.0;
     float level = 0.0f;
+    juce::AudioParameterFloat* volume = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TestSynth)
 };

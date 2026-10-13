@@ -104,7 +104,8 @@ target_sources(NgDaw PRIVATE
     src/app/MainComponent.cpp
     src/app/MixerView.cpp
     src/app/TimelineView.cpp
-    src/app/PianoRoll.cpp)
+    src/app/PianoRoll.cpp
+    src/app/PluginWindow.cpp)
 
 target_link_libraries(NgDaw PRIVATE ng_core juce::juce_recommended_warning_flags)
 
@@ -117,6 +118,7 @@ if (BUILD_TESTING)
     juce_add_plugin(NgTestSynth
         PRODUCT_NAME "Ng Test Synth"
         COMPANY_NAME "Ng Audio"
+        BUNDLE_ID "audio.ng.testsynth"
         PLUGIN_MANUFACTURER_CODE NgAu
         PLUGIN_CODE NgTs
         IS_SYNTH TRUE

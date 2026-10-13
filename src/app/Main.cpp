@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include "PluginWindow.h"
 
 namespace ng
 {
@@ -12,7 +13,7 @@ public:
 
     void initialise (const juce::String&) override
     {
-        engine = std::make_unique<te::Engine> (getApplicationName());
+        engine = std::make_unique<te::Engine> (getApplicationName(), std::make_unique<PluginWindowBehaviour>(), nullptr);
         mainWindow = std::make_unique<MainWindow> (getApplicationName(), *engine);
     }
 
