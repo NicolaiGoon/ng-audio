@@ -11,6 +11,8 @@ and every action available to AI tools through one command layer.
 
 - **A window that plays audio.** It opens with one synth (Tracktion's built-in 4OSC) playing a
   short arpeggio. *Add instrument*, *Play*, *Undo* and *Redo* all go through the command layer.
+  In the channel rack and mixer, double-click a name to rename it, click the colour chip to
+  recolour, pick an instrument, or press × to delete.
 - **Linked-by-default mixer strips.** Adding an instrument creates a channel *and* a mixer strip
   with the same name and colour, already routed. Pick a different strip in the channel rack to
   detach it; several channels can share one strip; pick its own strip again to re-link it.
@@ -20,6 +22,10 @@ and every action available to AI tools through one command layer.
   | --- | --- |
   | `create_track` | Adds an instrument channel plus its linked mixer strip |
   | `route` | Sends a channel to a strip (or `master`); detaches it if it isn't its own strip |
+  | `rename_track` | Renames a channel or strip; a linked pair is renamed together |
+  | `set_track_colour` | Recolours a channel or strip; a linked pair changes together |
+  | `delete_track` | Deletes a channel (and its own strip, unless shared) or a strip (its inputs go to master) |
+  | `set_instrument` | Swaps a channel's instrument (`4osc` or `none` for now) |
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
   | `play` / `stop` | Transport |
   | `get_state` | The whole project as JSON, so an AI can "see" the session |
@@ -83,7 +89,6 @@ Releasing this app closed-source needs commercial licences for both.
 ## Next steps
 
 - An MCP server executable that wraps `CommandRegistry::describe()` and `executeJson()`
-- `rename_and_color`, `unlink`, and keeping name and colour in sync while linked
 - Multi-output instruments getting a folder of strips that sums to one bus
 - Tags (`drums`, `bass`, `vox`) that create and route buses automatically
 - Plugin scanning and VST3/CLAP instruments, project save/load

@@ -34,7 +34,10 @@ CommandResult CommandDispatcher::execute (const juce::String& name, const juce::
     if (spec != nullptr && spec->undoable)
     {
         if (! result.ok)
+        {
             um.undoCurrentTransactionOnly();
+            session.refreshTrackOutputs();
+        }
 
         um.beginNewTransaction();
     }
@@ -62,6 +65,7 @@ CommandResult CommandDispatcher::executeBatch (const juce::String& undoLabel, co
         if (! r.ok)
         {
             um.undoCurrentTransactionOnly();
+            session.refreshTrackOutputs();
             outcome = CommandResult::failure ("Batch '" + undoLabel + "' rolled back. " + r.error);
             break;
         }
@@ -98,6 +102,7 @@ juce::String CommandDispatcher::executeJson (const juce::String& json)
 bool CommandDispatcher::undo()
 {
     auto done = session.getUndoManager().undo();
+    session.refreshTrackOutputs();
     notify ("undo", CommandResult { done, {}, {} });
     return done;
 }
@@ -105,6 +110,7 @@ bool CommandDispatcher::undo()
 bool CommandDispatcher::redo()
 {
     auto done = session.getUndoManager().redo();
+    session.refreshTrackOutputs();
     notify ("redo", CommandResult { done, {}, {} });
     return done;
 }
