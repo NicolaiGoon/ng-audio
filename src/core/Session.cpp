@@ -40,11 +40,34 @@ std::optional<juce::Colour> parseColour (const juce::String& text)
 Session::Session (te::Engine& e)
     : engine (e)
 {
+    adoptEdit (createNewEdit(), {});
+}
+
+std::unique_ptr<te::Edit> Session::createNewEdit()
+{
     te::Edit::Options options { engine };
     options.editState = te::createEmptyEdit (engine);
     options.editProjectItemID = te::ProjectItemID::createNewID (0);
     options.numAudioTracks = 0;
-    edit = te::Edit::createEdit (std::move (options));
+    auto newEdit = te::Edit::createEdit (std::move (options));
+
+    // New projects loop by default, so Play repeats what's there.
+    newEdit->getTransport().looping = true;
+    return newEdit;
+}
+
+void Session::adoptEdit (std::unique_ptr<te::Edit> newEdit, const juce::File& newFile)
+{
+    if (edit != nullptr)
+    {
+        if (onEditAboutToChange != nullptr)
+            onEditAboutToChange();
+
+        edit->getTransport().stop (false, true);
+    }
+
+    edit = std::move (newEdit);
+    file = newFile;
 
     // Tracktion creates the scene list lazily, inside the first track insertion. That
     // nested change lands in the undo history out of order, so the first undo would
@@ -56,11 +79,88 @@ Session::Session (te::Engine& e)
         if (auto meter = edit->getPluginCache().createNewPlugin (te::LevelMeterPlugin::xmlTypeName, {}))
             edit->getMasterPluginList().insertPlugin (meter, -1, nullptr);
 
-    // New projects loop by default, so Play repeats what's there.
-    edit->getTransport().looping = true;
     updateLoopRange();
-
     edit->getUndoManager().clearUndoHistory();
+    markAsSaved();
+}
+
+//==============================================================================
+void Session::newProject()
+{
+    adoptEdit (createNewEdit(), {});
+}
+
+juce::String Session::openProject (const juce::File& projectFile)
+{
+    if (! projectFile.existsAsFile())
+        return "File not found: " + projectFile.getFullPathName();
+
+    // Check it's a project before replacing the open one. Tracktion would quietly give an
+    // empty project for a file it can't read.
+    auto xml = juce::parseXML (projectFile);
+
+    if (xml == nullptr || ! xml->hasTagName (te::IDs::EDIT.toString()))
+        return "Not an Ng DAW project: " + projectFile.getFullPathName();
+
+    auto loaded = te::loadEditFromFile (engine, projectFile);
+
+    if (loaded == nullptr)
+        return "Couldn't open " + projectFile.getFullPathName();
+
+    adoptEdit (std::move (loaded), projectFile);
+    return {};
+}
+
+juce::String Session::saveProject (const juce::File& projectFile)
+{
+    auto target = projectFile == juce::File() ? file : projectFile;
+
+    if (target == juce::File())
+        return "This project hasn't been saved yet, so give a path to save it to";
+
+    if (target.isDirectory())
+        return "That's a folder, not a file: " + target.getFullPathName();
+
+    if (! target.getParentDirectory().createDirectory())
+        return "Couldn't create the folder for " + target.getFullPathName();
+
+    // Write next to the target first, so a failed save never leaves a half-written project.
+    juce::TemporaryFile temp (target);
+
+    if (! te::EditFileOperations (*edit).writeToFile (temp.getFile(), false) || ! temp.overwriteTargetFileWithTemporary())
+        return "Couldn't save to " + target.getFullPathName();
+
+    file = target;
+    markAsSaved();
+    return {};
+}
+
+juce::String Session::getProjectName() const
+{
+    return file == juce::File() ? juce::String ("Untitled") : file.getFileNameWithoutExtension();
+}
+
+juce::String Session::getComparableState() const
+{
+    // The playhead position and the audio and MIDI inputs Tracktion finds when playback
+    // starts are saved with the project, but neither is a change the user made.
+    auto copy = edit->state.createCopy();
+    copy.removeChild (copy.getChildWithName (te::IDs::INPUTDEVICES), nullptr);
+    auto transport = copy.getChildWithName (te::IDs::TRANSPORT);
+    transport.removeProperty (te::IDs::position, nullptr);
+    transport.removeProperty (te::IDs::start, nullptr);
+    copy.removeProperty (te::IDs::lastSignificantChange, nullptr);
+    return copy.toXmlString();
+}
+
+void Session::markAsSaved()
+{
+    savedState = getComparableState();
+}
+
+bool Session::hasUnsavedChanges() const
+{
+    return getComparableState() != savedState;
 }
 
 Session::~Session()
@@ -172,6 +272,50 @@ te::AudioTrack* Session::getLinkedPartner (const te::AudioTrack& track) const
                 return c;
 
     return nullptr;
+}
+
+void Session::sortTrackContents()
+{
+    // Each track: the same order as Tracktion's ClipList::sortClips (tracktion_ClipOwner.cpp).
+    struct Sorter
+    {
+        static int getPriority (const juce::Identifier& type)
+        {
+            if (type == te::IDs::AUTOMATIONTRACK)  return 0;
+            if (te::Clip::isClipState (type))      return 1;
+            if (type == te::IDs::PLUGIN)           return 2;
+            if (type == te::IDs::OUTPUTDEVICES)    return 3;
+            if (type == te::IDs::LFOS)             return 4;
+
+            return -1;
+        }
+
+        int compareElements (const juce::ValueTree& first, const juce::ValueTree& second) const noexcept
+        {
+            auto priority = getPriority (first.getType()) - getPriority (second.getType());
+
+            if (priority != 0)
+                return priority;
+
+            if (te::Clip::isClipState (first) && te::Clip::isClipState (second))
+            {
+                double t1 = first[te::IDs::start];
+                double t2 = second[te::IDs::start];
+                return t1 < t2 ? -1 : (t2 < t1 ? 1 : 0);
+            }
+
+            return 0;
+        }
+    };
+
+    Sorter sorter;
+
+    // Sorting moves only children that are out of order, so this adds nothing when it's tidy.
+    for (auto t : te::getAudioTracks (*edit))
+        t->state.sort (sorter, &getUndoManager(), true);
+
+    // Tracktion also keeps the Edit's own children in order, tracks after everything else.
+    te::TrackList::sortTracksByType (edit->state, &getUndoManager());
 }
 
 void Session::writeTrackOutputs()
@@ -390,6 +534,12 @@ juce::var Session::toVar() const
     root->setProperty ("strips", strips);
     root->setProperty ("master", juce::var (master));
     root->setProperty ("transport", juce::var (transportObj));
+
+    auto project = new juce::DynamicObject();
+    project->setProperty ("name", getProjectName());
+    project->setProperty ("path", file.getFullPathName());
+    project->setProperty ("unsaved_changes", hasUnsavedChanges());
+    root->setProperty ("project", juce::var (project));
     return juce::var (root);
 }
 

@@ -122,6 +122,30 @@ namespace
         CHECK (r.value["channel"] == channel["id"]);
     }
 
+    void testUndoAfterTracktionTidiesUp (tracktion::Engine& engine)
+    {
+        std::cout << "undo still undoes the last command after Tracktion's delayed tidy-up\n";
+        Fixture f (engine);
+
+        // Tracktion re-sorts a track's clips a moment after they change, with the message
+        // loop running (as in the app). That must not become an undo step of its own.
+        auto settle = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil (200); };
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Synth" } }));
+        settle();
+        f.dispatcher.execute ("set_steps", obj ({ { "channel", "Synth" }, { "step", 2 } }));
+        settle();
+
+        auto history = f.session.getUndoManager().getUndoDescriptions();
+        std::cout << "       undo history: " << history.joinIntoString (", ") << "\n";
+        CHECK (history == juce::StringArray ({ "set_steps", "create_track" }));
+
+        CHECK (f.dispatcher.undo());
+        CHECK (f.state()["channels"][0]["pattern"]["steps"] == juce::String::repeatedString (".", 16));
+        settle();
+        CHECK (f.dispatcher.canRedo());
+    }
+
     void testRouteDetachesAndShares (tracktion::Engine& engine)
     {
         std::cout << "route detaches a channel and lets strips be shared\n";
@@ -630,6 +654,121 @@ namespace
         CHECK (rms > 0.001f);
     }
 
+    /** get_state without the parts that are about the open file rather than the music. */
+    juce::String musicState (Fixture& f)
+    {
+        auto state = f.state();
+
+        if (auto o = state.getDynamicObject())
+            o->removeProperty ("project");
+
+        return juce::JSON::toString (state, true);
+    }
+
+    void testSaveAndOpen (tracktion::Engine& engine)
+    {
+        std::cout << "save, open and unsaved changes\n";
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = juce::var (temp.getFile().getFullPathName());
+        juce::String before;
+        float rmsBefore = 0.0f;
+
+        {
+            Fixture f (engine);
+            CHECK (! f.session.hasUnsavedChanges());
+            CHECK (f.state()["project"]["name"] == "Untitled");
+
+            // A small drum-and-bass style project touching everything Phase 1 can set.
+            f.dispatcher.execute ("create_track", obj ({ { "name", "Kick" } }));
+            f.dispatcher.execute ("create_track", obj ({ { "name", "Bass" }, { "colour", "#40c070" } }));
+            f.dispatcher.execute ("create_track", obj ({ { "name", "Hat" } }));
+            CHECK (f.session.hasUnsavedChanges());
+            CHECK (f.state()["project"]["unsaved_changes"] == juce::var (true));
+
+            f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "steps", "x...x...x...x..." } }));
+            f.dispatcher.execute ("set_steps", obj ({ { "channel", "Bass" }, { "steps", "x.x...x.x.x...x." }, { "pitch", 36 } }));
+            f.dispatcher.execute ("set_steps", obj ({ { "channel", "Hat" }, { "steps", "..x...x...x...x." }, { "pitch", 84 } }));
+            f.dispatcher.execute ("route", obj ({ { "channel", "Hat" }, { "strip", "Kick" } }));
+            f.dispatcher.execute ("rename_track", obj ({ { "track", "Bass" }, { "name", "Sub" } }));
+            f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Sub" }, { "volume_db", -6.0 }, { "pan", -0.25 } }));
+            f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "master" }, { "volume_db", -1.5 } }));
+            f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Hat" }, { "mute", true } }));
+            f.dispatcher.execute ("set_tempo", obj ({ { "bpm", 172 } }));
+            f.dispatcher.execute ("set_time_signature", obj ({ { "numerator", 7 }, { "denominator", 8 } }));
+            f.dispatcher.execute ("set_loop", obj ({ { "start_beat", 0 }, { "end_beat", 3.5 } }));
+
+            CHECK (! f.dispatcher.execute ("save_project").ok);   // no file yet
+
+            auto saved = f.dispatcher.execute ("save_project", obj ({ { "path", path } }));
+            CHECK (saved.ok);
+            CHECK (saved.value["path"] == path);
+            CHECK (! f.session.hasUnsavedChanges());
+            CHECK (f.state()["project"]["name"] == temp.getFile().getFileNameWithoutExtension());
+
+            // Undo marks it changed again; Save (no path) goes back to the same file.
+            f.dispatcher.undo();
+            CHECK (f.session.hasUnsavedChanges());
+            f.dispatcher.redo();
+            CHECK (f.dispatcher.execute ("save_project").ok);
+            CHECK (! f.session.hasUnsavedChanges());
+
+            before = musicState (f);
+            rmsBefore = renderRms (f);
+
+            // new_project won't throw away unsaved work unless asked to.
+            f.dispatcher.execute ("set_tempo", obj ({ { "bpm", 140 } }));
+            CHECK (! f.dispatcher.execute ("new_project").ok);
+            CHECK (f.session.getChannels().size() == 3);
+            CHECK (f.dispatcher.execute ("new_project", obj ({ { "discard_changes", true } })).ok);
+            CHECK (f.session.getChannels().isEmpty());
+            CHECK (! f.dispatcher.canUndo());
+            CHECK (! f.session.hasUnsavedChanges());
+            CHECK (f.state()["project"]["path"] == "");
+        }
+
+        // Reopening in a fresh session gives back the same project, with nothing to undo.
+        {
+            Fixture f (engine);
+            auto opened = f.dispatcher.execute ("open_project", obj ({ { "path", path } }));
+            CHECK (opened.ok);
+            CHECK (! f.session.hasUnsavedChanges());
+            CHECK (! f.dispatcher.canUndo());
+
+            auto after = musicState (f);
+            CHECK (after == before);
+
+            if (after != before)
+                std::cout << "       before:\n" << before << "\n       after:\n" << after << "\n";
+
+            auto rmsAfter = renderRms (f);
+            std::cout << "       RMS before saving " << rmsBefore << ", after opening " << rmsAfter << "\n";
+            CHECK (rmsBefore > 0.001f);
+            CHECK (std::abs (rmsAfter - rmsBefore) < rmsBefore * 0.02f);   // 4OSC phases vary a little per render
+
+            // The reopened project still edits and undoes normally.
+            CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "step", 2 } })).ok);
+            CHECK (f.session.hasUnsavedChanges());
+            CHECK (f.dispatcher.undo());
+            CHECK (f.state()["channels"][0]["pattern"]["steps"] == "x...x...x...x...");
+        }
+
+        // Files that aren't projects are refused and the open project is kept.
+        {
+            Fixture f (engine);
+            f.dispatcher.execute ("create_track", obj ({ { "name", "Keep me" } }));
+            f.dispatcher.execute ("save_project", obj ({ { "path", path } }));
+
+            juce::TemporaryFile notAProject (".ngdaw");
+            notAProject.getFile().replaceWithText ("hello");
+
+            CHECK (! f.dispatcher.execute ("open_project", obj ({ { "path", notAProject.getFile().getFullPathName() } })).ok);
+            CHECK (! f.dispatcher.execute ("open_project", obj ({ { "path", path.toString() + ".missing" } })).ok);
+            CHECK (! f.dispatcher.execute ("open_project").ok);
+            CHECK (f.session.getChannels().size() == 1);
+            CHECK (f.session.getFile().getFullPathName() == path.toString());
+        }
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -688,6 +827,7 @@ int main()
         tracktion::Engine engine ("NgDawTests", nullptr, std::make_unique<HeadlessBehaviour>());
 
         testCreateTrackLinksAStrip (engine);
+        testUndoAfterTracktionTidiesUp (engine);
         testRouteDetachesAndShares (engine);
         testUndoIsOneStepPerCommand (engine);
         testFailuresRollBack (engine);
@@ -702,6 +842,7 @@ int main()
         testLoopRegion (engine);
         testStepSequencer (engine);
         testPatternRenders (engine);
+        testSaveAndOpen (engine);
         testRendersAudio (engine);
     }
 
