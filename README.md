@@ -76,6 +76,13 @@ and every action available to AI tools through one command layer.
   mixer strip, shown right after the instrument's strip, which sums them. Click *Outs* again to go
   back to one stereo output. When the mixer is short (with the console open), it hides the sends
   and effects to keep room for the faders.
+- **A sampler.** Pick *Sampler* as a channel's instrument and click *Edit* to open it. Drop audio
+  files on it (or use *Add samples*) and each becomes a one-shot on the next free key from C1, as a
+  drum kit wants; drop a folder (or use *Load kit*) to load a whole kit, with samples named kick,
+  snare, clap, hat, open hat, tom, crash or ride put on their General MIDI keys (kick C1, snare D1,
+  closed hat F#1...). Each sample has its key, level and one-shot switch (off stops it when the
+  note ends); `set_sample` can also spread a sample across a range of keys to play it pitched.
+  The project saves where each sample file is, and marks one that has gone missing.
 - **Linked-by-default mixer strips.** Adding an instrument creates a channel *and* a mixer strip
   with the same name and colour, already routed. Pick a different strip in the channel rack to
   detach it; several channels can share one strip; pick its own strip again to re-link it.
@@ -88,7 +95,7 @@ and every action available to AI tools through one command layer.
   | `rename_track` | Renames a channel or strip; a linked pair is renamed together |
   | `set_track_colour` | Recolours a channel or strip; a linked pair changes together |
   | `delete_track` | Deletes a channel (and its own strip, unless shared) or a strip (its inputs go to master) |
-  | `set_instrument` | Swaps a channel's instrument: `4osc`, `none`, or a scanned plugin by id or name |
+  | `set_instrument` | Swaps a channel's instrument: `4osc`, `sampler`, `none`, or a scanned plugin by id or name |
   | `set_mixer_strip` | Sets a strip's (or `master`'s) fader, pan, mute and solo |
   | `set_tempo` / `set_time_signature` | Project tempo (clips keep their beats) and time signature |
   | `set_loop` | Loop on/off and the loop region in beats (default: the whole project, in whole bars) |
@@ -102,12 +109,14 @@ and every action available to AI tools through one command layer.
   | `arm_channel` / `record` | Arms a channel for MIDI input, and records into it until `stop` |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
   | `scan_plugins` / `list_plugins` | Scans folders for VST3 plugins, and lists the ones found with the ids used to load them |
-  | `show_plugin_window` | Opens the editor window of a channel's plugin instrument |
+  | `show_plugin_window` | Opens the editor window of a channel's plugin instrument or sampler |
   | `add_effect` / `remove_effect` / `move_effect` | Insert effects on a strip or `master`: `eq`, `compressor`, `reverb`, `delay`, or a scanned plugin |
   | `set_effect` / `get_effect` | Bypass an effect and set its parameters; list them with their ranges |
   | `show_effect_window` | Opens an effect's window |
   | `create_bus` / `set_send` / `remove_send` | Adds a bus; sends a strip to it with a level, pre- or post-fader |
   | `set_multi_output` | Gives each stereo output of a channel's plugin instrument its own strip, or goes back to one |
+  | `add_sample` / `set_sample` / `remove_sample` | A sampler's samples: the file, its key (or range of keys), level, pan and one-shot |
+  | `load_drum_kit` | Loads a folder of samples into a sampler as a drum kit, on General MIDI keys where the names say what they are |
   | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
 
   Each editing command is one undo step, a batch of commands is one undo step, and a failing command
@@ -132,9 +141,11 @@ src/core/PluginCommands.cpp   scan_plugins, list_plugins
 src/core/EffectCommands.cpp   insert effects on mixer strips
 src/core/BusCommands.cpp      buses and sends
 src/core/OutputCommands.cpp   multi-output instruments
+src/core/SamplerCommands.cpp  the sampler's samples and drum kits
 src/app/                      the JUCE window (timeline, channel rack, mixer, transport, console)
 src/app/MixerView.*           mixer strips: fader, pan, effects, sends, mute/solo, meters, master
 src/app/PluginWindow.*        plugin editor windows, and sliders for built-in effects
+src/app/SamplerEditor.*       the sampler's window: its samples, and dropping files and kits on it
 src/app/TimelineView.*        the arrangement timeline: lanes, clips, ruler, playhead, zoom
 src/app/PianoRoll.*           the piano roll: keyboard, note grid, drawing and editing notes
 tests/CommandTests.cpp        headless tests, including an offline render that checks for sound

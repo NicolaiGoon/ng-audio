@@ -45,7 +45,8 @@ add_library(ng_core STATIC
     src/core/PluginCommands.cpp
     src/core/EffectCommands.cpp
     src/core/BusCommands.cpp
-    src/core/OutputCommands.cpp)
+    src/core/OutputCommands.cpp
+    src/core/SamplerCommands.cpp)
 
 target_include_directories(ng_core PUBLIC src)
 
@@ -108,7 +109,8 @@ target_sources(NgDaw PRIVATE
     src/app/MixerView.cpp
     src/app/TimelineView.cpp
     src/app/PianoRoll.cpp
-    src/app/PluginWindow.cpp)
+    src/app/PluginWindow.cpp
+    src/app/SamplerEditor.cpp)
 
 target_link_libraries(NgDaw PRIVATE ng_core juce::juce_recommended_warning_flags)
 
