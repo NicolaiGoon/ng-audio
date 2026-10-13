@@ -1383,6 +1383,8 @@ void registerProjectCommands (CommandRegistry& registry)
 
     registry.add ({ "get_state", "Returns the project's channels, mixer strips, routing and transport as data.",
                     schema ({}), false, getState });
+
+    registerPluginCommands (registry);
 }
 
 } // namespace ng
