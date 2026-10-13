@@ -367,6 +367,90 @@ void PianoRoll::nudgeSelected (int semitones, double beats)
         commit (moved, selected);
 }
 
+void PianoRoll::copySelected()
+{
+    clipboard.clearQuick();
+    auto first = std::numeric_limits<double>::max();
+
+    for (int i = 0; i < notes.size(); ++i)
+    {
+        if (selected[i])
+        {
+            clipboard.add (notes[i]);
+            first = std::min (first, notes[i].start);
+        }
+    }
+
+    for (auto& n : clipboard)
+        n.start -= first;
+
+    clipboardNext = getSelectionEnd (first);
+}
+
+void PianoRoll::paste()
+{
+    auto at = getPlayheadBeatInClip();
+
+    if (at >= 0.0 && at < clipLengthBeats)
+        at = std::floor (at / grid + 1.0e-6) * grid;
+    else
+        at = clipboardNext;
+
+    addNotes (clipboard, at);
+}
+
+void PianoRoll::duplicateSelected()
+{
+    juce::Array<ClipNote> copies;
+    auto start = std::numeric_limits<double>::max();
+
+    for (int i = 0; i < notes.size(); ++i)
+    {
+        if (selected[i])
+        {
+            copies.add (notes[i]);
+            start = std::min (start, notes[i].start);
+        }
+    }
+
+    if (! copies.isEmpty())
+        addNotes (copies, getSelectionEnd (start) - start);
+}
+
+double PianoRoll::getSelectionEnd (double start) const
+{
+    auto end = start;
+
+    for (int i = 0; i < notes.size(); ++i)
+        if (selected[i])
+            end = std::max (end, notes[i].start + notes[i].length);
+
+    // Rounded up to the grid from where the selection starts, so a copy stays in time.
+    return start + std::ceil ((end - start) / grid - 1.0e-6) * grid;
+}
+
+void PianoRoll::addNotes (const juce::Array<ClipNote>& added, double offset)
+{
+    auto newNotes = notes;
+    juce::Array<bool> newSelection;
+    newSelection.insertMultiple (0, false, notes.size());
+
+    // Notes that would start past the end of the clip wouldn't play, so they're left out.
+    for (auto n : added)
+    {
+        n.start += offset;
+
+        if (n.start >= 0.0 && n.start < clipLengthBeats)
+        {
+            newNotes.add (n);
+            newSelection.add (true);
+        }
+    }
+
+    if (newNotes.size() > notes.size())
+        commit (newNotes, newSelection);
+}
+
 //==============================================================================
 void PianoRoll::updateScrollBars()
 {
@@ -940,8 +1024,35 @@ bool PianoRoll::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
+    auto command = juce::ModifierKeys::commandModifier;
+
+    if (key == juce::KeyPress ('v', command, 0) && ! clipboard.isEmpty())
+    {
+        paste();
+        return true;
+    }
+
     if (countSelected() == 0)
         return false;
+
+    if (key == juce::KeyPress ('c', command, 0))
+    {
+        copySelected();
+        return true;
+    }
+
+    if (key == juce::KeyPress ('x', command, 0))
+    {
+        copySelected();
+        deleteSelected();
+        return true;
+    }
+
+    if (key == juce::KeyPress ('d', command, 0))
+    {
+        duplicateSelected();
+        return true;
+    }
 
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
     {

@@ -780,6 +780,14 @@ void TimelineView::mouseDoubleClick (const juce::MouseEvent& e)
 
 bool TimelineView::keyPressed (const juce::KeyPress& key)
 {
+    auto command = juce::ModifierKeys::commandModifier;
+
+    if (key == juce::KeyPress ('v', command, 0) && copiedClip.isNotEmpty())
+    {
+        pasteAtPlayhead();
+        return true;
+    }
+
     if (selectedClip.isEmpty())
         return false;
 
@@ -795,9 +803,15 @@ bool TimelineView::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    if (key == juce::KeyPress ('d', juce::ModifierKeys::commandModifier, 0))
+    if (key == juce::KeyPress ('d', command, 0))
     {
         duplicateSelected();
+        return true;
+    }
+
+    if (key == juce::KeyPress ('c', command, 0))
+    {
+        copiedClip = selectedClip;
         return true;
     }
 
@@ -805,6 +819,26 @@ bool TimelineView::keyPressed (const juce::KeyPress& key)
     {
         splitSelectedAtPlayhead();
         return true;
+    }
+
+    if (key == juce::KeyPress::escapeKey)
+    {
+        selectedClip = {};
+        repaint();
+        return true;
+    }
+
+    // Arrows move the clip: by a beat, or a bar with Shift, and up or down a lane.
+    if (! key.getModifiers().isCommandDown() && ! key.getModifiers().isAltDown())
+    {
+        auto& timeSig = session.getEdit().tempoSequence.getTimeSigAt (te::TimePosition());
+        auto step = key.getModifiers().isShiftDown() ? timeSig.numerator.get() * 4.0 / timeSig.denominator.get() : 1.0;
+        auto code = key.getKeyCode();
+
+        if (code == juce::KeyPress::leftKey)    { moveSelected (-step, 0); return true; }
+        if (code == juce::KeyPress::rightKey)   { moveSelected (step, 0); return true; }
+        if (code == juce::KeyPress::upKey)      { moveSelected (0.0, -1); return true; }
+        if (code == juce::KeyPress::downKey)    { moveSelected (0.0, 1); return true; }
     }
 
     return false;
@@ -824,6 +858,7 @@ void TimelineView::showClipMenu()
     menu.addItem ("Edit notes (Enter)", ! clip->pattern, false, [this] { openSelected(); });
     menu.addItem ("Split at playhead (S)", canSplit, false, [this] { splitSelectedAtPlayhead(); });
     menu.addItem ("Duplicate (Ctrl+D)", [this] { duplicateSelected(); });
+    menu.addItem ("Copy (Ctrl+C)", [this] { copiedClip = selectedClip; });
     menu.addSeparator();
     menu.addItem ("Delete (Del)", [this] { deleteSelected(); });
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition());
@@ -858,6 +893,39 @@ void TimelineView::splitSelectedAtPlayhead()
     // Keep the right-hand half selected, so pressing S again keeps chopping forwards.
     if (result.ok)
         selectedClip = result.value[1]["clip"].toString();
+}
+
+void TimelineView::pasteAtPlayhead()
+{
+    auto result = dispatcher.execute ("duplicate_clip", makeObject ({ { "clip", copiedClip }, { "start_beat", getPlayheadBeat() } }));
+
+    if (result.ok)
+        selectedClip = result.value["clip"].toString();
+    else
+        copiedClip = {};   // it's been deleted since
+}
+
+void TimelineView::moveSelected (double beats, int lanesDown)
+{
+    int lane = -1;
+    auto clip = findSelectedClip (&lane);
+
+    if (clip == nullptr || ! juce::isPositiveAndBelow (lane + lanesDown, lanes.size()))
+        return;
+
+    // Step to the next beat (or bar) line that way, so a clip that's off the grid lands on it.
+    auto start = clip->startBeat;
+
+    if (beats > 0.0)
+        start = std::floor (start / beats + 1.0 + 1.0e-6) * beats;
+    else if (beats < 0.0)
+        start = std::max (0.0, std::ceil (start / -beats - 1.0 - 1.0e-6) * -beats);
+
+    auto result = dispatcher.execute ("move_clip", makeObject ({ { "clip", selectedClip },
+                                                                 { "start_beat", start },
+                                                                 { "channel", lanes[lane + lanesDown].channelId } }));
+    if (result.ok)
+        selectedClip = result.value["clip"].toString();
 }
 
 void TimelineView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)

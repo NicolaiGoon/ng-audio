@@ -46,6 +46,13 @@ and every action available to AI tools through one command layer.
   play with the mouse or the computer keys (A W S E D F T G ...). Rec records what you play into
   the armed channel from the playhead; Rec again or Stop finishes, and the recording becomes a
   clip in one undo step.
+- **Keyboard shortcuts.** Space plays and stops, Ctrl+Z undoes, Ctrl+Y (or Ctrl+Shift+Z)
+  redoes, R records, C turns the metronome on or off, Ctrl+L looping, Ctrl+T adds an
+  instrument and Ctrl+K shows the keyboard. On the timeline, Ctrl+C and Ctrl+V copy a clip and
+  paste it at the playhead, the left and right arrows move it by a beat (Shift: a bar), up and
+  down move it to the next channel, and Esc deselects. In the piano roll, Ctrl+C, Ctrl+X and
+  Ctrl+V copy, cut and paste notes at the playhead, Ctrl+D duplicates them, and Esc closes it.
+  F1 or the ? button lists them all.
 - **A mixer.** Each strip has a fader, pan, mute, solo and a level meter, with a master strip
   on the right. A whole fader drag is one undo step; mute and solo aren't undo steps, as in
   most DAWs.

@@ -148,6 +148,114 @@ namespace
         juce::TextButton deleteButton, armButton { juce::String::fromUTF8 ("\xe2\x97\x8f") };
         StepGrid grid;
     };
+
+    //==============================================================================
+    /** Every keyboard shortcut, in sections, for the ? button and F1. */
+    class ShortcutsList  : public juce::Component
+    {
+    public:
+        ShortcutsList()
+        {
+            setSize (2 * columnWidth + 3 * margin, std::max (getColumnHeight (left()), getColumnHeight (right())));
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            paintColumn (g, left(), margin);
+            paintColumn (g, right(), columnWidth + 2 * margin);
+        }
+
+    private:
+        // A row with no description is a section heading.
+        using Rows = std::vector<std::pair<const char*, const char*>>;
+
+        static const Rows& left()
+        {
+            static const Rows rows {
+                { "Everywhere", nullptr },
+                { "Space", "Play or stop" },
+                { "Home", "Back to the start" },
+                { "R", "Record into the armed channel, again to stop" },
+                { "C", "Metronome on or off" },
+                { "Ctrl+L", "Looping on or off" },
+                { "Ctrl+Z", "Undo" },
+                { "Ctrl+Y, Ctrl+Shift+Z", "Redo" },
+                { "Ctrl+N", "New project" },
+                { "Ctrl+O", "Open a project" },
+                { "Ctrl+S", "Save" },
+                { "Ctrl+Shift+S", "Save as" },
+                { "Ctrl+T", "Add an instrument" },
+                { "Ctrl+K", "Show or hide the keyboard" },
+                { "F1", "This list" },
+            };
+            return rows;
+        }
+
+        static const Rows& right()
+        {
+            static const Rows rows {
+                { "Timeline (click a clip first)", nullptr },
+                { "Enter", "Edit the clip's notes" },
+                { "Del", "Delete the clip" },
+                { "Ctrl+D", "Duplicate it after itself" },
+                { "Ctrl+C", "Copy it" },
+                { "Ctrl+V", "Paste a copy at the playhead" },
+                { "S", "Split it at the playhead" },
+                { "Left, Right", "Move it by a beat (Shift: a bar)" },
+                { "Up, Down", "Move it to the channel above or below" },
+                { "Esc", "Deselect it" },
+                { "Piano roll", nullptr },
+                { "Ctrl+A", "Select all notes" },
+                { "Del", "Delete the selected notes" },
+                { "Ctrl+C, Ctrl+X", "Copy or cut them" },
+                { "Ctrl+V", "Paste at the playhead" },
+                { "Ctrl+D", "Duplicate them after themselves" },
+                { "Up, Down", "Move by a semitone (Shift: an octave)" },
+                { "Left, Right", "Move by the snap grid" },
+                { "Q", "Quantize" },
+                { "Esc", "Deselect, then close the piano roll" },
+            };
+            return rows;
+        }
+
+        static int getColumnHeight (const Rows& rows)
+        {
+            auto height = margin;
+
+            for (auto& row : rows)
+                height += row.second == nullptr ? headingHeight : rowHeight;
+
+            return height + margin;
+        }
+
+        static void paintColumn (juce::Graphics& g, const Rows& rows, int x)
+        {
+            auto y = margin;
+
+            for (auto& row : rows)
+            {
+                if (row.second == nullptr)
+                {
+                    g.setColour (juce::Colours::white);
+                    g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+                    g.drawText (row.first, x, y + headingHeight - rowHeight - 4, columnWidth, rowHeight, juce::Justification::centredLeft);
+                    y += headingHeight;
+                    continue;
+                }
+
+                g.setColour (juce::Colour (0xff8fd18f));
+                g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::bold));
+                g.drawText (row.first, x, y, keyWidth, rowHeight, juce::Justification::centredLeft);
+
+                g.setColour (juce::Colours::lightgrey);
+                g.setFont (juce::FontOptions (14.0f));
+                g.drawText (row.second, x + keyWidth, y, columnWidth - keyWidth, rowHeight, juce::Justification::centredLeft);
+                y += rowHeight;
+            }
+        }
+
+        static constexpr int margin = 16, columnWidth = 440, keyWidth = 170, rowHeight = 22, headingHeight = 36;
+    };
 }
 
 //==============================================================================
@@ -184,16 +292,18 @@ MainComponent::MainComponent (te::Engine& engine)
     saveAsButton.setTooltip ("Save under a new name (Ctrl+Shift+S)");
 
     addButton.onClick = [this] { addInstrument(); };
+    addButton.setTooltip ("Add an instrument channel (Ctrl+T)");
+    playButton.setTooltip ("Play or stop (Space)");
     playButton.onClick = [this]
     {
         dispatcher.execute (session.getEdit().getTransport().isPlaying() ? "stop" : "play");
     };
     returnButton.onClick = [this] { dispatcher.execute ("set_position", makeObject ({ { "beat", 0 } })); };
     recordButton.onClick = [this] { toggleRecording(); };
-    recordButton.setTooltip ("Record MIDI into the armed channel from the playhead; click again (or Stop) to finish");
+    recordButton.setTooltip ("Record MIDI into the armed channel from the playhead; click again (or Stop) to finish (R)");
     recordButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd0402f));
 
-    keysButton.setTooltip ("Show a keyboard to play the armed channel with the mouse or the computer keys (A W S E D ...)");
+    keysButton.setTooltip ("Show a keyboard to play the armed channel with the mouse or the computer keys (A W S E D ...) (Ctrl+K)");
     keysButton.onClick = [this] { showKeyboard (keysButton.getToggleState()); };
     keyboardState.addListener (this);
     keyboard.setAvailableRange (24, 108);
@@ -203,6 +313,10 @@ MainComponent::MainComponent (te::Engine& engine)
     returnButton.setTooltip ("Back to the start (Home)");
     undoButton.onClick = [this] { dispatcher.undo(); };
     redoButton.onClick = [this] { dispatcher.redo(); };
+    undoButton.setTooltip ("Undo (Ctrl+Z)");
+    redoButton.setTooltip ("Redo (Ctrl+Y or Ctrl+Shift+Z)");
+    shortcutsButton.setTooltip ("Keyboard shortcuts (F1)");
+    shortcutsButton.onClick = [this] { showShortcuts(); };
     settingsButton.onClick = [this] { showAudioSettings(); };
     settingsButton.setTooltip ("Audio device settings");
     setUpTransportControls();
@@ -253,7 +367,7 @@ MainComponent::MainComponent (te::Engine& engine)
                                                              &addButton, &playButton, &undoButton, &redoButton,
                                                              &returnButton, &recordButton, &keysButton, &tempo, &timeSignature, &positionDisplay,
                                                              &loopButton, &metronomeButton,
-                                                             &settingsButton, &consoleButton, &timelineHeader, &timelineHint, &timeline,
+                                                             &settingsButton, &shortcutsButton, &consoleButton, &timelineHeader, &timelineHint, &timeline,
                                                              &channelsHeader, &mixerHeader, &mixer })
         addAndMakeVisible (c);
 
@@ -265,12 +379,14 @@ MainComponent::MainComponent (te::Engine& engine)
     loadStarterProject();
 
     setWantsKeyboardFocus (true);
+    juce::Desktop::getInstance().addFocusChangeListener (this);
     setSize (1360, 860);
     startTimerHz (30);
 }
 
 MainComponent::~MainComponent()
 {
+    juce::Desktop::getInstance().removeFocusChangeListener (this);
     keyboardState.removeListener (this);
     dispatcher.onCommandExecuted = nullptr;
     session.onEditAboutToChange = nullptr;
@@ -430,14 +546,101 @@ void MainComponent::updateWindowTitle()
 bool MainComponent::keyPressed (const juce::KeyPress& key)
 {
     auto command = juce::ModifierKeys::commandModifier;
+    auto shift = juce::ModifierKeys::shiftModifier;
+    auto none = juce::ModifierKeys::noModifiers;
 
-    if (key == juce::KeyPress ('n', command, 0))                                     { newProject(); return true; }
-    if (key == juce::KeyPress ('o', command, 0))                                     { openProject(); return true; }
-    if (key == juce::KeyPress ('s', command, 0))                                     { saveProject(); return true; }
-    if (key == juce::KeyPress (juce::KeyPress::homeKey))                             { returnButton.triggerClick(); return true; }
-    if (key == juce::KeyPress ('s', command | juce::ModifierKeys::shiftModifier, 0)) { saveProjectAs(); return true; }
+    if (key == juce::KeyPress ('n', command, 0))                    { newProject(); return true; }
+    if (key == juce::KeyPress ('o', command, 0))                    { openProject(); return true; }
+    if (key == juce::KeyPress ('s', command, 0))                    { saveProject(); return true; }
+    if (key == juce::KeyPress ('s', command | shift, 0))            { saveProjectAs(); return true; }
+    if (key == juce::KeyPress ('z', command, 0))                    { dispatcher.undo(); return true; }
+    if (key == juce::KeyPress ('y', command, 0)
+         || key == juce::KeyPress ('z', command | shift, 0))        { dispatcher.redo(); return true; }
+    if (key == juce::KeyPress ('t', command, 0))                    { addInstrument(); return true; }
+
+    if (key == juce::KeyPress (juce::KeyPress::spaceKey))           { playButton.onClick(); return true; }
+    if (key == juce::KeyPress (juce::KeyPress::homeKey))            { returnButton.onClick(); return true; }
+    if (key == juce::KeyPress ('r', none, 0))                       { toggleRecording(); return true; }
+    if (key == juce::KeyPress ('c', none, 0))                       { dispatcher.execute ("set_metronome"); return true; }
+
+    if (key == juce::KeyPress ('l', command, 0))
+    {
+        dispatcher.execute ("set_loop", makeObject ({ { "enabled", ! loopButton.getToggleState() } }));
+        return true;
+    }
+
+    if (key == juce::KeyPress ('k', command, 0))
+    {
+        keysButton.setToggleState (! keysButton.getToggleState(), juce::dontSendNotification);
+        showKeyboard (keysButton.getToggleState());
+        return true;
+    }
+
+    if (key == juce::KeyPress (juce::KeyPress::F1Key) || key.getTextCharacter() == '?')
+    {
+        showShortcuts();
+        return true;
+    }
+
+    // The piano roll uses Escape to clear its selection first; with nothing selected, it closes.
+    if (key == juce::KeyPress (juce::KeyPress::escapeKey) && pianoRoll.getClip().isNotEmpty())
+    {
+        closePianoRoll();
+        timeline.grabKeyboardFocus();
+        return true;
+    }
 
     return false;
+}
+
+void MainComponent::showShortcuts()
+{
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned (new ShortcutsList());
+    options.dialogTitle = "Keyboard shortcuts";
+    options.dialogBackgroundColour = getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId);
+    options.componentToCentreAround = this;
+    options.useNativeTitleBar = true;
+    options.resizable = false;
+    options.launchAsync();
+}
+
+void MainComponent::globalFocusChanged (juce::Component* focused)
+{
+    // Buttons and drop-downs keep the keyboard focus after they're clicked, and would then
+    // take Space, Return and the arrow keys. Give it back to the panel being worked in.
+    // If nothing has the focus (e.g. a text box just closed), keys would go nowhere.
+    if (focused == nullptr)
+    {
+        if (isShowing() && juce::Process::isForegroundProcess())
+            juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer (this)]
+            {
+                if (safeThis != nullptr && juce::Component::getCurrentlyFocusedComponent() == nullptr)
+                    safeThis->restoreFocus();
+            });
+
+        return;
+    }
+
+    if (! isParentOf (focused))
+        return;
+
+    if (focused == &timeline || focused == &pianoRoll || focused == &keyboard)
+        lastFocused = focused;
+    else if (dynamic_cast<juce::Button*> (focused) != nullptr || dynamic_cast<juce::ComboBox*> (focused) != nullptr)
+        juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer (this)]
+        {
+            if (safeThis != nullptr)
+                safeThis->restoreFocus();
+        });
+}
+
+void MainComponent::restoreFocus()
+{
+    if (lastFocused != nullptr && lastFocused->isShowing())
+        lastFocused->grabKeyboardFocus();
+    else
+        grabKeyboardFocus();
 }
 
 void MainComponent::runConsoleCommand()
@@ -476,13 +679,13 @@ void MainComponent::setUpTransportControls()
                                                                     { "denominator", commonTimeSignatures[index].second } }));
     };
 
-    loopButton.setTooltip ("Loop playback (the whole project unless a loop region is set)");
+    loopButton.setTooltip ("Loop playback (the whole project unless a loop region is set) (Ctrl+L)");
     loopButton.onClick = [this]
     {
         dispatcher.execute ("set_loop", makeObject ({ { "enabled", loopButton.getToggleState() } }));
     };
 
-    metronomeButton.setTooltip ("Click on every beat while playing, louder on the first beat of a bar");
+    metronomeButton.setTooltip ("Click on every beat while playing, louder on the first beat of a bar (C)");
     metronomeButton.onClick = [this]
     {
         dispatcher.execute ("set_metronome", makeObject ({ { "enabled", metronomeButton.getToggleState() } }));
@@ -701,28 +904,30 @@ void MainComponent::resized()
         toolbar.removeFromLeft (4);
     }
 
-    toolbar.removeFromLeft (14);
+    toolbar.removeFromLeft (10);
 
     for (auto* b : { &addButton, &returnButton, &playButton, &recordButton, &undoButton, &redoButton })
     {
-        b->setBounds (toolbar.removeFromLeft (b == &addButton ? 110 : b == &returnButton ? 34 : b == &recordButton ? 44 : 56));
+        b->setBounds (toolbar.removeFromLeft (b == &addButton ? 104 : b == &returnButton ? 34 : b == &recordButton ? 44 : 52));
         toolbar.removeFromLeft (4);
     }
 
-    toolbar.removeFromLeft (10);
+    toolbar.removeFromLeft (8);
     tempo.setBounds (toolbar.removeFromLeft (130));
     toolbar.removeFromLeft (6);
     timeSignature.setBounds (toolbar.removeFromLeft (64));
     toolbar.removeFromLeft (8);
     positionDisplay.setBounds (toolbar.removeFromLeft (80));
-    toolbar.removeFromLeft (10);
+    toolbar.removeFromLeft (8);
     loopButton.setBounds (toolbar.removeFromLeft (62));
-    metronomeButton.setBounds (toolbar.removeFromLeft (100));
+    metronomeButton.setBounds (toolbar.removeFromLeft (92));
 
-    settingsButton.setBounds (toolbar.removeFromRight (64));
+    shortcutsButton.setBounds (toolbar.removeFromRight (28));
+    toolbar.removeFromRight (4);
+    settingsButton.setBounds (toolbar.removeFromRight (58));
     toolbar.removeFromRight (8);
-    consoleButton.setBounds (toolbar.removeFromRight (90));
-    keysButton.setBounds (toolbar.removeFromRight (64));
+    consoleButton.setBounds (toolbar.removeFromRight (82));
+    keysButton.setBounds (toolbar.removeFromRight (58));
     r.removeFromTop (10);
 
     if (keyboard.isVisible())
