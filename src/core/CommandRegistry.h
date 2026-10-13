@@ -53,7 +53,8 @@ private:
     std::vector<CommandSpec> specs;
 };
 
-/** Registers create_track, route, add_midi_clip, play, stop and get_state. */
+/** Registers create_track, route, rename_track, set_track_colour, delete_track, set_instrument,
+    add_midi_clip, play, stop and get_state. */
 void registerProjectCommands (CommandRegistry&);
 
 //==============================================================================
