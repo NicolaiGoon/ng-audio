@@ -13,11 +13,15 @@ namespace ng
     mixer for the piano roll until it is closed.
     Every button here calls the command layer rather than touching the Edit directly,
     so the UI does exactly what an AI client or macro could do.
+
+    The shortcuts that work everywhere live in keyPressed(); the timeline and piano roll
+    handle their own and pass on the rest. The ? button lists them all.
 */
 class MainComponent  : public juce::Component,
                        private juce::Timer,
                        private juce::AsyncUpdater,
-                       private juce::MidiKeyboardState::Listener
+                       private juce::MidiKeyboardState::Listener,
+                       private juce::FocusChangeListener
 {
 public:
     explicit MainComponent (te::Engine&);
@@ -38,6 +42,9 @@ private:
     void handleNoteOff (juce::MidiKeyboardState*, int midiChannel, int note, float velocity) override;
     void toggleRecording();
     void showKeyboard (bool);
+    void showShortcuts();
+    void globalFocusChanged (juce::Component*) override;
+    void restoreFocus();
 
     void addInstrument();
     void loadStarterProject();
@@ -65,7 +72,7 @@ private:
 
     juce::TextButton newButton { "New" }, openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save as" },
                      addButton { "Add instrument" }, playButton { "Play" }, returnButton { "|<" }, recordButton { "Rec" },
-                     undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio" },
+                     undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio" }, shortcutsButton { "?" },
                      runButton { "Run" }, closePianoRollButton { "Close" },
                      quantizeButton { "Quantize" };
     juce::ToggleButton consoleButton { "Console" }, keysButton { "Keys" };
@@ -95,6 +102,9 @@ private:
     PianoRoll pianoRoll { session, dispatcher };
     juce::TooltipWindow tooltips { this };
     std::unique_ptr<juce::FileChooser> fileChooser;
+
+    /** The panel keys went to last (timeline, piano roll or keyboard), for restoreFocus(). */
+    juce::Component::SafePointer<juce::Component> lastFocused;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };
