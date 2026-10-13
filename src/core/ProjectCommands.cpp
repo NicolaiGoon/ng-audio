@@ -841,6 +841,102 @@ namespace
         return CommandResult::success (result);
     }
 
+    //==============================================================================
+    juce::var notesToVar (const juce::Array<ClipNote>& notes)
+    {
+        juce::Array<juce::var> list;
+
+        for (auto& n : notes)
+        {
+            auto obj = new juce::DynamicObject();
+            obj->setProperty ("pitch", n.pitch);
+            obj->setProperty ("start", rounded (n.start));
+            obj->setProperty ("length", rounded (n.length));
+            obj->setProperty ("velocity", n.velocity);
+            list.add (juce::var (obj));
+        }
+
+        return list;
+    }
+
+    /** Looks up the "clip" param as a MIDI clip whose notes can be edited, or explains what's wrong. */
+    std::optional<CommandResult> requireNoteClip (Session& session, const juce::String& command,
+                                                  const juce::var& p, te::MidiClip*& midi)
+    {
+        FoundClip found;
+
+        if (auto error = requireClip (session, command, p, found))
+            return error;
+
+        midi = dynamic_cast<te::MidiClip*> (found.clip);
+
+        if (midi == nullptr)
+            return CommandResult::failure (command + ": that clip has no notes to edit");
+
+        return std::nullopt;
+    }
+
+    CommandResult getNotes (Session& session, const juce::var& p)
+    {
+        te::MidiClip* midi = nullptr;
+
+        if (auto error = requireNoteClip (session, "get_notes", p, midi))
+            return *error;
+
+        auto result = describeClip (session, *midi);
+        result.getDynamicObject()->setProperty ("pattern", Session::isPatternClip (*midi));
+        result.getDynamicObject()->setProperty ("notes", notesToVar (Session::getNotes (*midi)));
+        return CommandResult::success (result);
+    }
+
+    CommandResult setNotes (Session& session, const juce::var& p)
+    {
+        te::MidiClip* midi = nullptr;
+
+        if (auto error = requireNoteClip (session, "set_notes", p, midi))
+            return *error;
+
+        if (Session::isPatternClip (*midi))
+            return CommandResult::failure ("set_notes: a step pattern's notes follow its steps; change them with set_steps");
+
+        auto list = p["notes"];
+
+        if (! list.isArray())
+            return CommandResult::failure ("set_notes: give notes as an array of {pitch, start, length, velocity} (it can be empty)");
+
+        // Notes are timed from the clip's start; Tracktion times them from where its content starts.
+        auto offset = midi->getOffsetInBeats().inBeats();
+        juce::Array<ClipNote> notes;
+
+        for (auto& n : *list.getArray())
+        {
+            ClipNote note;
+            note.pitch = static_cast<int> (n.getProperty ("pitch", -1));
+            note.start = static_cast<double> (n.getProperty ("start", 0.0));
+            note.length = static_cast<double> (n.getProperty ("length", 1.0));
+            note.velocity = static_cast<int> (n.getProperty ("velocity", 100));
+
+            if (! n.isObject() || ! juce::isPositiveAndBelow (note.pitch, 128) || ! (note.length >= minClipBeats / 4.0)
+                  || ! (note.start + offset >= -1.0e-9) || ! juce::isPositiveAndBelow (note.velocity - 1, 127))
+                return CommandResult::failure ("set_notes: invalid note " + juce::JSON::toString (n, true)
+                                                 + " (pitch 0-127, length above 0, velocity 1-127, not before the clip's content)");
+
+            notes.add (note);
+        }
+
+        auto* um = &session.getUndoManager();
+        auto& sequence = midi->getSequence();
+        sequence.clear (um);
+
+        for (auto& n : notes)
+            sequence.addNote (n.pitch, te::BeatPosition::fromBeats (std::max (0.0, n.start + offset)),
+                              te::BeatDuration::fromBeats (n.length), n.velocity, 0, um);
+
+        auto result = describeClip (session, *midi);
+        result.getDynamicObject()->setProperty ("notes", notesToVar (Session::getNotes (*midi)));
+        return CommandResult::success (result);
+    }
+
     CommandResult getState (Session& session, const juce::var&)
     {
         return CommandResult::success (session.toVar());
@@ -1022,6 +1118,19 @@ void registerProjectCommands (CommandRegistry& registry)
                     "Deletes a clip.",
                     schema ({ { "clip", prop ("string", "Clip id, from get_state") } }, { "clip" }),
                     true, deleteClip });
+
+    registry.add ({ "get_notes",
+                    "Lists a MIDI clip's notes. Start and length are in beats from the clip's start.",
+                    schema ({ { "clip", prop ("string", "Clip id, from get_state") } }, { "clip" }),
+                    false, getNotes });
+
+    registry.add ({ "set_notes",
+                    "Replaces all of a MIDI clip's notes, e.g. after drawing in the piano roll. Start and length are "
+                    "in beats from the clip's start; notes past the clip's end are kept but don't play.",
+                    schema ({ { "clip", prop ("string", "Clip id, from get_state") },
+                              { "notes", prop ("array", "Notes as {pitch, start, length, velocity}; velocity defaults to 100") } },
+                            { "clip", "notes" }),
+                    true, setNotes });
 
     registry.add ({ "set_tempo",
                     "Sets the project tempo. Clips keep their positions in beats.",
