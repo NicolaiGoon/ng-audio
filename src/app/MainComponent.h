@@ -46,6 +46,7 @@ private:
     void rebuildRows();
     void updateButtons();
     void updatePlayStep();
+    void updatePositionDisplay();
     void showAudioSettings();
     void setUpTransportControls();
     void updateTransportControls (const juce::var& state);
@@ -58,15 +59,16 @@ private:
     CommandDispatcher dispatcher { session, registry };
 
     juce::TextButton newButton { "New" }, openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save as" },
-                     addButton { "Add instrument" }, playButton { "Play" },
-                     undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio settings" },
+                     addButton { "Add instrument" }, playButton { "Play" }, returnButton { "|<" },
+                     undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio" },
                      runButton { "Run" }, closePianoRollButton { "Close" },
                      quantizeButton { "Quantize" };
     juce::ToggleButton consoleButton { "Console" };
 
     juce::Slider tempo;
     juce::ComboBox timeSignature, snapBox;
-    juce::ToggleButton loopButton { "Loop" };
+    juce::ToggleButton loopButton { "Loop" }, metronomeButton { "Metronome" };
+    juce::Label positionDisplay;
 
     juce::Label timelineHint { {}, "Drag clips to move them and their edges to trim. Double-click empty space for a new clip, "
                                    "or a clip to edit its notes. Del deletes, Ctrl+D duplicates, S splits." },

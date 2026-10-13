@@ -62,6 +62,7 @@ void TimelineView::clear()
     lanes.clear();
     selectedClip = {};
     drag = {};
+    rulerDrag = RulerDrag::none;
     repaint();
 }
 
@@ -207,12 +208,19 @@ void TimelineView::paintRuler (juce::Graphics& g)
     g.setColour (headerBackground);
     g.fillRect (ruler);
 
-    if (looping && loopBeats.getLength() > 0.0)
+    auto loop = getShownLoop();
+
+    if (loop.getLength() > 0.0)
     {
-        auto loopArea = juce::Rectangle<float> ((float) beatToX (loopBeats.getStart()), (float) ruler.getY() + 3.0f,
-                                                (float) (loopBeats.getLength() * pixelsPerBeat), (float) ruler.getHeight() - 6.0f);
-        g.setColour (juce::Colour (0xff4a90e2).withAlpha (0.35f));
+        // Dimmed while looping is off, so the region can still be seen and set up.
+        auto loopArea = juce::Rectangle<float> ((float) beatToX (loop.getStart()), (float) ruler.getY() + 3.0f,
+                                                (float) (loop.getLength() * pixelsPerBeat), (float) ruler.getHeight() - 6.0f);
+        auto on = looping || rulerDrag == RulerDrag::newLoop;
+        g.setColour (juce::Colour (0xff4a90e2).withAlpha (on ? 0.35f : 0.12f));
         g.fillRoundedRectangle (loopArea, 3.0f);
+        g.setColour (juce::Colour (0xff4a90e2).withAlpha (on ? 0.9f : 0.35f));
+        g.fillRect (loopArea.withWidth (2.0f));
+        g.fillRect (loopArea.withLeft (loopArea.getRight() - 2.0f));
     }
 
     auto& tempo = session.getEdit().tempoSequence;
@@ -441,6 +449,54 @@ void TimelineView::movePlayheadTo (float x)
     repaint();
 }
 
+juce::Range<double> TimelineView::getShownLoop() const
+{
+    auto dragging = rulerDrag == RulerDrag::loopStart || rulerDrag == RulerDrag::loopEnd || rulerDrag == RulerDrag::newLoop;
+    return dragging ? loopPreview : loopBeats;
+}
+
+TimelineView::RulerDrag TimelineView::rulerHitTest (float x) const
+{
+    // The loop's edges are handles; anywhere else in the ruler moves the playhead.
+    if (loopBeats.getLength() > 0.0)
+    {
+        auto start = (float) beatToX (loopBeats.getStart()), end = (float) beatToX (loopBeats.getEnd());
+        auto reach = std::min (6.0f, (end - start) / 3.0f);
+
+        if (std::abs (x - end) <= reach)
+            return RulerDrag::loopEnd;
+
+        if (std::abs (x - start) <= reach)
+            return RulerDrag::loopStart;
+    }
+
+    return RulerDrag::playhead;
+}
+
+void TimelineView::showRulerMenu (double beat)
+{
+    auto& tempo = session.getEdit().tempoSequence;
+    auto bar = tempo.toBarsAndBeats (tempo.toTime (te::BeatPosition::fromBeats (std::max (0.0, beat)))).bars;
+    auto barStart = tempo.toBeats (te::tempo::BarsAndBeats { bar, {} }).inBeats();
+    auto barEnd = tempo.toBeats (te::tempo::BarsAndBeats { bar + 1, {} }).inBeats();
+
+    juce::PopupMenu menu;
+    menu.addItem ("Loop bar " + juce::String (bar + 1), [this, barStart, barEnd]
+    {
+        dispatcher.execute ("set_loop", makeObject ({ { "enabled", true }, { "start_beat", barStart }, { "end_beat", barEnd } }));
+    });
+    menu.addItem ("Loop the whole project", [this]
+    {
+        dispatcher.execute ("set_loop", makeObject ({ { "enabled", true }, { "whole_project", true } }));
+    });
+    menu.addSeparator();
+    menu.addItem ("Looping", true, looping, [this]
+    {
+        dispatcher.execute ("set_loop", makeObject ({ { "enabled", ! looping } }));
+    });
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition());
+}
+
 int TimelineView::laneAt (float y) const
 {
     auto lanesArea = getLanesArea();
@@ -516,9 +572,25 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
 {
     grabKeyboardFocus();
 
+    rulerDrag = RulerDrag::none;
+
     if (getRulerArea().contains (e.getPosition()))
     {
-        movePlayheadTo (e.position.x);
+        auto beat = std::max (0.0, snap (xToBeat (e.position.x), e.mods));
+
+        if (e.mods.isPopupMenu())
+        {
+            showRulerMenu (xToBeat (e.position.x));
+            return;
+        }
+
+        rulerDrag = e.mods.isShiftDown() ? RulerDrag::newLoop : rulerHitTest (e.position.x);
+        loopPreview = rulerDrag == RulerDrag::newLoop ? juce::Range<double> (beat, beat) : loopBeats;
+        loopAnchor = beat;
+
+        if (rulerDrag == RulerDrag::playhead)
+            movePlayheadTo (e.position.x);
+
         return;
     }
 
@@ -551,9 +623,21 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
 
 void TimelineView::mouseDrag (const juce::MouseEvent& e)
 {
-    if (getRulerArea().contains (e.getMouseDownPosition()))
+    if (rulerDrag != RulerDrag::none)
     {
-        movePlayheadTo (std::max ((float) headerWidth, e.position.x));
+        auto beat = std::max (0.0, snap (xToBeat (std::max ((float) headerWidth, e.position.x)), e.mods));
+        auto shortest = 1.0 / 16.0;
+
+        switch (rulerDrag)
+        {
+            case RulerDrag::playhead:   movePlayheadTo (std::max ((float) headerWidth, e.position.x)); break;
+            case RulerDrag::loopStart:  loopPreview.setStart (std::min (beat, loopPreview.getEnd() - shortest)); break;
+            case RulerDrag::loopEnd:    loopPreview.setEnd (std::max (beat, loopPreview.getStart() + shortest)); break;
+            case RulerDrag::newLoop:    loopPreview = { std::min (loopAnchor, beat), std::max (loopAnchor, beat) }; break;
+            case RulerDrag::none:       break;
+        }
+
+        repaint();
         return;
     }
 
@@ -596,6 +680,26 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
 
 void TimelineView::mouseUp (const juce::MouseEvent&)
 {
+    auto finishedRulerDrag = std::exchange (rulerDrag, RulerDrag::none);
+
+    if (finishedRulerDrag == RulerDrag::loopStart || finishedRulerDrag == RulerDrag::loopEnd
+         || finishedRulerDrag == RulerDrag::newLoop)
+    {
+        // A new loop turns looping on; moving an edge leaves it as it was.
+        if (loopPreview.getLength() > 0.0 && loopPreview != loopBeats)
+        {
+            auto params = makeObject ({ { "start_beat", loopPreview.getStart() }, { "end_beat", loopPreview.getEnd() } });
+
+            if (finishedRulerDrag == RulerDrag::newLoop)
+                params.getDynamicObject()->setProperty ("enabled", true);
+
+            dispatcher.execute ("set_loop", params);
+        }
+
+        repaint();
+        return;
+    }
+
     auto finished = drag;
     drag = {};
 
@@ -630,6 +734,13 @@ void TimelineView::mouseUp (const juce::MouseEvent&)
 
 void TimelineView::mouseMove (const juce::MouseEvent& e)
 {
+    if (getRulerArea().contains (e.getPosition()))
+    {
+        auto onEdge = rulerHitTest (e.position.x) != RulerDrag::playhead;
+        setMouseCursor (onEdge ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+        return;
+    }
+
     switch (hitTestLanes (e.position).mode)
     {
         case DragMode::trimStart:
