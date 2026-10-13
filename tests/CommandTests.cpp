@@ -1521,6 +1521,133 @@ namespace
         CHECK (f.state()["strips"].size() == 2 && sends().size() == 1 && sends()[0]["bus_name"] == "Verb");
     }
 
+    void testMultiOutputInstrument (tracktion::Engine& engine)
+    {
+        std::cout << "a multi-output instrument gets a strip per output\n";
+        Fixture f (engine);
+        auto& known = engine.getPluginManager().knownPluginList;
+        known.clear();
+        CHECK (f.dispatcher.execute ("scan_plugins", obj ({ { "folders", juce::Array<juce::var> { NG_TEST_DRUMS_FOLDER,
+                                                                                                    NG_TEST_PLUGIN_FOLDER } } })).ok);
+
+        CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Kit" }, { "instrument", "Ng Test Drums" } })).ok);
+        CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" }, { "instrument", "Ng Test Synth" } })).ok);
+        f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Kit" }, { "length_beats", 4 },
+                                                      { "notes", juce::Array<juce::var> { note (36, 0, 4), note (38, 0, 4) } } }));
+
+        auto channel = [&] { return f.state()["channels"][0]; };
+        CHECK (static_cast<int> (channel()["outputs"]) == 4 && ! static_cast<bool> (channel()["multi_output"]));
+        // As one stereo output, only the first output (the kick) is heard.
+        auto mainOnly = renderRms (f);
+        CHECK (mainOnly > 0.01f);
+
+        auto setMulti = [&] (const char* name, bool on)
+        {
+            return f.dispatcher.execute ("set_multi_output", obj ({ { "channel", name }, { "enabled", on } }));
+        };
+
+        // Only a plugin with more than one stereo output can.
+        CHECK (! setMulti ("Lead", true).ok);
+        CHECK (! f.dispatcher.execute ("set_multi_output", obj ({ { "channel", "Kit" } })).ok);
+
+        auto r = setMulti ("Kit", true);
+        CHECK (r.ok && r.value["output_strips"].size() == 2);
+        CHECK (static_cast<bool> (channel()["multi_output"]) && channel()["instrument_name"] == "Ng Test Drums");
+
+        auto strips = f.state()["strips"];
+        auto findStrip = [&] (const juce::String& name)
+        {
+            juce::var found;
+            auto all = f.state()["strips"];
+
+            for (auto& s : *all.getArray())
+                if (s["name"] == name)
+                    found = s;
+
+            return found;
+        };
+
+        auto kitStrip = findStrip ("Kit");
+        auto out12 = findStrip ("Kit 1-2"), out34 = findStrip ("Kit 3-4");
+        CHECK (out12.isObject() && out34.isObject());
+        CHECK (out12["output_of"] == channel()["id"] && out12["output_pair"] == "1-2" && out34["output_pair"] == "3-4");
+        CHECK (out12["output"] == kitStrip["id"] && out34["output"] == kitStrip["id"]);
+        CHECK (out12["effects"].size() == 0);   // the rack instance isn't an effect
+
+        // Through the output strips both outputs are heard; each can be turned down on its own,
+        // and the channel's strip sums them.
+        auto split = renderRms (f);
+        std::cout << "       first output only RMS " << mainOnly << ", both through the output strips " << split << "\n";
+        CHECK (split > mainOnly * 1.3f);
+
+        auto fader = [&] (const char* strip, double db)
+        {
+            return f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", strip }, { "volume_db", db } })).ok;
+        };
+
+        CHECK (fader ("Kit 3-4", -100));
+        auto only12 = renderRms (f);
+        CHECK (fader ("Kit 3-4", 0) && fader ("Kit 1-2", -100));
+        auto only34 = renderRms (f);
+        CHECK (fader ("Kit 1-2", 0) && fader ("Kit", -100));
+        auto sumDown = renderRms (f);
+        CHECK (fader ("Kit", 0));
+        std::cout << "       outputs 1-2 alone " << only12 << ", 3-4 alone " << only34 << ", sum down " << sumDown << "\n";
+        CHECK (std::abs (only12 - mainOnly) < 0.002f && std::abs (only34 - mainOnly) < 0.002f && sumDown < 0.0001f);
+
+        // Effects go after the output's source, and the instrument can't be swapped while split.
+        CHECK (f.dispatcher.execute ("add_effect", obj ({ { "strip", "Kit 3-4" }, { "effect", "eq" }, { "index", 0 } })).ok);
+        CHECK (dynamic_cast<tracktion::RackInstance*> (f.session.findTrack ("Kit 3-4", ng::Session::Role::strip)->pluginList[0]) != nullptr);
+        CHECK (! f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Kit" }, { "instrument", "4osc" } })).ok);
+
+        // Saved and reopened, it's still split and still plays.
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (f.dispatcher.execute ("save_project", obj ({ { "path", path } })).ok);
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (static_cast<bool> (channel()["multi_output"]) && findStrip ("Kit 3-4").isObject());
+        CHECK (std::abs (renderRms (f) - split) < 0.002f);
+
+        // Turning it off removes the output strips and plays as one stereo output again; undo
+        // brings the split back.
+        auto numStrips = f.state()["strips"].size();
+        CHECK (setMulti ("Kit", false).ok);
+        CHECK (! static_cast<bool> (channel()["multi_output"]) && f.state()["strips"].size() == numStrips - 2);
+        CHECK (channel()["instrument_name"] == "Ng Test Drums");
+        CHECK (std::abs (renderRms (f) - mainOnly) < 0.002f);
+        f.dispatcher.undo();
+        CHECK (static_cast<bool> (channel()["multi_output"]) && f.state()["strips"].size() == numStrips);
+        auto undone = renderRms (f);
+        std::cout << "       after undoing the switch back, RMS " << undone << "\n";
+        CHECK (std::abs (undone - split) < 0.002f);
+
+        f.dispatcher.redo();
+        CHECK (! static_cast<bool> (channel()["multi_output"]));
+        f.dispatcher.undo();
+        CHECK (std::abs (renderRms (f) - split) < 0.002f);
+
+        // Deleting the channel takes its strips with it; undo brings them back, still playing.
+        CHECK (f.dispatcher.execute ("delete_track", obj ({ { "track", "Kit" } })).ok);
+        CHECK (f.state()["strips"].size() == 1);
+        f.dispatcher.undo();
+        CHECK (static_cast<bool> (channel()["multi_output"]) && f.state()["strips"].size() == numStrips);
+        CHECK (std::abs (renderRms (f) - split) < 0.002f);
+
+        // Undoing the split itself, and redoing it, works the same way.
+        CHECK (setMulti ("Kit", false).ok && setMulti ("Kit", true).ok);
+        f.dispatcher.undo();
+        CHECK (! static_cast<bool> (channel()["multi_output"]) && std::abs (renderRms (f) - mainOnly) < 0.002f);
+        f.dispatcher.redo();
+        CHECK (static_cast<bool> (channel()["multi_output"]) && std::abs (renderRms (f) - split) < 0.002f);
+
+        // A project with racks nothing uses any more drops them when it opens.
+        CHECK (setMulti ("Kit", false).ok);
+        CHECK (f.dispatcher.execute ("save_project", obj ({ { "path", path } })).ok);
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (f.session.getEdit().getRackList().size() == 0 && std::abs (renderRms (f) - mainOnly) < 0.002f);
+        known.clear();
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -1605,6 +1732,7 @@ int main()
         testPluginInstrument (engine);
         testEffects (engine);
         testBusesAndSends (engine);
+        testMultiOutputInstrument (engine);
         testRendersAudio (engine);
     }
 

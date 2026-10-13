@@ -292,6 +292,10 @@ namespace
 
         juce::Array<te::AudioTrack*> toDelete { track };
 
+        // A multi-output channel takes its output strips with it.
+        if (Session::getRole (*track) == Session::Role::channel)
+            toDelete.addArray (session.getOutputStrips (*track));
+
         // A channel takes its own strip with it, unless other channels still feed that strip.
         if (Session::getRole (*track) == Session::Role::channel)
         {
@@ -360,6 +364,10 @@ namespace
 
         if (channel == nullptr)
             return CommandResult::failure ("set_instrument: no channel called '" + ref + "'");
+
+        if (Session::getMultiOutputRack (*channel) != nullptr)
+            return CommandResult::failure ("set_instrument: '" + channel->getName() + "' has multiple outputs on; "
+                                           "turn them off with set_multi_output first");
 
         auto choice = findInstrument (session, "set_instrument", instrument);
 
@@ -1476,6 +1484,7 @@ void registerProjectCommands (CommandRegistry& registry)
     registerPluginCommands (registry);
     registerEffectCommands (registry);
     registerBusCommands (registry);
+    registerOutputCommands (registry);
 }
 
 } // namespace ng

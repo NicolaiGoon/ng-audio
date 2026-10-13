@@ -44,7 +44,8 @@ add_library(ng_core STATIC
     src/core/ProjectCommands.cpp
     src/core/PluginCommands.cpp
     src/core/EffectCommands.cpp
-    src/core/BusCommands.cpp)
+    src/core/BusCommands.cpp
+    src/core/OutputCommands.cpp)
 
 target_include_directories(ng_core PUBLIC src)
 
@@ -146,14 +147,31 @@ if (BUILD_TESTING)
                                                  JUCE_DISPLAY_SPLASH_SCREEN=0)
     target_link_libraries(NgTestGain PRIVATE juce::juce_audio_utils juce::juce_recommended_config_flags)
 
+    # And a tiny two-output VST3 instrument, for multi-output instruments.
+    juce_add_plugin(NgTestDrums
+        PRODUCT_NAME "Ng Test Drums"
+        COMPANY_NAME "Ng Audio"
+        BUNDLE_ID "audio.ng.testdrums"
+        PLUGIN_MANUFACTURER_CODE NgAu
+        PLUGIN_CODE NgTd
+        IS_SYNTH TRUE
+        NEEDS_MIDI_INPUT TRUE
+        FORMATS VST3
+        VST3_AUTO_MANIFEST FALSE)
+    target_sources(NgTestDrums PRIVATE tests/TestDrums/TestDrums.cpp)
+    target_compile_definitions(NgTestDrums PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
+                                                  JUCE_DISPLAY_SPLASH_SCREEN=0)
+    target_link_libraries(NgTestDrums PRIVATE juce::juce_audio_utils juce::juce_recommended_config_flags)
+
     juce_add_console_app(NgDawTests PRODUCT_NAME "NgDawTests")
     target_sources(NgDawTests PRIVATE tests/CommandTests.cpp)
     target_link_libraries(NgDawTests PRIVATE ng_core)
-    add_dependencies(NgDawTests NgTestSynth_VST3 NgTestGain_VST3)
+    add_dependencies(NgDawTests NgTestSynth_VST3 NgTestGain_VST3 NgTestDrums_VST3)
 
-    # The folders holding the built Ng Test Synth.vst3 and Ng Test Gain.vst3, for the tests to scan.
+    # The folders holding the built test plugins, for the tests to scan.
     target_compile_definitions(NgDawTests PRIVATE
         NG_TEST_PLUGIN_FOLDER="${CMAKE_CURRENT_BINARY_DIR}/NgTestSynth_artefacts/$<CONFIG>/VST3"
-        NG_TEST_EFFECT_FOLDER="${CMAKE_CURRENT_BINARY_DIR}/NgTestGain_artefacts/$<CONFIG>/VST3")
+        NG_TEST_EFFECT_FOLDER="${CMAKE_CURRENT_BINARY_DIR}/NgTestGain_artefacts/$<CONFIG>/VST3"
+        NG_TEST_DRUMS_FOLDER="${CMAKE_CURRENT_BINARY_DIR}/NgTestDrums_artefacts/$<CONFIG>/VST3")
     add_test(NAME command_layer COMMAND NgDawTests)
 endif()
