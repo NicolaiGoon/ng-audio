@@ -17,6 +17,10 @@ and every action available to AI tools through one command layer.
   Ctrl+Shift+S) work with `.ngdaw` files, which hold the Tracktion Edit as XML. The title bar
   shows the project name with a `*` while there are unsaved changes, and New, Open and closing
   the app ask whether to save them first.
+- **A timeline.** One lane per channel shows its clips (with a small picture of their notes)
+  against a bar ruler, with the loop region and the playhead. Click or drag in the ruler to
+  move the playhead. Ctrl + mouse wheel zooms, Shift + wheel scrolls through time, and the view
+  follows the playhead while playing.
 - **A step sequencer.** Each channel has a row of 16 steps (16th notes) under its name; click a
   step to turn it on or off. The step under the playhead is outlined while playing.
 - **A transport** with Play, tempo (type it, click the arrows or drag), time signature and a
@@ -42,12 +46,12 @@ and every action available to AI tools through one command layer.
   | `set_loop` | Loop on/off and the loop region in beats (default: the whole project, in whole bars) |
   | `set_steps` | Sets or toggles a channel's step pattern (`steps`, `step`, `length`, `pitch`) |
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
-  | `play` / `stop` | Transport |
+  | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
-  | `get_state` | The whole project as JSON, so an AI can "see" the session |
+  | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
 
   Each editing command is one undo step, a batch of commands is one undo step, and a failing command
-  or batch is rolled back. The command console at the bottom of the window takes the same JSON
+  or batch is rolled back. The command console (tick *Console* in the toolbar) takes the same JSON
   an MCP server will send, for example:
 
   ```json
@@ -64,8 +68,9 @@ src/core/Session.*            the open project: Tracktion Edit + channel/strip m
 src/core/CommandRegistry.*    command specs (name, description, JSON schema, handler)
 src/core/CommandDispatcher.*  runs commands, batches, JSON requests, undo/redo
 src/core/ProjectCommands.cpp  create_track, route, set_steps, add_midi_clip, play, stop, projects, get_state
-src/app/                      the JUCE window (channel rack, mixer, transport, console)
+src/app/                      the JUCE window (timeline, channel rack, mixer, transport, console)
 src/app/MixerView.*           mixer strips: fader, pan, mute/solo, meters, master
+src/app/TimelineView.*        the arrangement timeline: lanes, clips, ruler, playhead, zoom
 tests/CommandTests.cpp        headless tests, including an offline render that checks for sound
 ```
 

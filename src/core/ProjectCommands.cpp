@@ -605,6 +605,23 @@ namespace
         return CommandResult::success (juce::var (obj));
     }
 
+    CommandResult setPosition (Session& session, const juce::var& p)
+    {
+        if (! p.hasProperty ("beat"))
+            return CommandResult::failure ("set_position: give the beat to move the playhead to");
+
+        auto beat = static_cast<double> (p["beat"]);
+
+        if (! (beat >= 0.0 && beat < 100000.0))
+            return CommandResult::failure ("set_position: beat must be 0 or more");
+
+        auto& edit = session.getEdit();
+        edit.getTransport().setPosition (edit.tempoSequence.toTime (te::BeatPosition::fromBeats (beat)));
+        auto result = new juce::DynamicObject();
+        result->setProperty ("beat", beat);
+        return CommandResult::success (juce::var (result));
+    }
+
     CommandResult stop (Session& session, const juce::var&)
     {
         session.getEdit().getTransport().stop (false, false);
@@ -783,6 +800,10 @@ void registerProjectCommands (CommandRegistry& registry)
                     false, play });
 
     registry.add ({ "stop", "Stops playback.", schema ({}), false, stop });
+
+    registry.add ({ "set_position", "Moves the playhead. Like play and stop, this isn't an undo step.",
+                    schema ({ { "beat", prop ("number", "Where to move the playhead, in beats from the start") } }, { "beat" }),
+                    false, setPosition });
 
     registry.add ({ "new_project",
                     "Closes the open project and starts an empty one. Refuses if there are unsaved changes, "

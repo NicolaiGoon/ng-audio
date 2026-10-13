@@ -596,12 +596,12 @@ namespace
         f.dispatcher.execute ("create_track", obj ({ { "name", "Kick" } }));
         auto s = f.state();
         CHECK (s["channels"][0]["pattern"]["steps"] == "................");
-        CHECK (static_cast<int> (s["channels"][0]["clips"]) == 0);
+        CHECK (s["channels"][0]["clips"].size() == 0);
 
         CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "steps", "x...x...x...x..." } })).ok);
         s = f.state();
         CHECK (s["channels"][0]["pattern"]["steps"] == "x...x...x...x...");
-        CHECK (static_cast<int> (s["channels"][0]["clips"]) == 1);
+        CHECK (s["channels"][0]["clips"].size() == 1);
         CHECK (patternNotes (f, "Kick") == 4);
         CHECK (near (s["transport"]["loop_end_beat"], 4.0));   // one bar of 16ths
 
@@ -610,7 +610,7 @@ namespace
         CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "step", 4 } })).ok);   // toggles off
         s = f.state();
         CHECK (s["channels"][0]["pattern"]["steps"] == "x.x.....x...x...");
-        CHECK (static_cast<int> (s["channels"][0]["clips"]) == 1);
+        CHECK (s["channels"][0]["clips"].size() == 1);
         CHECK (patternNotes (f, "Kick") == 4);
 
         // Each change is one undo step.
@@ -629,7 +629,7 @@ namespace
 
         // All steps off removes the clip.
         CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "steps", "........" } })).ok);
-        CHECK (static_cast<int> (f.state()["channels"][0]["clips"]) == 0);
+        CHECK (f.state()["channels"][0]["clips"].size() == 0);
 
         CHECK (! f.dispatcher.execute ("set_steps", obj ({ { "channel", "Nobody" }, { "steps", "x..." } })).ok);
         CHECK (! f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "steps", "x?x?" } })).ok);
@@ -769,6 +769,38 @@ namespace
         }
     }
 
+    void testClipsAndPlayheadInState (tracktion::Engine& engine)
+    {
+        std::cout << "get_state lists clips in beats and set_position moves the playhead\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } }));
+        f.dispatcher.execute ("set_steps", obj ({ { "channel", "Lead" }, { "steps", "x...x..." } }));
+        f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "start_beat", 8 }, { "length_beats", 6 },
+                                                       { "notes", juce::Array<juce::var> { note (60, 0, 1), note (64, 1, 1) } } }));
+        f.dispatcher.execute ("set_tempo", obj ({ { "bpm", 90 } }));   // clips stay put in beats
+
+        auto clips = f.state()["channels"][0]["clips"];
+        CHECK (clips.size() == 2);
+        CHECK (clips[0]["pattern"] == juce::var (true));
+        CHECK (near (clips[0]["start_beat"], 0.0));
+        CHECK (near (clips[0]["length_beats"], 2.0));
+        CHECK (static_cast<int> (clips[0]["notes"]) == 2);
+        CHECK (clips[1]["pattern"] == juce::var (false));
+        CHECK (near (clips[1]["start_beat"], 8.0));
+        CHECK (near (clips[1]["length_beats"], 6.0));
+        CHECK (static_cast<int> (clips[1]["notes"]) == 2);
+        CHECK (clips[1]["id"].toString().isNotEmpty());
+
+        CHECK (f.dispatcher.execute ("set_position", obj ({ { "beat", 6 } })).ok);
+        auto transport = f.state()["transport"];
+        CHECK (near (transport["position_beats"], 6.0));
+        CHECK (near (transport["position_seconds"], 4.0));   // 6 beats at 90 BPM
+        CHECK (! f.dispatcher.canRedo());
+        CHECK (! f.dispatcher.execute ("set_position", obj ({ { "beat", -1 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_position").ok);
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -843,6 +875,7 @@ int main()
         testStepSequencer (engine);
         testPatternRenders (engine);
         testSaveAndOpen (engine);
+        testClipsAndPlayheadInState (engine);
         testRendersAudio (engine);
     }
 

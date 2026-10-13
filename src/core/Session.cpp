@@ -256,6 +256,11 @@ juce::String Session::getSteps (const te::AudioTrack& channel)
     return steps.isEmpty() ? juce::String::repeatedString (".", 16) : steps;
 }
 
+bool Session::isPatternClip (const te::Clip& clip)
+{
+    return clip.state["ngPattern"];
+}
+
 int Session::getStepPitch (const te::AudioTrack& channel)
 {
     return channel.state.getProperty ("ngStepPitch", 60);
@@ -466,7 +471,29 @@ juce::var Session::toVar() const
         pattern->setProperty ("pitch", getStepPitch (*c));
         obj->setProperty ("pattern", juce::var (pattern));
 
-        obj->setProperty ("clips", c->getClips().size());
+        juce::Array<juce::var> clips;
+        auto& tempo = edit->tempoSequence;
+
+        for (auto clip : c->getClips())
+        {
+            auto pos = clip->getPosition();
+            auto startBeat = tempo.toBeats (pos.getStart()).inBeats();
+            auto endBeat = tempo.toBeats (pos.getEnd()).inBeats();
+
+            auto clipObj = new juce::DynamicObject();
+            clipObj->setProperty ("id", clip->itemID.toString());
+            clipObj->setProperty ("name", clip->getName());
+            clipObj->setProperty ("start_beat", std::round (startBeat * 1.0e6) / 1.0e6);
+            clipObj->setProperty ("length_beats", std::round ((endBeat - startBeat) * 1.0e6) / 1.0e6);
+            clipObj->setProperty ("pattern", isPatternClip (*clip));
+
+            if (auto midi = dynamic_cast<te::MidiClip*> (clip))
+                clipObj->setProperty ("notes", midi->getSequence().getNumNotes());
+
+            clips.add (juce::var (clipObj));
+        }
+
+        obj->setProperty ("clips", clips);
         channels.add (juce::var (obj));
     }
 
@@ -507,6 +534,7 @@ juce::var Session::toVar() const
     auto transportObj = new juce::DynamicObject();
     transportObj->setProperty ("playing", transport.isPlaying());
     transportObj->setProperty ("position_seconds", transport.getPosition().inSeconds());
+    transportObj->setProperty ("position_beats", std::round (edit->tempoSequence.toBeats (transport.getPosition()).inBeats() * 1.0e6) / 1.0e6);
     transportObj->setProperty ("looping", transport.looping.get());
 
     auto loopBeats = getLoopBeats();
