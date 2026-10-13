@@ -29,6 +29,7 @@ private:
     void runConsoleCommand();
     void rebuildRows();
     void updateButtons();
+    void updatePlayStep();
     void showAudioSettings();
     void setUpTransportControls();
     void updateTransportControls (const juce::var& state);
@@ -52,6 +53,7 @@ private:
 
     juce::OwnedArray<juce::Component> channelRows;
     juce::String channelRackKey;
+    int playStep = -1;
     MixerView mixer { session, dispatcher };
     juce::TooltipWindow tooltips { this };
 

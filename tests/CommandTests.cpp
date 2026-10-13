@@ -52,6 +52,10 @@ namespace
     float renderRms (Fixture& f)
     {
         auto& edit = f.session.getEdit();
+
+        if (edit.getLength() <= tracktion::TimeDuration())
+            return 0.0f;   // nothing to render
+
         juce::TemporaryFile out (".wav");
 
         tracktion::Renderer::Parameters r (edit);
@@ -548,6 +552,84 @@ namespace
         CHECK (! f.dispatcher.execute ("set_loop", obj ({ { "start_beat", -1 }, { "end_beat", 2 } })).ok);
     }
 
+    int patternNotes (Fixture& f, const juce::String& channel)
+    {
+        auto t = f.session.findTrack (channel, ng::Session::Role::channel);
+        int notes = 0;
+
+        for (auto c : t->getClips())
+            if (auto mc = dynamic_cast<tracktion::MidiClip*> (c))
+                notes += mc->getSequence().getNotes().size();
+
+        return notes;
+    }
+
+    void testStepSequencer (tracktion::Engine& engine)
+    {
+        std::cout << "set_steps builds a channel's step pattern\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Kick" } }));
+        auto s = f.state();
+        CHECK (s["channels"][0]["pattern"]["steps"] == "................");
+        CHECK (static_cast<int> (s["channels"][0]["clips"]) == 0);
+
+        CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "steps", "x...x...x...x..." } })).ok);
+        s = f.state();
+        CHECK (s["channels"][0]["pattern"]["steps"] == "x...x...x...x...");
+        CHECK (static_cast<int> (s["channels"][0]["clips"]) == 1);
+        CHECK (patternNotes (f, "Kick") == 4);
+        CHECK (near (s["transport"]["loop_end_beat"], 4.0));   // one bar of 16ths
+
+        // One step at a time, as the rack's buttons do; each change rebuilds the one clip.
+        CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "step", 2 }, { "on", true } })).ok);
+        CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "step", 4 } })).ok);   // toggles off
+        s = f.state();
+        CHECK (s["channels"][0]["pattern"]["steps"] == "x.x.....x...x...");
+        CHECK (static_cast<int> (s["channels"][0]["clips"]) == 1);
+        CHECK (patternNotes (f, "Kick") == 4);
+
+        // Each change is one undo step.
+        CHECK (f.dispatcher.undo());
+        CHECK (f.state()["channels"][0]["pattern"]["steps"] == "x.x.x...x...x...");
+        CHECK (patternNotes (f, "Kick") == 5);
+
+        // Arrays, length and pitch.
+        CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "pitch", 36 },
+                                                          { "steps", juce::Array<juce::var> { true, false, true, false } } })).ok);
+        s = f.state();
+        CHECK (s["channels"][0]["pattern"]["steps"] == "x.x.");
+        CHECK (static_cast<int> (s["channels"][0]["pattern"]["pitch"]) == 36);
+        CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "length", 8 } })).ok);
+        CHECK (f.state()["channels"][0]["pattern"]["steps"] == "x.x.....");
+
+        // All steps off removes the clip.
+        CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "steps", "........" } })).ok);
+        CHECK (static_cast<int> (f.state()["channels"][0]["clips"]) == 0);
+
+        CHECK (! f.dispatcher.execute ("set_steps", obj ({ { "channel", "Nobody" }, { "steps", "x..." } })).ok);
+        CHECK (! f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "steps", "x?x?" } })).ok);
+        CHECK (! f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "step", 99 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "length", 0 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "pitch", 200 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "steps", juce::String::repeatedString ("x", 65) } })).ok);
+        CHECK (f.state()["channels"][0]["pattern"]["steps"] == "........");
+    }
+
+    void testPatternRenders (tracktion::Engine& engine)
+    {
+        std::cout << "a step pattern makes sound\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Synth" } }));
+        CHECK (renderRms (f) < 0.0001f);
+
+        f.dispatcher.execute ("set_steps", obj ({ { "channel", "Synth" }, { "steps", "x...x...x...x..." } }));
+        auto rms = renderRms (f);
+        std::cout << "       pattern RMS " << rms << "\n";
+        CHECK (rms > 0.001f);
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -618,6 +700,8 @@ int main()
         testMuteAndSoloSilence (engine);
         testTempoAndTimeSignature (engine);
         testLoopRegion (engine);
+        testStepSequencer (engine);
+        testPatternRenders (engine);
         testRendersAudio (engine);
     }
 

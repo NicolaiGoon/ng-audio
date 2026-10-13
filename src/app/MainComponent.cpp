@@ -6,12 +6,70 @@ namespace ng
 namespace
 {
     //==============================================================================
+    /** A channel's step pattern: one pad per 16th note, in groups of four. Click to toggle. */
+    class StepGrid  : public juce::Component,
+                      public juce::SettableTooltipClient
+    {
+    public:
+        StepGrid (CommandDispatcher& d, juce::String channelId, juce::String stepText,
+                  juce::Colour c, const int& currentStep)
+            : dispatcher (d), id (std::move (channelId)), steps (std::move (stepText)),
+              colour (c), playStep (currentStep)
+        {
+            setTooltip ("Click a step to turn it on or off");
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            for (int i = 0; i < steps.length(); ++i)
+            {
+                auto pad = getPadBounds (i).reduced (1.5f);
+                auto on = steps[i] == 'x';
+                auto offColour = (i / 4) % 2 == 0 ? juce::Colour (0xff3a3f46) : juce::Colour (0xff2e3238);
+
+                g.setColour (on ? colour : offColour);
+                g.fillRoundedRectangle (pad, 3.0f);
+
+                if (i == playStep)
+                {
+                    g.setColour (juce::Colours::white.withAlpha (on ? 0.8f : 0.45f));
+                    g.drawRoundedRectangle (pad, 3.0f, 2.0f);
+                }
+            }
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            for (int i = 0; i < steps.length(); ++i)
+                if (getPadBounds (i).contains (e.position))
+                    dispatcher.execute ("set_steps", makeObject ({ { "channel", id }, { "step", i } }));
+        }
+
+    private:
+        juce::Rectangle<float> getPadBounds (int i) const
+        {
+            // A small gap between each group of four steps.
+            constexpr float groupGap = 6.0f;
+            auto groups = (steps.length() + 3) / 4;
+            auto padWidth = juce::jmin (28.0f, ((float) getWidth() - groupGap * (float) (groups - 1)) / (float) juce::jmax (1, steps.length()));
+            auto x = (float) i * padWidth + (float) (i / 4) * groupGap;
+            return { x, 0.0f, padWidth, (float) getHeight() };
+        }
+
+        CommandDispatcher& dispatcher;
+        juce::String id, steps;
+        juce::Colour colour;
+        const int& playStep;
+    };
+
+    //==============================================================================
     /** One instrument in the channel rack: name, colour, instrument, which strip it feeds. */
     class ChannelRow  : public juce::Component
     {
     public:
-        ChannelRow (CommandDispatcher& d, const juce::var& channel, const juce::var& strips)
-            : dispatcher (d), id (channel["id"].toString()), swatch (d, id, colourFrom (channel["colour"]))
+        ChannelRow (CommandDispatcher& d, const juce::var& channel, const juce::var& strips, const int& playStep)
+            : dispatcher (d), id (channel["id"].toString()), swatch (d, id, colourFrom (channel["colour"])),
+              grid (d, id, channel["pattern"]["steps"].toString(), colourFrom (channel["colour"]), playStep)
         {
             setUpNameLabel (name, dispatcher, id, channel["name"].toString());
             setUpDeleteButton (deleteButton, dispatcher, id, "channel");
@@ -49,13 +107,15 @@ namespace
                 dispatcher.execute ("route", makeObject ({ { "channel", id }, { "strip", dest } }));
             };
 
-            for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &status, &instrument, &output, &deleteButton })
+            for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &status, &instrument, &output, &deleteButton, &grid })
                 addAndMakeVisible (c);
         }
 
         void resized() override
         {
             auto r = getLocalBounds().reduced (0, 4);
+            grid.setBounds (r.removeFromBottom (22).withTrimmedLeft (20));
+            r.removeFromBottom (4);
             swatch.setBounds (r.removeFromLeft (14));
             r.removeFromLeft (6);
             deleteButton.setBounds (r.removeFromRight (26));
@@ -75,6 +135,7 @@ namespace
         juce::Label name, status;
         juce::ComboBox instrument, output;
         juce::TextButton deleteButton;
+        StepGrid grid;
     };
 }
 
@@ -122,12 +183,16 @@ MainComponent::MainComponent (te::Engine& engine)
                                                              &consoleOutput })
         addAndMakeVisible (c);
 
-    // Start with one instrument so Play makes a sound straight away.
-    addInstrument();
+    // Start with one instrument and a four-on-the-floor pattern so Play makes a sound straight away.
+    dispatcher.executeBatch ("Starter pattern", juce::Array<juce::var> {
+        makeObject ({ { "command", "create_track" }, { "params", makeObject ({ { "name", "Synth 1" } }) } }),
+        makeObject ({ { "command", "set_steps" },
+                      { "params", makeObject ({ { "channel", "Synth 1" }, { "steps", "x...x...x...x..." } }) } })
+    });
     session.getUndoManager().clearUndoHistory();
 
     setSize (1180, 760);
-    startTimerHz (10);
+    startTimerHz (30);
 }
 
 MainComponent::~MainComponent()
@@ -138,25 +203,9 @@ MainComponent::~MainComponent()
 //==============================================================================
 void MainComponent::addInstrument()
 {
-    // One undo step: the channel, its linked strip and a short arpeggio.
+    // A new channel with its linked strip and an empty pattern, ready to fill in.
     auto name = "Synth " + juce::String (session.getChannels().size() + 1);
-
-    juce::Array<juce::var> notes;
-    const int pattern[] = { 0, 4, 7, 12, 7, 4, 0, -5 };
-    auto root = 57 + 2 * session.getChannels().size() % 12;
-
-    for (int i = 0; i < 8; ++i)
-        notes.add (makeObject ({ { "pitch", root + pattern[i] }, { "start", i * 0.5 },
-                                 { "length", 0.45 }, { "velocity", 100 } }));
-
-    juce::Array<juce::var> batch {
-        makeObject ({ { "command", "create_track" }, { "params", makeObject ({ { "name", name } }) } }),
-        makeObject ({ { "command", "add_midi_clip" },
-                      { "params", makeObject ({ { "channel", name }, { "length_beats", 4 },
-                                                { "notes", notes } }) } })
-    };
-
-    dispatcher.executeBatch ("Add " + name, batch);
+    dispatcher.execute ("create_track", makeObject ({ { "name", name } }));
 }
 
 void MainComponent::runConsoleCommand()
@@ -246,6 +295,29 @@ void MainComponent::handleAsyncUpdate()
 void MainComponent::timerCallback()
 {
     updateButtons();
+    updatePlayStep();
+}
+
+void MainComponent::updatePlayStep()
+{
+    // The 16th note under the playhead, or -1 when stopped. Each row checks it against its own length.
+    auto& edit = session.getEdit();
+    auto& transport = edit.getTransport();
+    int step = -1;
+
+    if (transport.isPlaying())
+    {
+        auto beats = edit.tempoSequence.toBeats (transport.getPosition()).inBeats();
+        step = (int) std::floor (beats / 0.25 + 1.0e-6);
+    }
+
+    if (step != playStep)
+    {
+        playStep = step;
+
+        for (auto* row : channelRows)
+            row->repaint();
+    }
 }
 
 void MainComponent::updateButtons()
@@ -272,7 +344,7 @@ void MainComponent::rebuildRows()
         channelRows.clear();
 
         for (auto& c : *state["channels"].getArray())
-            addAndMakeVisible (channelRows.add (new ChannelRow (dispatcher, c, strips)));
+            addAndMakeVisible (channelRows.add (new ChannelRow (dispatcher, c, strips, playStep)));
     }
 
     mixer.update (state);
@@ -321,7 +393,7 @@ void MainComponent::resized()
 
     channelsHeader.setBounds (left.removeFromTop (24));
     for (auto* row : channelRows)
-        row->setBounds (left.removeFromTop (34));
+        row->setBounds (left.removeFromTop (60));
 
     mixerHeader.setBounds (right.removeFromTop (24));
     mixer.setBounds (right);
