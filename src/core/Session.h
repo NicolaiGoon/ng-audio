@@ -121,8 +121,30 @@ public:
     static juce::String getSteps (const te::AudioTrack& channel);
     static int getStepPitch (const te::AudioTrack& channel);
 
-    /** A channel's instrument (the built-in 4OSC synth or a plugin), or nullptr. */
+    /** A channel's instrument (the built-in 4OSC synth or a plugin), or nullptr. With multiple
+        outputs on, the plugin lives in a rack (see getMultiOutputRack), and this finds it there. */
     static te::Plugin* getInstrument (const te::AudioTrack& channel);
+
+    //==============================================================================
+    // Multi-output instruments. The plugin moves into a Tracktion rack whose outputs are the
+    // plugin's. The channel keeps a rack instance that feeds it MIDI and plays nothing itself;
+    // each stereo output gets a strip of its own with a rack instance playing that output, and
+    // those strips all go to the channel's own strip, which sums them.
+
+    /** The rack instance on a channel playing its instrument with multiple outputs, or nullptr. */
+    static te::RackInstance* getMultiOutputRack (const te::AudioTrack& channel);
+
+    /** The strips a multi-output channel's outputs play on, first output first. */
+    juce::Array<te::AudioTrack*> getOutputStrips (const te::AudioTrack& channel) const;
+
+    /** For an output strip, the channel whose output it plays and which stereo pair (0 is
+        outputs 1-2); nullptr and -1 for other strips. */
+    te::AudioTrack* getOutputOf (const te::AudioTrack& strip) const;
+    static int getOutputPair (const te::AudioTrack& strip);
+    static void setOutputOf (te::AudioTrack& strip, const te::AudioTrack& channel, int pair);
+
+    /** How many audio outputs an instrument has (2 for a stereo one). */
+    static int getNumOutputs (te::Plugin& instrument);
 
     /** How get_state and set_instrument name an instrument: "4osc", "none", or a plugin's
         id as list_plugins gives it. */

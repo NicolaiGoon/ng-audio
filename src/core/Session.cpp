@@ -81,6 +81,24 @@ void Session::adoptEdit (std::unique_ptr<te::Edit> newEdit, const juce::File& ne
 
     forEachEffect ([] (te::Plugin& effect) { storeEffectSettings (effect); });
 
+    // Racks left behind by multi-output instruments that were turned off or deleted.
+    auto& racks = edit->getRackList();
+
+    auto plugins = te::getAllPlugins (*edit, false);
+
+    for (int i = racks.size(); --i >= 0;)
+    {
+        auto rack = racks.getRackType (i);
+        auto used = std::any_of (plugins.begin(), plugins.end(), [&] (te::Plugin* p)
+        {
+            auto ri = dynamic_cast<te::RackInstance*> (p);
+            return ri != nullptr && ri->type == rack;
+        });
+
+        if (rack != nullptr && ! used)
+            racks.removeRackType (rack);
+    }
+
     armedChannel = {};
     updateLoopRange();
     edit->getUndoManager().clearUndoHistory();
@@ -261,6 +279,9 @@ juce::String Session::getSteps (const te::AudioTrack& channel)
 
 te::Plugin* Session::getInstrument (const te::AudioTrack& channel)
 {
+    if (auto rack = getMultiOutputRack (channel))
+        return rack->type != nullptr ? rack->type->getPlugins().getFirst() : nullptr;
+
     // A plugin that failed to load can't say it's a synth, but a channel only holds its
     // instrument (and its volume and meter), so any external plugin is the instrument.
     for (auto p : channel.pluginList)
@@ -268,6 +289,61 @@ te::Plugin* Session::getInstrument (const te::AudioTrack& channel)
             return p;
 
     return nullptr;
+}
+
+namespace
+{
+    const juce::Identifier outputOfProp ("ngOutputOf"), outputPairProp ("ngOutputPair");
+}
+
+te::RackInstance* Session::getMultiOutputRack (const te::AudioTrack& channel)
+{
+    return channel.pluginList.findFirstPluginOfType<te::RackInstance>();
+}
+
+juce::Array<te::AudioTrack*> Session::getOutputStrips (const te::AudioTrack& channel) const
+{
+    juce::Array<te::AudioTrack*> strips;
+
+    for (auto s : getStrips())
+        if (getOutputOf (*s) == &channel)
+            strips.add (s);
+
+    std::sort (strips.begin(), strips.end(), [] (auto a, auto b) { return getOutputPair (*a) < getOutputPair (*b); });
+    return strips;
+}
+
+te::AudioTrack* Session::getOutputOf (const te::AudioTrack& strip) const
+{
+    auto id = te::EditItemID::fromProperty (strip.state, outputOfProp);
+
+    if (! id.isValid())
+        return nullptr;
+
+    for (auto c : getChannels())
+        if (c->itemID == id)
+            return c;
+
+    return nullptr;
+}
+
+int Session::getOutputPair (const te::AudioTrack& strip)
+{
+    return strip.state.getProperty (outputPairProp, -1);
+}
+
+void Session::setOutputOf (te::AudioTrack& strip, const te::AudioTrack& channel, int pair)
+{
+    auto* um = &channel.edit.getUndoManager();
+    strip.state.setProperty (outputOfProp, channel.itemID.toString(), um);
+    strip.state.setProperty (outputPairProp, pair, um);
+}
+
+int Session::getNumOutputs (te::Plugin& instrument)
+{
+    juce::StringArray ins, outs;
+    instrument.getChannelNames (&ins, &outs);
+    return outs.size();
 }
 
 juce::String Session::getInstrumentId (const te::Plugin* instrument)
@@ -329,7 +405,8 @@ juce::Array<te::Plugin*> Session::getEffects (const te::PluginList& list)
 
     for (auto p : list)
         if (! (dynamic_cast<te::VolumeAndPanPlugin*> (p) || dynamic_cast<te::LevelMeterPlugin*> (p)
-                 || dynamic_cast<te::AuxSendPlugin*> (p) || dynamic_cast<te::AuxReturnPlugin*> (p)))
+                 || dynamic_cast<te::AuxSendPlugin*> (p) || dynamic_cast<te::AuxReturnPlugin*> (p)
+                 || dynamic_cast<te::RackInstance*> (p)))
             effects.add (p);
 
     return effects;
@@ -841,6 +918,9 @@ juce::var Session::toVar() const
         // A plugin the project uses that isn't installed (or failed to load) on this computer.
         if (instrument != nullptr && instrument->isMissing())
             obj->setProperty ("instrument_missing", true);
+
+        obj->setProperty ("outputs", instrument != nullptr && ! instrument->isMissing() ? getNumOutputs (*instrument) : 2);
+        obj->setProperty ("multi_output", getMultiOutputRack (*c) != nullptr);
         auto pattern = new juce::DynamicObject();
         pattern->setProperty ("steps", getSteps (*c));
         pattern->setProperty ("pitch", getStepPitch (*c));
@@ -905,6 +985,13 @@ juce::var Session::toVar() const
 
         auto busNumber = getBusNumber (*s);
         obj->setProperty ("bus", busNumber >= 0);
+
+        if (auto channel = getOutputOf (*s))
+        {
+            auto pair = getOutputPair (*s);
+            obj->setProperty ("output_of", channel->itemID.toString());
+            obj->setProperty ("output_pair", juce::String (pair * 2 + 1) + "-" + juce::String (pair * 2 + 2));
+        }
 
         juce::Array<juce::var> sends;
 

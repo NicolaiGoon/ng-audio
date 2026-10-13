@@ -595,7 +595,7 @@ class MixerView::StripColumn  : public juce::Component
 public:
     StripColumn (Session& s, CommandDispatcher& d, const juce::var& strip, const juce::var& allStrips,
                  te::LevelMeterPlugin* meterPlugin)
-        : dispatcher (d), id (strip["id"].toString()), isMaster (id == "master"),
+        : dispatcher (d), id (strip["id"].toString()), isMaster (id == "master"), isOutput (strip.hasProperty ("output_of")),
           colour (isMaster ? juce::Colours::grey : colourFrom (strip["colour"])),
           swatch (d, id, colour), effects (s, d, id, strip["effects"]), meter (meterPlugin)
     {
@@ -610,7 +610,8 @@ public:
             setUpDeleteButton (deleteButton, dispatcher, id, "mixer strip");
 
             auto numInputs = strip["inputs"].size();
-            auto inputsText = juce::String (numInputs) + (numInputs == 1 ? " input" : " inputs");
+            auto inputsText = strip.hasProperty ("output_of") ? "Out " + strip["output_pair"].toString()
+                                                               : juce::String (numInputs) + (numInputs == 1 ? " input" : " inputs");
             inputs.setText (static_cast<bool> (strip["bus"]) ? "Bus" + (numInputs > 0 ? ", " + inputsText : juce::String())
                                                              : inputsText,
                             juce::dontSendNotification);
@@ -678,9 +679,13 @@ public:
     void paint (juce::Graphics& g) override
     {
         auto r = getLocalBounds().reduced (2, 0).toFloat();
-        g.setColour (colour.withAlpha (0.18f));
+        // An instrument's output strips sit a little lower and paler, under the strip they feed.
+        if (isOutput)
+            r.removeFromTop (6.0f);
+
+        g.setColour (colour.withAlpha (isOutput ? 0.11f : 0.18f));
         g.fillRoundedRectangle (r, 5.0f);
-        g.setColour (colour);
+        g.setColour (isOutput ? colour.withAlpha (0.6f) : colour);
         g.fillRoundedRectangle (r.removeFromTop (4.0f), 2.0f);
     }
 
@@ -702,14 +707,26 @@ public:
         pan.setBounds (r.removeFromTop (40).withSizeKeepingCentre (40, 40));
         r.removeFromTop (4);
 
-        effects.setBounds (r.removeFromTop (EffectSlots::preferredHeight));
-        r.removeFromTop (4);
+        // When the mixer is short (e.g. with the console open), the fader keeps its room and
+        // the sends, then the effects, are hidden until there's space again.
+        auto showEffects = getHeight() >= 300, showSends = getHeight() >= 360;
+        effects.setVisible (showEffects);
+
+        if (showEffects)
+        {
+            effects.setBounds (r.removeFromTop (EffectSlots::preferredHeight));
+            r.removeFromTop (4);
+        }
 
         // The master has no sends; leave the space so its fader lines up with the others.
         if (sends != nullptr)
+        {
+            sends->setVisible (showSends);
             sends->setBounds (r.getX(), r.getY(), r.getWidth(), SendSlots::preferredHeight);
+        }
 
-        r.removeFromTop (SendSlots::preferredHeight + 4);
+        if (showSends)
+            r.removeFromTop (SendSlots::preferredHeight + 4);
 
         if (! isMaster)
         {
@@ -750,7 +767,7 @@ private:
 
     CommandDispatcher& dispatcher;
     juce::String id;
-    bool isMaster;
+    bool isMaster, isOutput;
     juce::Colour colour;
 
     ColourSwatch swatch;
@@ -779,7 +796,29 @@ MixerView::~MixerView()
 void MixerView::update (const juce::var& state)
 {
     auto key = getStructureKey (state);
-    auto strips = state["strips"];
+
+    // A multi-output instrument's output strips go straight after the strip that sums them,
+    // like a folder.
+    juce::Array<juce::var> ordered;
+    auto all = state["strips"];
+
+    for (auto& strip : *all.getArray())
+    {
+        if (strip.hasProperty ("output_of"))
+            continue;
+
+        ordered.add (strip);
+
+        for (auto& output : *all.getArray())
+            if (output.hasProperty ("output_of") && output["output"] == strip["id"])
+                ordered.add (output);
+    }
+
+    for (auto& strip : *all.getArray())
+        if (! ordered.contains (strip))
+            ordered.add (strip);
+
+    juce::var strips (ordered);
 
     if (key == structureKey && columns.size() == strips.size() && masterColumn != nullptr)
     {
