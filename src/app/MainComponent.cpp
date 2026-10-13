@@ -141,6 +141,33 @@ namespace
                 dispatcher.execute ("show_plugin_window", makeObject ({ { "channel", id } }));
             };
 
+            // A plugin with more than one stereo output can give each output a strip.
+            auto multiOutput = static_cast<bool> (channel["multi_output"]);
+            hasOutputs = isPlugin && ! missing && static_cast<int> (channel["outputs"]) > 2;
+            outsButton.setClickingTogglesState (false);
+            outsButton.setToggleState (multiOutput, juce::dontSendNotification);
+            outsButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff3c6e8c));
+            outsButton.setTooltip (multiOutput ? "Each output has its own mixer strip; click to go back to one stereo output"
+                                               : "This plugin has " + channel["outputs"].toString()
+                                                   + " outputs: click to give each stereo output its own mixer strip");
+            outsButton.onClick = [this]
+            {
+                auto result = dispatcher.execute ("set_multi_output", makeObject ({ { "channel", id },
+                                                                                    { "enabled", ! outsButton.getToggleState() } }));
+
+                if (! result.ok)
+                    juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOk (juce::MessageBoxIconType::WarningIcon,
+                                                                                         "Multiple outputs", result.error, {}, this),
+                                                  nullptr);
+            };
+
+            if (multiOutput)
+                instrument.setTooltip ("Turn off Outs to change the instrument");
+
+            instrument.setEnabled (! multiOutput);
+            addChildComponent (outsButton);
+            outsButton.setVisible (hasOutputs || multiOutput);
+
             output.addItem ("Master", 1);
             int selected = 1;
 
@@ -179,7 +206,14 @@ namespace
             r.removeFromRight (4);
             editButton.setBounds (r.removeFromRight (40));
             r.removeFromRight (2);
-            instrument.setBounds (r.removeFromRight (150));
+
+            if (outsButton.isVisible())
+            {
+                outsButton.setBounds (r.removeFromRight (42));
+                r.removeFromRight (2);
+            }
+
+            instrument.setBounds (r.removeFromRight (outsButton.isVisible() ? 106 : 150));
             r.removeFromRight (4);
             armButton.setBounds (r.removeFromRight (26));
             status.setBounds (r.removeFromRight (64));
@@ -194,7 +228,9 @@ namespace
         juce::String currentInstrument;
         juce::Label name, status;
         juce::ComboBox instrument, output;
-        juce::TextButton deleteButton, armButton { juce::String::fromUTF8 ("\xe2\x97\x8f") }, editButton { "Edit" };
+        juce::TextButton deleteButton, armButton { juce::String::fromUTF8 ("\xe2\x97\x8f") }, editButton { "Edit" },
+                         outsButton { "Outs" };
+        bool hasOutputs = false;
         StepGrid grid;
     };
 
