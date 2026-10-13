@@ -46,6 +46,53 @@ namespace
         juce::var state()    { return dispatcher.execute ("get_state").value; }
     };
 
+    /** Renders the whole edit offline, as it would play (mute and solo apply), and returns
+        the RMS of the left channel. Renderer::renderToFile (Edit&, ...) isn't used
+        here because it unmutes and solo-isolates every track it renders. */
+    float renderRms (Fixture& f)
+    {
+        auto& edit = f.session.getEdit();
+        juce::TemporaryFile out (".wav");
+
+        tracktion::Renderer::Parameters r (edit);
+        r.destFile = out.getFile();
+        r.audioFormat = edit.engine.getAudioFileFormatManager().getWavFormat();
+        r.bitDepth = 24;
+        r.sampleRateForAudio = 44100.0;
+        r.blockSizeForAudio = 512;
+        r.time = { tracktion::TimePosition(), edit.getLength() };
+        r.usePlugins = true;
+        r.useMasterPlugins = true;
+        r.tracksToDo = tracktion::toBitSet (tracktion::getAllTracks (edit));
+
+        tracktion::TransportControl::stopAllTransports (edit.engine, false, true);
+
+        if (auto task = tracktion::render_utils::createRenderTask (r, "test render", nullptr, nullptr))
+            while (task->runJob() == juce::ThreadPoolJob::jobNeedsRunningAgain)
+            {}
+
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (out.getFile()));
+
+        if (reader == nullptr || reader->lengthInSamples == 0)
+            return -1.0f;
+
+        juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) reader->lengthInSamples);
+        reader->read (&buffer, 0, buffer.getNumSamples(), 0, true, true);
+        return buffer.getRMSLevel (0, 0, buffer.getNumSamples());
+    }
+
+    juce::var note (int pitch, double start, double length)
+    {
+        return obj ({ { "pitch", pitch }, { "start", start }, { "length", length } });
+    }
+
+    bool near (const juce::var& v, double expected)
+    {
+        return std::abs (static_cast<double> (v) - expected) < 0.01;
+    }
+
     //==============================================================================
     void testCreateTrackLinksAStrip (tracktion::Engine& engine)
     {
@@ -306,6 +353,109 @@ namespace
         CHECK (! f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Lead" }, { "instrument", "kazoo" } })).ok);
     }
 
+    void testMixerStripSettings (tracktion::Engine& engine)
+    {
+        std::cout << "set_mixer_strip sets fader, pan, mute and solo\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Bass" } }));
+
+        auto r = f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Bass" }, { "volume_db", -6.0 }, { "pan", -0.5 } }));
+        CHECK (r.ok);
+        auto strip = f.state()["strips"][0];
+        CHECK (near (strip["volume_db"], -6.0));
+        CHECK (near (strip["pan"], -0.5));
+        CHECK (! static_cast<bool> (strip["mute"]));
+
+        // Only the values given change.
+        CHECK (f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Bass" }, { "mute", true } })).ok);
+        strip = f.state()["strips"][0];
+        CHECK (static_cast<bool> (strip["mute"]));
+        CHECK (near (strip["volume_db"], -6.0));
+
+        // Like most DAWs, mute and solo aren't undo steps; the fader and pan are.
+        CHECK (f.dispatcher.undo());
+        strip = f.state()["strips"][0];
+        CHECK (near (strip["volume_db"], 0.0));
+        CHECK (near (strip["pan"], 0.0));
+        CHECK (static_cast<bool> (strip["mute"]));
+        CHECK (f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Bass" }, { "mute", false } })).ok);
+
+        // The master strip has a fader and pan.
+        CHECK (f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "master" }, { "volume_db", -3.0 } })).ok);
+        CHECK (near (f.state()["master"]["volume_db"], -3.0));
+        CHECK (! f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "master" }, { "mute", true } })).ok);
+
+        // Bad values are rejected without changing anything.
+        CHECK (! f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Bass" }, { "volume_db", -6.0 }, { "pan", 3 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Bass" }, { "volume_db", 20 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Bass" }, { "volume_db", "loud" } })).ok);
+        CHECK (! f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Nobody" }, { "mute", true } })).ok);
+        CHECK (near (f.state()["strips"][0]["volume_db"], 0.0));
+    }
+
+    void testGestureIsOneUndoStep (tracktion::Engine& engine)
+    {
+        std::cout << "a fader drag (gesture) is one undo step\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Pad" } }));
+
+        f.dispatcher.beginGesture ("Fader");
+
+        for (auto db : { -1.0, -2.0, -4.0, -8.0 })
+            f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Pad" }, { "volume_db", db } }));
+
+        f.dispatcher.endGesture();
+        CHECK (near (f.state()["strips"][0]["volume_db"], -8.0));
+
+        CHECK (f.dispatcher.undo());
+        CHECK (near (f.state()["strips"][0]["volume_db"], 0.0));
+        CHECK (f.state()["channels"].size() == 1);   // the create_track is still there
+
+        CHECK (f.dispatcher.canRedo());
+        CHECK (f.dispatcher.redo());
+        CHECK (near (f.state()["strips"][0]["volume_db"], -8.0));
+    }
+
+    void testMuteAndSoloSilence (tracktion::Engine& engine)
+    {
+        std::cout << "mute and solo change what renders\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } }));
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Other" } }));
+        f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "length_beats", 4 },
+                                                      { "notes", juce::Array<juce::var> { note (60, 0, 4) } } }));
+
+        auto open = renderRms (f);
+        CHECK (open > 0.001f);
+
+        f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Lead" }, { "mute", true } }));
+        auto muted = renderRms (f);
+        std::cout << "       open RMS " << open << ", Lead muted RMS " << muted << "\n";
+        CHECK (muted < 0.0001f);
+        f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Lead" }, { "mute", false } }));
+
+        // Soloing another strip silences Lead; soloing Lead keeps it playing.
+        f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Other" }, { "solo", true } }));
+        auto otherSolo = renderRms (f);
+        f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Other" }, { "solo", false } }));
+        f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Lead" }, { "solo", true } }));
+        auto leadSolo = renderRms (f);
+        std::cout << "       Other soloed RMS " << otherSolo << ", Lead soloed RMS " << leadSolo << "\n";
+        CHECK (otherSolo < 0.0001f);
+        CHECK (leadSolo > 0.001f);
+
+        // Master fader down silences everything.
+        f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "master" }, { "volume_db", -100 } }));
+        CHECK (renderRms (f) < 0.0001f);
+
+        // Undo brings the sound back, so the live fader follows undo, not just the saved value.
+        CHECK (f.dispatcher.undo());
+        CHECK (renderRms (f) > 0.001f);
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -371,6 +521,9 @@ int main()
         testRenameAndRecolourStayInSyncWhileLinked (engine);
         testDeleteTrack (engine);
         testSetInstrument (engine);
+        testMixerStripSettings (engine);
+        testGestureIsOneUndoStep (engine);
+        testMuteAndSoloSilence (engine);
         testRendersAudio (engine);
     }
 

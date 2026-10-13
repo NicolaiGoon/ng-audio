@@ -312,6 +312,90 @@ namespace
         return CommandResult::success (idPair ("channel", channel->itemID.toString(), "instrument", instrument));
     }
 
+    CommandResult setMixerStrip (Session& session, const juce::var& p)
+    {
+        auto ref = params::getString (p, "strip");
+        auto isMaster = ref == "master";
+        te::AudioTrack* strip = nullptr;
+        te::VolumeAndPanPlugin* volume = nullptr;
+
+        if (isMaster)
+        {
+            volume = session.getEdit().getMasterVolumePlugin().get();
+        }
+        else
+        {
+            strip = session.findTrack (ref, Session::Role::strip);
+
+            if (strip == nullptr)
+                return CommandResult::failure ("set_mixer_strip: no mixer strip called '" + ref + "'");
+
+            volume = strip->getVolumePlugin();
+        }
+
+        if (volume == nullptr)
+            return CommandResult::failure ("set_mixer_strip: '" + ref + "' has no fader");
+
+        // Check everything before changing anything, so a bad value leaves the strip as it was.
+        auto volumeDb = p["volume_db"];
+        auto pan = p["pan"];
+
+        if (! volumeDb.isVoid() && ! (volumeDb.isDouble() || volumeDb.isInt() || volumeDb.isInt64()))
+            return CommandResult::failure ("set_mixer_strip: volume_db must be a number");
+
+        if (! pan.isVoid() && ! (pan.isDouble() || pan.isInt() || pan.isInt64()))
+            return CommandResult::failure ("set_mixer_strip: pan must be a number");
+
+        if (! volumeDb.isVoid() && (static_cast<double> (volumeDb) < -100.0 || static_cast<double> (volumeDb) > 6.0))
+            return CommandResult::failure ("set_mixer_strip: volume_db must be between -100 and 6");
+
+        if (! pan.isVoid() && std::abs (static_cast<double> (pan)) > 1.0)
+            return CommandResult::failure ("set_mixer_strip: pan must be between -1 (left) and 1 (right)");
+
+        if (isMaster && (p.hasProperty ("mute") || p.hasProperty ("solo")))
+            return CommandResult::failure ("set_mixer_strip: the master strip has no mute or solo");
+
+        // Tracktion's setVolumeDb()/setPan() write the saved value without undo, so write the
+        // saved value (undoably) and then bring the live parameter in line with it.
+        // A value still at its default is stored first, outside the undo history, so undo
+        // returns to that value rather than removing it (which Tracktion would write back,
+        // clearing the redo history).
+        if (volume->volume.isUsingDefault())  volume->volume.setValue (volume->volume.get(), nullptr);
+        if (volume->pan.isUsingDefault())     volume->pan.setValue (volume->pan.get(), nullptr);
+
+        if (! volumeDb.isVoid())
+        {
+            volume->volume = te::decibelsToVolumeFaderPosition (static_cast<float> (static_cast<double> (volumeDb)));
+            volume->volParam->updateFromAttachedValue();
+        }
+
+        if (! pan.isVoid())
+        {
+            volume->pan = static_cast<float> (static_cast<double> (pan));
+            volume->panParam->updateFromAttachedValue();
+        }
+
+        if (strip != nullptr)
+        {
+            if (p.hasProperty ("mute"))  strip->setMute (static_cast<bool> (p["mute"]));
+            if (p.hasProperty ("solo"))  strip->setSolo (static_cast<bool> (p["solo"]));
+            session.getEdit().updateMuteSoloStatuses();
+        }
+
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("strip", isMaster ? juce::String ("master") : strip->itemID.toString());
+        obj->setProperty ("volume_db", volume->getVolumeDb());
+        obj->setProperty ("pan", volume->getPan());
+
+        if (strip != nullptr)
+        {
+            obj->setProperty ("mute", strip->isMuted (false));
+            obj->setProperty ("solo", strip->isSolo (false));
+        }
+
+        return CommandResult::success (juce::var (obj));
+    }
+
     CommandResult play (Session& session, const juce::var& p)
     {
         auto& edit = session.getEdit();
@@ -392,6 +476,18 @@ void registerProjectCommands (CommandRegistry& registry)
                               { "instrument", prop ("string", "\"4osc\" or \"none\"") } },
                             { "channel", "instrument" }),
                     true, setInstrumentCommand });
+
+    registry.add ({ "set_mixer_strip",
+                    "Sets a mixer strip's fader, pan, mute and solo. Only the values given change. "
+                    "Fader and pan changes are undoable; mute and solo, as in most DAWs, are not. "
+                    "Use \"master\" for the master strip (fader and pan only).",
+                    schema ({ { "strip", prop ("string", "Mixer strip id or name, or \"master\"") },
+                              { "volume_db", prop ("number", "Fader level in dB, -100 to 6 (0 is unity)") },
+                              { "pan", prop ("number", "Pan from -1 (left) to 1 (right), 0 is centre") },
+                              { "mute", prop ("boolean", "Mute the strip") },
+                              { "solo", prop ("boolean", "Solo the strip; other strips go silent while any strip is soloed") } },
+                            { "strip" }),
+                    true, setMixerStrip });
 
     registry.add ({ "play", "Starts playback, looping the whole project unless loop is false.",
                     schema ({ { "loop", prop ("boolean", "Loop the project (default true)") } }),
