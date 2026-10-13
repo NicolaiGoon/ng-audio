@@ -645,6 +645,24 @@ namespace
         return CommandResult::success (juce::var (result));
     }
 
+    CommandResult setMetronome (Session& session, const juce::var& p)
+    {
+        auto& edit = session.getEdit();
+
+        if (p.hasProperty ("enabled"))
+            edit.clickTrackEnabled = static_cast<bool> (p["enabled"]);
+        else
+            edit.clickTrackEnabled = ! edit.clickTrackEnabled.get();
+
+        // Tracktion clicks only while recording by default; ours clicks whenever it's on.
+        edit.clickTrackRecordingOnly = false;
+        edit.clickTrackEmphasiseBars = true;
+
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("enabled", edit.clickTrackEnabled.get());
+        return CommandResult::success (juce::var (obj));
+    }
+
     CommandResult stop (Session& session, const juce::var&)
     {
         session.getEdit().getTransport().stop (false, false);
@@ -1269,6 +1287,12 @@ void registerProjectCommands (CommandRegistry& registry)
                     false, play });
 
     registry.add ({ "stop", "Stops playback.", schema ({}), false, stop });
+
+    registry.add ({ "set_metronome",
+                    "Turns the metronome (a click on every beat, louder on the bar) on or off. Like the loop, "
+                    "this isn't an undo step.",
+                    schema ({ { "enabled", prop ("boolean", "On or off (toggles if omitted)") } }),
+                    false, setMetronome });
 
     registry.add ({ "set_position", "Moves the playhead. Like play and stop, this isn't an undo step.",
                     schema ({ { "beat", prop ("number", "Where to move the playhead, in beats from the start") } }, { "beat" }),

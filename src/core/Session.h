@@ -143,6 +143,9 @@ public:
         Called after every command, so the loop follows tempo changes and new clips. */
     void updateLoopRange();
 
+    /** Where the playhead is, as bar.beat.sixteenth counting from 1 (e.g. "3.2.1"). */
+    juce::String getPositionText() const;
+
     /** The level meter on the master output, for the mixer's master strip. */
     te::LevelMeterPlugin* getMasterMeter() const;
 

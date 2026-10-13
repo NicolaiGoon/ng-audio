@@ -9,6 +9,10 @@ namespace ng
     The arrangement timeline: a bar ruler, then one lane per channel showing its clips,
     with the playhead on top. Click or drag in the ruler to move the playhead.
 
+    The loop region shows in the ruler (dimmed while looping is off). Drag its edges to
+    change it, Shift+drag in the ruler to draw a new one, or right-click the ruler to loop
+    a bar or the whole project.
+
     Clips: drag to move (to another lane too), drag an edge to trim, double-click an empty
     spot for a new one-bar clip, and double-click a clip (or press Enter) to edit its notes. Delete removes the selected clip, Ctrl+D duplicates it and
     S splits it at the playhead; right-click for the same actions. Drags snap to the beat
@@ -72,6 +76,7 @@ private:
     };
 
     enum class DragMode { none, move, trimStart, trimEnd };
+    enum class RulerDrag { none, playhead, loopStart, loopEnd, newLoop };
 
     /** What's under the mouse in the lanes: a lane, maybe a clip, and which part of it. */
     struct Hit
@@ -110,6 +115,9 @@ private:
     double getPlayheadBeat() const;
     void updateScrollBars();
     void movePlayheadTo (float x);
+    RulerDrag rulerHitTest (float x) const;
+    void showRulerMenu (double beat);
+    juce::Range<double> getShownLoop() const;
 
     void paintRuler (juce::Graphics&);
     void paintLanes (juce::Graphics&);
@@ -128,6 +136,10 @@ private:
 
     juce::String selectedClip;
     Drag drag;
+
+    RulerDrag rulerDrag = RulerDrag::none;
+    juce::Range<double> loopPreview;        // the loop being dragged, while rulerDrag is a loop drag
+    double loopAnchor = 0.0;
 
     juce::ScrollBar horizontal { false }, vertical { true };
 

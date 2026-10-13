@@ -177,9 +177,12 @@ MainComponent::MainComponent (te::Engine& engine)
     {
         dispatcher.execute (session.getEdit().getTransport().isPlaying() ? "stop" : "play");
     };
+    returnButton.onClick = [this] { dispatcher.execute ("set_position", makeObject ({ { "beat", 0 } })); };
+    returnButton.setTooltip ("Back to the start (Home)");
     undoButton.onClick = [this] { dispatcher.undo(); };
     redoButton.onClick = [this] { dispatcher.redo(); };
     settingsButton.onClick = [this] { showAudioSettings(); };
+    settingsButton.setTooltip ("Audio device settings");
     setUpTransportControls();
     runButton.onClick = [this] { runConsoleCommand(); };
 
@@ -226,7 +229,8 @@ MainComponent::MainComponent (te::Engine& engine)
 
     for (auto* c : std::initializer_list<juce::Component*> { &newButton, &openButton, &saveButton, &saveAsButton,
                                                              &addButton, &playButton, &undoButton, &redoButton,
-                                                             &tempo, &timeSignature, &loopButton,
+                                                             &returnButton, &tempo, &timeSignature, &positionDisplay,
+                                                             &loopButton, &metronomeButton,
                                                              &settingsButton, &consoleButton, &timelineHeader, &timelineHint, &timeline,
                                                              &channelsHeader, &mixerHeader, &mixer })
         addAndMakeVisible (c);
@@ -407,6 +411,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('n', command, 0))                                     { newProject(); return true; }
     if (key == juce::KeyPress ('o', command, 0))                                     { openProject(); return true; }
     if (key == juce::KeyPress ('s', command, 0))                                     { saveProject(); return true; }
+    if (key == juce::KeyPress (juce::KeyPress::homeKey))                             { returnButton.triggerClick(); return true; }
     if (key == juce::KeyPress ('s', command | juce::ModifierKeys::shiftModifier, 0)) { saveProjectAs(); return true; }
 
     return false;
@@ -453,6 +458,26 @@ void MainComponent::setUpTransportControls()
     {
         dispatcher.execute ("set_loop", makeObject ({ { "enabled", loopButton.getToggleState() } }));
     };
+
+    metronomeButton.setTooltip ("Click on every beat while playing, louder on the first beat of a bar");
+    metronomeButton.onClick = [this]
+    {
+        dispatcher.execute ("set_metronome", makeObject ({ { "enabled", metronomeButton.getToggleState() } }));
+    };
+
+    positionDisplay.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 16.0f, juce::Font::bold));
+    positionDisplay.setJustificationType (juce::Justification::centred);
+    positionDisplay.setColour (juce::Label::backgroundColourId, juce::Colour (0xff1e2124));
+    positionDisplay.setColour (juce::Label::textColourId, juce::Colour (0xff8fd18f));
+    positionDisplay.setTooltip ("Song position: bar . beat . sixteenth");
+}
+
+void MainComponent::updatePositionDisplay()
+{
+    auto text = session.getPositionText();
+
+    if (positionDisplay.getText() != text)
+        positionDisplay.setText (text, juce::dontSendNotification);
 }
 
 void MainComponent::updateTransportControls (const juce::var& state)
@@ -473,6 +498,8 @@ void MainComponent::updateTransportControls (const juce::var& state)
         timeSignature.setText (text, juce::dontSendNotification);
 
     loopButton.setToggleState (state["transport"]["looping"], juce::dontSendNotification);
+    metronomeButton.setToggleState (state["transport"]["metronome"], juce::dontSendNotification);
+    updatePositionDisplay();
 }
 
 void MainComponent::showAudioSettings()
@@ -501,6 +528,7 @@ void MainComponent::timerCallback()
 {
     updateButtons();
     updatePlayStep();
+    updatePositionDisplay();
 }
 
 void MainComponent::updatePlayStep()
@@ -612,20 +640,23 @@ void MainComponent::resized()
 
     toolbar.removeFromLeft (14);
 
-    for (auto* b : { &addButton, &playButton, &undoButton, &redoButton })
+    for (auto* b : { &addButton, &returnButton, &playButton, &undoButton, &redoButton })
     {
-        b->setBounds (toolbar.removeFromLeft (b == &addButton ? 110 : 64));
+        b->setBounds (toolbar.removeFromLeft (b == &addButton ? 110 : b == &returnButton ? 34 : 56));
         toolbar.removeFromLeft (4);
     }
 
-    toolbar.removeFromLeft (14);
-    tempo.setBounds (toolbar.removeFromLeft (150));
-    toolbar.removeFromLeft (6);
-    timeSignature.setBounds (toolbar.removeFromLeft (70));
     toolbar.removeFromLeft (10);
-    loopButton.setBounds (toolbar.removeFromLeft (70));
+    tempo.setBounds (toolbar.removeFromLeft (130));
+    toolbar.removeFromLeft (6);
+    timeSignature.setBounds (toolbar.removeFromLeft (64));
+    toolbar.removeFromLeft (8);
+    positionDisplay.setBounds (toolbar.removeFromLeft (80));
+    toolbar.removeFromLeft (10);
+    loopButton.setBounds (toolbar.removeFromLeft (62));
+    metronomeButton.setBounds (toolbar.removeFromLeft (100));
 
-    settingsButton.setBounds (toolbar.removeFromRight (120));
+    settingsButton.setBounds (toolbar.removeFromRight (64));
     toolbar.removeFromRight (8);
     consoleButton.setBounds (toolbar.removeFromRight (90));
     r.removeFromTop (10);
