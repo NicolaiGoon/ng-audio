@@ -138,6 +138,8 @@ bool CommandDispatcher::canRedo() const   { return session.getUndoManager().canR
 
 void CommandDispatcher::notify (const juce::String& name, const CommandResult& result)
 {
+    session.updateLoopRange();
+
     if (onCommandExecuted != nullptr)
         onCommandExecuted (name, result);
 }

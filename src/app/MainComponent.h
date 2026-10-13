@@ -30,6 +30,8 @@ private:
     void rebuildRows();
     void updateButtons();
     void showAudioSettings();
+    void setUpTransportControls();
+    void updateTransportControls (const juce::var& state);
 
     Session session;
     CommandRegistry registry;
@@ -38,6 +40,10 @@ private:
     juce::TextButton addButton { "Add instrument" }, playButton { "Play" },
                      undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio settings" },
                      runButton { "Run" };
+
+    juce::Slider tempo;
+    juce::ComboBox timeSignature;
+    juce::ToggleButton loopButton { "Loop" };
 
     juce::Label channelsHeader { {}, "Channel rack" }, mixerHeader { {}, "Mixer" },
                 consoleHeader { {}, "Command console (JSON)" };
