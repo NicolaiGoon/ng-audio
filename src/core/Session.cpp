@@ -261,6 +261,34 @@ bool Session::isPatternClip (const te::Clip& clip)
     return clip.state["ngPattern"];
 }
 
+te::Clip* Session::findClip (const juce::String& id) const
+{
+    for (auto channel : getChannels())
+        for (auto clip : channel->getClips())
+            if (clip->itemID.toString() == id)
+                return clip;
+
+    return nullptr;
+}
+
+juce::Array<ClipNote> Session::getNotes (const te::MidiClip& clip)
+{
+    // Tracktion times notes from where the clip's content starts, which is earlier than
+    // the clip's start when its front has been trimmed.
+    auto offset = clip.getOffsetInBeats().inBeats();
+    juce::Array<ClipNote> notes;
+
+    for (auto n : clip.getSequence().getNotes())
+        notes.add ({ n->getNoteNumber(), n->getStartBeat().inBeats() - offset, n->getLengthBeats().inBeats(), n->getVelocity() });
+
+    std::stable_sort (notes.begin(), notes.end(), [] (const ClipNote& a, const ClipNote& b)
+    {
+        return a.start != b.start ? a.start < b.start : a.pitch < b.pitch;
+    });
+
+    return notes;
+}
+
 int Session::getStepPitch (const te::AudioTrack& channel)
 {
     return channel.state.getProperty ("ngStepPitch", 60);
