@@ -79,6 +79,8 @@ void Session::adoptEdit (std::unique_ptr<te::Edit> newEdit, const juce::File& ne
         if (auto meter = edit->getPluginCache().createNewPlugin (te::LevelMeterPlugin::xmlTypeName, {}))
             edit->getMasterPluginList().insertPlugin (meter, -1, nullptr);
 
+    forEachEffect ([] (te::Plugin& effect) { storeEffectSettings (effect); });
+
     armedChannel = {};
     updateLoopRange();
     edit->getUndoManager().clearUndoHistory();
@@ -270,13 +272,27 @@ te::Plugin* Session::getInstrument (const te::AudioTrack& channel)
 
 juce::String Session::getInstrumentId (const te::Plugin* instrument)
 {
-    if (instrument == nullptr)
-        return "none";
+    return instrument != nullptr ? getPluginId (*instrument) : juce::String ("none");
+}
 
+const juce::Array<Session::BuiltInEffect>& Session::getBuiltInEffects()
+{
+    static const juce::Array<BuiltInEffect> effects {
+        BuiltInEffect { "eq",         "EQ",         te::EqualiserPlugin::xmlTypeName },
+        BuiltInEffect { "compressor", "Compressor", te::CompressorPlugin::xmlTypeName },
+        BuiltInEffect { "reverb",     "Reverb",     te::ReverbPlugin::xmlTypeName },
+        BuiltInEffect { "delay",      "Delay",      te::DelayPlugin::xmlTypeName }
+    };
+
+    return effects;
+}
+
+juce::String Session::getPluginId (const te::Plugin& plugin)
+{
     // The id list_plugins gave it. The description saved with the plugin can differ in
     // details (such as how its file is written), which would change the id, so match it
     // against the scanned list the way Tracktion does when loading it.
-    if (auto external = dynamic_cast<const te::ExternalPlugin*> (instrument))
+    if (auto external = dynamic_cast<const te::ExternalPlugin*> (&plugin))
     {
         auto& saved = external->desc;
 
@@ -287,7 +303,64 @@ juce::String Session::getInstrumentId (const te::Plugin* instrument)
         return saved.createIdentifierString();
     }
 
-    return dynamic_cast<const te::FourOscPlugin*> (instrument) != nullptr ? "4osc" : "none";
+    auto type = const_cast<te::Plugin&> (plugin).getPluginType();
+
+    for (auto& effect : getBuiltInEffects())
+        if (effect.pluginType == type)
+            return effect.id;
+
+    return type;
+}
+
+te::PluginList* Session::findEffectList (const juce::String& stripIdOrName) const
+{
+    if (stripIdOrName == "master")
+        return &edit->getMasterPluginList();
+
+    if (auto strip = findTrack (stripIdOrName, Role::strip))
+        return &strip->pluginList;
+
+    return nullptr;
+}
+
+juce::Array<te::Plugin*> Session::getEffects (const te::PluginList& list)
+{
+    juce::Array<te::Plugin*> effects;
+
+    for (auto p : list)
+        if (! (dynamic_cast<te::VolumeAndPanPlugin*> (p) || dynamic_cast<te::LevelMeterPlugin*> (p)))
+            effects.add (p);
+
+    return effects;
+}
+
+juce::var Session::describeEffect (te::Plugin& effect)
+{
+    auto obj = new juce::DynamicObject();
+    obj->setProperty ("id", effect.itemID.toString());
+    obj->setProperty ("type", getPluginId (effect));
+    obj->setProperty ("name", effect.getName());
+    obj->setProperty ("enabled", effect.isEnabled());
+
+    if (effect.isMissing())
+        obj->setProperty ("missing", true);
+
+    return juce::var (obj);
+}
+
+int Session::getEffectInsertIndex (const te::PluginList& list, int effectIndex)
+{
+    auto effects = getEffects (list);
+
+    if (juce::isPositiveAndBelow (effectIndex, effects.size()))
+        return list.indexOf (effects[effectIndex]);
+
+    // At the end of the effects: before the first fader or meter (which come last).
+    for (int i = 0; i < list.size(); ++i)
+        if (dynamic_cast<te::VolumeAndPanPlugin*> (list[i]) || dynamic_cast<te::LevelMeterPlugin*> (list[i]))
+            return i;
+
+    return list.size();
 }
 
 bool Session::isPatternClip (const te::Clip& clip)
@@ -531,7 +604,43 @@ void Session::refreshAfterHistoryChange()
         refresh (t->getVolumePlugin());
 
     refresh (edit->getMasterVolumePlugin().get());
+
+    // Effect settings are written out in full when an effect is added (storeEffectSettings),
+    // so bringing a parameter back in line writes nothing new.
+    forEachEffect ([] (te::Plugin& effect)
+    {
+        if (dynamic_cast<te::ExternalPlugin*> (&effect) == nullptr)
+            for (auto param : effect.getAutomatableParameters())
+                param->updateFromAttachedValue();
+    });
+
     edit->updateMuteSoloStatuses();
+}
+
+void Session::forEachEffect (const std::function<void (te::Plugin&)>& fn) const
+{
+    for (auto s : getStrips())
+        for (auto effect : getEffects (s->pluginList))
+            fn (*effect);
+
+    for (auto effect : getEffects (edit->getMasterPluginList()))
+        fn (*effect);
+}
+
+void Session::storeEffectSettings (te::Plugin& effect)
+{
+    // A setting still at its default isn't stored, and undoing a change to it would remove
+    // it rather than put the old value back; Tracktion then writes the default back, which
+    // clears the redo history. Storing every setting avoids that.
+    if (dynamic_cast<te::ExternalPlugin*> (&effect) != nullptr)
+        return;
+
+    for (auto param : effect.getAutomatableParameters())
+        param->setParameter (param->getCurrentValue(), juce::sendNotificationSync);
+
+    if (auto delay = dynamic_cast<te::DelayPlugin*> (&effect))
+        if (delay->lengthMs.isUsingDefault())
+            delay->lengthMs = delay->lengthMs.get();
 }
 
 te::AudioTrack* Session::findAnyTrack (const juce::String& idOrName) const
@@ -607,6 +716,19 @@ juce::Array<juce::Colour> Session::getPalette()
 }
 
 //==============================================================================
+namespace
+{
+    juce::var describeEffects (const te::PluginList& list)
+    {
+        juce::Array<juce::var> effects;
+
+        for (auto effect : Session::getEffects (list))
+            effects.add (Session::describeEffect (*effect));
+
+        return effects;
+    }
+}
+
 juce::var Session::toVar() const
 {
     juce::Array<juce::var> channels, strips;
@@ -700,6 +822,7 @@ juce::var Session::toVar() const
 
         obj->setProperty ("mute", s->isMuted (false));
         obj->setProperty ("solo", s->isSolo (false));
+        obj->setProperty ("effects", describeEffects (s->pluginList));
 
         strips.add (juce::var (obj));
     }
@@ -727,6 +850,8 @@ juce::var Session::toVar() const
         master->setProperty ("volume_db", vp->getVolumeDb());
         master->setProperty ("pan", vp->getPan());
     }
+
+    master->setProperty ("effects", describeEffects (edit->getMasterPluginList()));
 
     auto root = new juce::DynamicObject();
     auto& timeSig = edit->tempoSequence.getTimeSigAt (te::TimePosition());

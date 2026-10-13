@@ -1465,6 +1465,7 @@ void registerProjectCommands (CommandRegistry& registry)
                     schema ({}), false, getState });
 
     registerPluginCommands (registry);
+    registerEffectCommands (registry);
 }
 
 } // namespace ng

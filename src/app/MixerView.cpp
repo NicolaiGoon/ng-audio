@@ -10,15 +10,36 @@ namespace
 
     /** The project state with the values the columns update in place taken out. If this
         stays the same between updates, the columns can stay too. */
+    juce::String getEffectsKey (const juce::var& strip)
+    {
+        juce::String key;
+        auto effects = strip["effects"];
+
+        for (auto& e : *effects.getArray())
+            key << e["id"].toString() << ":" << e["name"].toString() << ":" << (static_cast<bool> (e["enabled"]) ? "on" : "off")
+                << (e.hasProperty ("missing") ? ":missing" : "") << ",";
+
+        return key;
+    }
+
     juce::String getStructureKey (const juce::var& state)
     {
         juce::StringArray parts;
+        auto strips = state["strips"];
 
-        for (auto& s : *state["strips"].getArray())
+        for (auto& s : *strips.getArray())
             parts.add (s["id"].toString() + "|" + s["name"].toString() + "|" + s["colour"].toString()
-                         + "|" + juce::String (s["inputs"].size()));
+                         + "|" + juce::String (s["inputs"].size()) + "|" + getEffectsKey (s));
 
+        parts.add ("master|" + getEffectsKey (state["master"]));
         return parts.joinIntoString (";");
+    }
+
+    void showError (const juce::String& error)
+    {
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOk (juce::MessageBoxIconType::WarningIcon,
+                                                                              "Effect", error),
+                                      nullptr);
     }
 }
 
@@ -94,14 +115,206 @@ private:
 };
 
 //==============================================================================
+/** A strip's insert effects, top to bottom in the order they run, and a button to add one.
+    Clicking an effect opens its window; right-clicking it offers bypass, move and remove. */
+class MixerView::EffectSlots  : public juce::Component
+{
+public:
+    EffectSlots (Session& s, CommandDispatcher& d, juce::String strip, const juce::var& effects)
+        : session (s), dispatcher (d), stripId (std::move (strip))
+    {
+        for (int i = 0; i < effects.size(); ++i)
+        {
+            auto effect = effects[i];
+            auto* slot = slots.add (new SlotButton (getShortName (effect)));
+            auto enabled = static_cast<bool> (effect["enabled"]);
+            auto missing = effect.hasProperty ("missing");
+
+            slot->setColour (juce::TextButton::buttonColourId, enabled ? juce::Colour (0xff35506a) : juce::Colour (0xff2a2a2a));
+            slot->setColour (juce::TextButton::textColourOffId, missing ? juce::Colours::indianred
+                                                                        : enabled ? juce::Colours::white : juce::Colours::grey);
+            slot->setTooltip (effect["name"].toString() + (missing ? " (not installed on this computer)"
+                                                                   : enabled ? juce::String() : " (bypassed)")
+                                + "\nClick to open, right-click for more");
+            slot->onOpen = [this, i] { run ("show_effect_window", i); };
+            slot->onMenu = [this, i, effect] { showSlotMenu (i, effect); };
+            holder.addAndMakeVisible (slot);
+        }
+
+        addButton.setTooltip ("Add an effect");
+        addButton.onClick = [this] { showAddMenu(); };
+
+        viewport.setViewedComponent (&holder, false);
+        viewport.setScrollBarsShown (true, false);
+        viewport.setScrollBarThickness (6);
+        addAndMakeVisible (viewport);
+        addAndMakeVisible (addButton);
+    }
+
+    static constexpr int slotHeight = 18, visibleSlots = 3;
+    static constexpr int preferredHeight = slotHeight * (visibleSlots + 1) + 2;
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        addButton.setBounds (r.removeFromBottom (slotHeight));
+        r.removeFromBottom (2);
+        viewport.setBounds (r);
+
+        auto width = r.getWidth() - (slots.size() > visibleSlots ? viewport.getScrollBarThickness() : 0);
+        holder.setSize (width, slots.size() * slotHeight);
+
+        for (int i = 0; i < slots.size(); ++i)
+            slots[i]->setBounds (0, i * slotHeight, width, slotHeight - 1);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        if (slots.isEmpty())
+        {
+            g.setColour (juce::Colours::grey.withAlpha (0.6f));
+            g.setFont (juce::FontOptions (11.0f));
+            g.drawText ("No effects", viewport.getBounds(), juce::Justification::centred);
+        }
+    }
+
+private:
+    /** A button that runs onOpen when clicked and onMenu when right-clicked. */
+    struct SlotButton  : public juce::TextButton
+    {
+        using TextButton::TextButton;
+        using TextButton::clicked;
+
+        void clicked (const juce::ModifierKeys& mods) override
+        {
+            auto& fn = mods.isPopupMenu() ? onMenu : onOpen;
+
+            if (fn != nullptr)
+                fn();
+        }
+
+        std::function<void()> onOpen, onMenu;
+    };
+
+    static juce::String getShortName (const juce::var& effect)
+    {
+        for (auto& builtIn : Session::getBuiltInEffects())
+            if (builtIn.id == effect["type"].toString())
+                return builtIn.name;
+
+        return effect["name"].toString();
+    }
+
+    void run (const juce::String& command, int index, std::initializer_list<std::pair<const char*, juce::var>> extra = {})
+    {
+        auto params = makeObject ({ { "strip", stripId }, { "effect", index } });
+
+        for (auto& [k, v] : extra)
+            params.getDynamicObject()->setProperty (k, v);
+
+        auto result = dispatcher.execute (command, params);
+
+        if (! result.ok)
+            showError (result.error);
+    }
+
+    void showSlotMenu (int index, const juce::var& effect)
+    {
+        auto enabled = static_cast<bool> (effect["enabled"]);
+
+        juce::PopupMenu menu;
+        menu.addSectionHeader (effect["name"].toString());
+        menu.addItem (1, "Open window", ! effect.hasProperty ("missing"));
+        menu.addItem (2, enabled ? "Bypass" : "Turn on");
+        menu.addItem (3, "Move up", index > 0);
+        menu.addItem (4, "Move down", index < slots.size() - 1);
+        menu.addSeparator();
+        menu.addItem (5, "Remove");
+
+        // The menu's actions rebuild the mixer, and this component with it.
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (slots[index]),
+                            [safeThis = juce::Component::SafePointer<EffectSlots> (this), index, enabled] (int result)
+                            {
+                                if (safeThis == nullptr)
+                                    return;
+
+                                switch (result)
+                                {
+                                    case 1:  safeThis->run ("show_effect_window", index); break;
+                                    case 2:  safeThis->run ("set_effect", index, { { "enabled", ! enabled } }); break;
+                                    case 3:  safeThis->run ("move_effect", index, { { "index", index - 1 } }); break;
+                                    case 4:  safeThis->run ("move_effect", index, { { "index", index + 1 } }); break;
+                                    case 5:  safeThis->run ("remove_effect", index); break;
+                                    default: break;
+                                }
+                            });
+    }
+
+    void showAddMenu()
+    {
+        juce::PopupMenu menu;
+        juce::StringArray choices;
+
+        menu.addSectionHeader ("Built in");
+
+        for (auto& builtIn : Session::getBuiltInEffects())
+        {
+            choices.add (builtIn.id);
+            menu.addItem (choices.size(), builtIn.name);
+        }
+
+        menu.addSectionHeader ("Plugins");
+
+        auto types = session.getEdit().engine.getPluginManager().knownPluginList.getTypes();
+        std::sort (types.begin(), types.end(), [] (auto& a, auto& b) { return a.name.compareNatural (b.name) < 0; });
+        auto anyPlugins = false;
+
+        for (auto& d : types)
+        {
+            if (d.isInstrument)
+                continue;
+
+            choices.add (d.createIdentifierString());
+            menu.addItem (choices.size(), d.name + (d.manufacturerName.isNotEmpty() ? "  (" + d.manufacturerName + ")" : juce::String()));
+            anyPlugins = true;
+        }
+
+        if (! anyPlugins)
+            menu.addItem (-1, "None yet: scan in Plugins", false);
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addButton),
+                            [&d = dispatcher, strip = stripId, choices] (int result)
+                            {
+                                if (result <= 0)
+                                    return;
+
+                                auto added = d.execute ("add_effect", makeObject ({ { "strip", strip },
+                                                                                    { "effect", choices[result - 1] } }));
+
+                                if (! added.ok)
+                                    showError (added.error);
+                            });
+    }
+
+    Session& session;
+    CommandDispatcher& dispatcher;
+    juce::String stripId;
+
+    juce::Viewport viewport;
+    juce::Component holder;
+    juce::OwnedArray<SlotButton> slots;
+    juce::TextButton addButton { "+ FX" };
+};
+
+//==============================================================================
 /** One mixer strip, or the master strip when id is "master". */
 class MixerView::StripColumn  : public juce::Component
 {
 public:
-    StripColumn (CommandDispatcher& d, const juce::var& strip, te::LevelMeterPlugin* meterPlugin)
+    StripColumn (Session& s, CommandDispatcher& d, const juce::var& strip, te::LevelMeterPlugin* meterPlugin)
         : dispatcher (d), id (strip["id"].toString()), isMaster (id == "master"),
           colour (isMaster ? juce::Colours::grey : colourFrom (strip["colour"])),
-          swatch (d, id, colour), meter (meterPlugin)
+          swatch (d, id, colour), effects (s, d, id, strip["effects"]), meter (meterPlugin)
     {
         if (isMaster)
         {
@@ -151,7 +364,7 @@ public:
         fader.setTooltip ("Volume (double-click for 0 dB)");
         connect (fader, "Fader", "volume_db");
 
-        for (auto* c : std::initializer_list<juce::Component*> { &name, &pan, &fader, &meter })
+        for (auto* c : std::initializer_list<juce::Component*> { &name, &pan, &effects, &fader, &meter })
             addAndMakeVisible (c);
 
         setValues (strip);
@@ -195,6 +408,9 @@ public:
         r.removeFromTop (4);
 
         pan.setBounds (r.removeFromTop (40).withSizeKeepingCentre (40, 40));
+        r.removeFromTop (4);
+
+        effects.setBounds (r.removeFromTop (EffectSlots::preferredHeight));
         r.removeFromTop (4);
 
         if (! isMaster)
@@ -243,6 +459,7 @@ private:
     juce::Label name, inputs;
     juce::Slider pan, fader;
     juce::TextButton mute { "M" }, solo { "S" }, deleteButton;
+    EffectSlots effects;
     Meter meter;
 };
 
@@ -281,7 +498,7 @@ void MixerView::update (const juce::var& state)
     {
         auto track = session.findTrack (strip["id"].toString(), Session::Role::strip);
         auto meterPlugin = track != nullptr ? track->getLevelMeterPlugin() : nullptr;
-        columnHolder.addAndMakeVisible (columns.add (new StripColumn (dispatcher, strip, meterPlugin)));
+        columnHolder.addAndMakeVisible (columns.add (new StripColumn (session, dispatcher, strip, meterPlugin)));
     }
 
     auto master = state["master"].clone();
@@ -289,7 +506,7 @@ void MixerView::update (const juce::var& state)
     if (auto obj = master.getDynamicObject())
         obj->setProperty ("id", "master");
 
-    masterColumn = std::make_unique<StripColumn> (dispatcher, master, session.getMasterMeter());
+    masterColumn = std::make_unique<StripColumn> (session, dispatcher, master, session.getMasterMeter());
     addAndMakeVisible (*masterColumn);
 
     resized();
