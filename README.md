@@ -31,7 +31,9 @@ and every action available to AI tools through one command layer.
   move it and its right edge to resize it; right-click or Del deletes. Ctrl+click and Ctrl+drag
   select several, Ctrl+A selects all, and the arrow keys move the selection (Shift + up/down
   for an octave). Notes snap to the grid picked in Snap (1/4 to 1/32); hold Alt to place freely.
-  Each edit is one undo step.
+  Under the notes, the velocity lane shows how hard each one plays: click or drag across it to
+  set the velocity of the notes there (only the selected ones, if any are). Quantize (or Q)
+  moves the selected notes, or all of them, onto the grid. Each edit is one undo step.
 - **A step sequencer.** Each channel has a row of 16 steps (16th notes) under its name; click a
   step to turn it on or off. The step under the playhead is outlined while playing.
 - **A transport** with Play, tempo (type it, click the arrows or drag), time signature and a
@@ -59,6 +61,7 @@ and every action available to AI tools through one command layer.
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
   | `move_clip` / `resize_clip` / `split_clip` / `duplicate_clip` / `delete_clip` | Clip editing, by clip id from `get_state` |
   | `get_notes` / `set_notes` | Reads or replaces a MIDI clip's notes (beats from the clip's start) |
+  | `quantize_notes` | Moves a clip's notes (or some of them) onto a grid, optionally with their ends |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
   | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
