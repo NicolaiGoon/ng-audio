@@ -146,7 +146,22 @@ public:
     /** How many audio outputs an instrument has (2 for a stereo one). */
     static int getNumOutputs (te::Plugin& instrument);
 
-    /** How get_state and set_instrument name an instrument: "4osc", "none", or a plugin's
+    //==============================================================================
+    // The sampler: Tracktion's built-in sampler as a channel's instrument. Each sample
+    // plays on a range of keys, at its own pitch on its root key; a drum kit puts one
+    // sample on each key and lets each play to its end (one-shot).
+
+    /** A channel's sampler, or nullptr if its instrument is something else. */
+    static te::SamplerPlugin* getSampler (const te::AudioTrack& channel);
+
+    /** The sampler's samples as get_state lists them: {index, name, file, note, min_note,
+        max_note, gain_db, pan, one_shot}, plus missing: true for a file that isn't there. */
+    static juce::var describeSamples (te::SamplerPlugin&);
+
+    /** The audio file types the sampler reads, as a wildcard like "*.wav;*.aif". */
+    juce::String getAudioFileWildcard() const;
+
+    /** How get_state and set_instrument name an instrument: "4osc", "sampler", "none", or a plugin's
         id as list_plugins gives it. */
     static juce::String getInstrumentId (const te::Plugin*);
 
