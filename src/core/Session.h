@@ -128,6 +128,36 @@ public:
         id as list_plugins gives it. */
     static juce::String getInstrumentId (const te::Plugin*);
 
+    /** The effects Ng DAW has built in, as add_effect names them (e.g. "eq"), with their
+        display names and Tracktion plugin types. */
+    struct BuiltInEffect { juce::String id, name, pluginType; };
+    static const juce::Array<BuiltInEffect>& getBuiltInEffects();
+
+    /** How get_state and add_effect name a plugin: a built-in effect's name ("reverb"),
+        "4osc", or a scanned plugin's id as list_plugins gives it. */
+    static juce::String getPluginId (const te::Plugin&);
+
+    /** The insert effects on a mixer strip (or "master"), in signal order, and the list
+        they live in. nullptr if there's no such strip. */
+    te::PluginList* findEffectList (const juce::String& stripIdOrName) const;
+    static juce::Array<te::Plugin*> getEffects (const te::PluginList&);
+
+    /** Where an effect at a position among the effects goes in the plugin list: effects
+        come before the fader, and on the master before its meter. */
+    static int getEffectInsertIndex (const te::PluginList&, int effectIndex);
+
+    /** An effect as get_state lists it: {id, type, name, enabled}, plus missing: true for a
+        plugin that isn't installed (or failed to load) on this computer. */
+    static juce::var describeEffect (te::Plugin&);
+
+    /** Writes all of a built-in effect's settings into the project, defaults included, so
+        undoing a change always has a value to go back to. Called when an effect is added and
+        when a project opens. */
+    static void storeEffectSettings (te::Plugin&);
+
+    /** Calls fn for every effect on every strip and the master. */
+    void forEachEffect (const std::function<void (te::Plugin&)>&) const;
+
     /** True for the clip set_steps keeps in sync with a channel's step pattern. */
     static bool isPatternClip (const te::Clip&);
 
