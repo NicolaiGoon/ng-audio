@@ -153,6 +153,23 @@ MainComponent::MainComponent (te::Engine& engine)
         triggerAsyncUpdate();
     };
 
+    // Before a project is replaced, let go of everything that points into it.
+    session.onEditAboutToChange = [this]
+    {
+        mixer.clear();
+        channelRows.clear();
+        channelRackKey = {};
+    };
+
+    newButton.onClick = [this] { newProject(); };
+    openButton.onClick = [this] { openProject(); };
+    saveButton.onClick = [this] { saveProject(); };
+    saveAsButton.onClick = [this] { saveProjectAs(); };
+    newButton.setTooltip ("New project (Ctrl+N)");
+    openButton.setTooltip ("Open a project (Ctrl+O)");
+    saveButton.setTooltip ("Save (Ctrl+S)");
+    saveAsButton.setTooltip ("Save under a new name (Ctrl+Shift+S)");
+
     addButton.onClick = [this] { addInstrument(); };
     playButton.onClick = [this]
     {
@@ -176,21 +193,17 @@ MainComponent::MainComponent (te::Engine& engine)
     consoleOutput.setReadOnly (true);
     consoleOutput.setFont (consoleInput.getFont());
 
-    for (auto* c : std::initializer_list<juce::Component*> { &addButton, &playButton, &undoButton, &redoButton,
+    for (auto* c : std::initializer_list<juce::Component*> { &newButton, &openButton, &saveButton, &saveAsButton,
+                                                             &addButton, &playButton, &undoButton, &redoButton,
                                                              &tempo, &timeSignature, &loopButton,
                                                              &settingsButton, &runButton, &channelsHeader,
                                                              &mixerHeader, &consoleHeader, &consoleInput, &mixer,
                                                              &consoleOutput })
         addAndMakeVisible (c);
 
-    // Start with one instrument and a four-on-the-floor pattern so Play makes a sound straight away.
-    dispatcher.executeBatch ("Starter pattern", juce::Array<juce::var> {
-        makeObject ({ { "command", "create_track" }, { "params", makeObject ({ { "name", "Synth 1" } }) } }),
-        makeObject ({ { "command", "set_steps" },
-                      { "params", makeObject ({ { "channel", "Synth 1" }, { "steps", "x...x...x...x..." } }) } })
-    });
-    session.getUndoManager().clearUndoHistory();
+    loadStarterProject();
 
+    setWantsKeyboardFocus (true);
     setSize (1180, 760);
     startTimerHz (30);
 }
@@ -198,6 +211,7 @@ MainComponent::MainComponent (te::Engine& engine)
 MainComponent::~MainComponent()
 {
     dispatcher.onCommandExecuted = nullptr;
+    session.onEditAboutToChange = nullptr;
 }
 
 //==============================================================================
@@ -206,6 +220,161 @@ void MainComponent::addInstrument()
     // A new channel with its linked strip and an empty pattern, ready to fill in.
     auto name = "Synth " + juce::String (session.getChannels().size() + 1);
     dispatcher.execute ("create_track", makeObject ({ { "name", name } }));
+}
+
+void MainComponent::loadStarterProject()
+{
+    // One instrument and a four-on-the-floor pattern, so Play makes a sound straight away.
+    // Nobody has changed it yet, so it starts with nothing to undo and nothing to save.
+    dispatcher.executeBatch ("Starter pattern", juce::Array<juce::var> {
+        makeObject ({ { "command", "create_track" }, { "params", makeObject ({ { "name", "Synth 1" } }) } }),
+        makeObject ({ { "command", "set_steps" },
+                      { "params", makeObject ({ { "channel", "Synth 1" }, { "steps", "x...x...x...x..." } }) } })
+    });
+
+    session.getUndoManager().clearUndoHistory();
+    session.markAsSaved();
+    updateWindowTitle();
+}
+
+//==============================================================================
+void MainComponent::confirmDiscardChanges (std::function<void()> onContinue)
+{
+    if (! session.hasUnsavedChanges())
+    {
+        onContinue();
+        return;
+    }
+
+    auto options = juce::MessageBoxOptions()
+                       .withIconType (juce::MessageBoxIconType::QuestionIcon)
+                       .withTitle ("Unsaved changes")
+                       .withMessage ("Save the changes to \"" + session.getProjectName() + "\" first?")
+                       .withButton ("Save")
+                       .withButton ("Don't save")
+                       .withButton ("Cancel")
+                       .withAssociatedComponent (this);
+
+    // With three buttons the results are 1, 2 and 0 (Cancel).
+    juce::AlertWindow::showAsync (options, [safeThis = juce::Component::SafePointer (this), onContinue] (int result)
+    {
+        if (safeThis == nullptr)
+            return;
+
+        if (result == 1)
+            safeThis->saveProject (onContinue);
+        else if (result == 2)
+            onContinue();
+    });
+}
+
+void MainComponent::newProject()
+{
+    confirmDiscardChanges ([this]
+    {
+        dispatcher.execute ("new_project", makeObject ({ { "discard_changes", true } }));
+        loadStarterProject();
+    });
+}
+
+namespace
+{
+    juce::File defaultProjectFolder (const juce::File& current)
+    {
+        return current.existsAsFile() ? current.getParentDirectory()
+                                      : juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+    }
+
+    const juce::String projectWildcard = juce::String ("*") + projectFileExtension;
+}
+
+void MainComponent::openProject()
+{
+    confirmDiscardChanges ([this]
+    {
+        fileChooser = std::make_unique<juce::FileChooser> ("Open project", defaultProjectFolder (session.getFile()), projectWildcard);
+        fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                  [this] (const juce::FileChooser& chooser)
+        {
+            auto file = chooser.getResult();
+
+            if (file == juce::File())
+                return;
+
+            auto result = dispatcher.execute ("open_project", makeObject ({ { "path", file.getFullPathName() },
+                                                                            { "discard_changes", true } }));
+            if (! result.ok)
+                showError ("Couldn't open the project", result.error);
+        });
+    });
+}
+
+void MainComponent::saveProject (std::function<void()> onSaved)
+{
+    if (session.getFile() == juce::File())
+    {
+        saveProjectAs (std::move (onSaved));
+        return;
+    }
+
+    auto result = dispatcher.execute ("save_project");
+
+    if (! result.ok)
+        showError ("Couldn't save the project", result.error);
+    else if (onSaved != nullptr)
+        onSaved();
+}
+
+void MainComponent::saveProjectAs (std::function<void()> onSaved)
+{
+    auto folder = defaultProjectFolder (session.getFile());
+    auto suggestion = folder.getChildFile (session.getProjectName()).withFileExtension (projectFileExtension);
+
+    fileChooser = std::make_unique<juce::FileChooser> ("Save project as", suggestion, projectWildcard);
+    fileChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                                | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this, onSaved] (const juce::FileChooser& chooser)
+    {
+        auto file = chooser.getResult();
+
+        if (file == juce::File())
+            return;
+
+        if (! file.hasFileExtension (projectFileExtension))
+            file = file.withFileExtension (projectFileExtension);
+
+        auto result = dispatcher.execute ("save_project", makeObject ({ { "path", file.getFullPathName() } }));
+
+        if (! result.ok)
+            showError ("Couldn't save the project", result.error);
+        else if (onSaved != nullptr)
+            onSaved();
+    });
+}
+
+void MainComponent::showError (const juce::String& title, const juce::String& message)
+{
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOk (juce::MessageBoxIconType::WarningIcon,
+                                                                         title, message, {}, this),
+                                  nullptr);
+}
+
+void MainComponent::updateWindowTitle()
+{
+    if (auto* window = findParentComponentOfClass<juce::DocumentWindow>())
+        window->setName (session.getProjectName() + (session.hasUnsavedChanges() ? "*" : "") + " - Ng DAW");
+}
+
+bool MainComponent::keyPressed (const juce::KeyPress& key)
+{
+    auto command = juce::ModifierKeys::commandModifier;
+
+    if (key == juce::KeyPress ('n', command, 0))                                     { newProject(); return true; }
+    if (key == juce::KeyPress ('o', command, 0))                                     { openProject(); return true; }
+    if (key == juce::KeyPress ('s', command, 0))                                     { saveProject(); return true; }
+    if (key == juce::KeyPress ('s', command | juce::ModifierKeys::shiftModifier, 0)) { saveProjectAs(); return true; }
+
+    return false;
 }
 
 void MainComponent::runConsoleCommand()
@@ -290,6 +459,7 @@ void MainComponent::handleAsyncUpdate()
 {
     rebuildRows();
     updateButtons();
+    updateWindowTitle();
 }
 
 void MainComponent::timerCallback()
@@ -363,10 +533,18 @@ void MainComponent::resized()
 
     auto toolbar = r.removeFromTop (30);
 
+    for (auto* b : { &newButton, &openButton, &saveButton, &saveAsButton })
+    {
+        b->setBounds (toolbar.removeFromLeft (b == &saveAsButton ? 70 : 56));
+        toolbar.removeFromLeft (4);
+    }
+
+    toolbar.removeFromLeft (14);
+
     for (auto* b : { &addButton, &playButton, &undoButton, &redoButton })
     {
-        b->setBounds (toolbar.removeFromLeft (110));
-        toolbar.removeFromLeft (6);
+        b->setBounds (toolbar.removeFromLeft (b == &addButton ? 110 : 64));
+        toolbar.removeFromLeft (4);
     }
 
     toolbar.removeFromLeft (14);

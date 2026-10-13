@@ -22,6 +22,9 @@ namespace te = tracktion;
     The roles and links are stored as properties on Tracktion's track state, so they
     are saved with the Edit and take part in its undo history.
 */
+/** The extension Ng DAW gives project files. They hold a Tracktion Edit as XML. */
+constexpr const char* projectFileExtension = ".ngdaw";
+
 class Session
 {
 public:
@@ -31,6 +34,32 @@ public:
     te::Engine& getEngine() noexcept                { return engine; }
     te::Edit& getEdit() noexcept                    { return *edit; }
     juce::UndoManager& getUndoManager() noexcept    { return edit->getUndoManager(); }
+
+    //==============================================================================
+    /** Replaces the open project with an empty one. */
+    void newProject();
+
+    /** Replaces the open project with the one in the file. Returns an error, or an empty
+        string on success. The open project is left alone if the file can't be read. */
+    juce::String openProject (const juce::File&);
+
+    /** Saves to the file, or to the project's own file when none is given (an error if it
+        has never been saved). Returns an error, or an empty string on success. */
+    juce::String saveProject (const juce::File& = {});
+
+    /** The project's file, empty until it is first saved or when it was opened from nowhere. */
+    juce::File getFile() const                      { return file; }
+    juce::String getProjectName() const;
+
+    /** True when the project differs from what was last saved, opened or created. */
+    bool hasUnsavedChanges() const;
+
+    /** Treats the project as it is now as saved, e.g. a starter project nobody has touched yet. */
+    void markAsSaved();
+
+    /** Called before the open Edit is replaced (new or open), while it still exists, so
+        anything holding on to its tracks or plugins can let go. */
+    std::function<void()> onEditAboutToChange;
 
     //==============================================================================
     enum class Role { none, channel, strip };
@@ -69,6 +98,12 @@ public:
         a rollback: track outputs (above) and fader and pan parameters. */
     void refreshAfterHistoryChange();
 
+    /** Puts tracks, and each track's clips, plugins and outputs, in the order Tracktion keeps them in.
+        Tracktion sorts them itself a moment after a change, as a separate undo step, so a
+        following Undo would only undo the sort. Doing it inside the command's own undo step
+        leaves Tracktion nothing to move. Called by the dispatcher after every command. */
+    void sortTrackContents();
+
     /** Finds a channel or a mixer strip by id or name (channels are searched first). */
     te::AudioTrack* findAnyTrack (const juce::String& idOrName) const;
 
@@ -100,8 +135,14 @@ public:
     juce::var toVar() const;
 
 private:
+    std::unique_ptr<te::Edit> createNewEdit();
+    void adoptEdit (std::unique_ptr<te::Edit>, const juce::File&);
+    juce::String getComparableState() const;
+
     te::Engine& engine;
     std::unique_ptr<te::Edit> edit;
+    juce::File file;
+    juce::String savedState;
 
     JUCE_DECLARE_NON_COPYABLE (Session)
 };

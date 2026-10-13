@@ -615,6 +615,67 @@ namespace
     {
         return CommandResult::success (session.toVar());
     }
+
+    //==============================================================================
+    juce::File fileFromParam (const juce::var& path)
+    {
+        auto text = path.toString().trim();
+        return text.isEmpty() ? juce::File() : juce::File::getCurrentWorkingDirectory().getChildFile (text);
+    }
+
+    juce::var describeProject (Session& session)
+    {
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("name", session.getProjectName());
+        obj->setProperty ("path", session.getFile().getFullPathName());
+        return juce::var (obj);
+    }
+
+    std::optional<CommandResult> refuseToDiscard (Session& session, const juce::var& p)
+    {
+        if (session.hasUnsavedChanges() && ! static_cast<bool> (p["discard_changes"]))
+            return CommandResult::failure ("The project has unsaved changes. Save it first (save_project), "
+                                           "or pass discard_changes: true to lose them");
+
+        return std::nullopt;
+    }
+
+    CommandResult newProject (Session& session, const juce::var& p)
+    {
+        if (auto refusal = refuseToDiscard (session, p))
+            return *refusal;
+
+        session.newProject();
+        return CommandResult::success (describeProject (session));
+    }
+
+    CommandResult openProject (Session& session, const juce::var& p)
+    {
+        auto file = fileFromParam (p["path"]);
+
+        if (file == juce::File())
+            return CommandResult::failure ("open_project: give the path of the project file");
+
+        if (auto refusal = refuseToDiscard (session, p))
+            return *refusal;
+
+        auto error = session.openProject (file);
+
+        if (error.isNotEmpty())
+            return CommandResult::failure ("open_project: " + error);
+
+        return CommandResult::success (describeProject (session));
+    }
+
+    CommandResult saveProject (Session& session, const juce::var& p)
+    {
+        auto error = session.saveProject (fileFromParam (p["path"]));
+
+        if (error.isNotEmpty())
+            return CommandResult::failure ("save_project: " + error);
+
+        return CommandResult::success (describeProject (session));
+    }
 }
 
 //==============================================================================
@@ -722,6 +783,26 @@ void registerProjectCommands (CommandRegistry& registry)
                     false, play });
 
     registry.add ({ "stop", "Stops playback.", schema ({}), false, stop });
+
+    registry.add ({ "new_project",
+                    "Closes the open project and starts an empty one. Refuses if there are unsaved changes, "
+                    "unless discard_changes is true. Not an undo step: it clears the undo history.",
+                    schema ({ { "discard_changes", prop ("boolean", "Lose unsaved changes without asking") } }),
+                    false, newProject });
+
+    registry.add ({ "open_project",
+                    "Opens a project file (" + juce::String (projectFileExtension) + "), replacing the open project. "
+                    "Refuses if there are unsaved changes, unless discard_changes is true. Clears the undo history.",
+                    schema ({ { "path", prop ("string", "Path of the project file") },
+                              { "discard_changes", prop ("boolean", "Lose unsaved changes without asking") } },
+                            { "path" }),
+                    false, openProject });
+
+    registry.add ({ "save_project",
+                    "Saves the project. Without a path it saves to the project's own file (Save); with a path it "
+                    "saves there and that becomes the project's file (Save As).",
+                    schema ({ { "path", prop ("string", "Where to save, e.g. ~/Music/beat" + juce::String (projectFileExtension)) } }),
+                    false, saveProject });
 
     registry.add ({ "get_state", "Returns the project's channels, mixer strips, routing and transport as data.",
                     schema ({}), false, getState });

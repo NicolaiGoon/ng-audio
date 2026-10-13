@@ -18,7 +18,12 @@ CommandResult CommandDispatcher::run (const juce::String& name, const juce::var&
     if (! (params.isVoid() || params.isObject()))
         return CommandResult::failure (name + ": params must be an object");
 
-    return spec->run (session, params);
+    auto result = spec->run (session, params);
+
+    if (result.ok && spec->undoable)
+        session.sortTrackContents();
+
+    return result;
 }
 
 CommandResult CommandDispatcher::execute (const juce::String& name, const juce::var& params)

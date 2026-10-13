@@ -22,7 +22,15 @@ public:
         engine = nullptr;
     }
 
-    void systemRequestedQuit() override    { quit(); }
+    void systemRequestedQuit() override
+    {
+        // Ask about unsaved changes first; Cancel keeps the app open.
+        if (mainWindow != nullptr)
+            if (auto* content = dynamic_cast<MainComponent*> (mainWindow->getContentComponent()))
+                return content->confirmDiscardChanges ([] { quit(); });
+
+        quit();
+    }
 
 private:
     class MainWindow  : public juce::DocumentWindow
