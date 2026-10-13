@@ -62,7 +62,9 @@ private:
     juce::ComboBox timeSignature;
     juce::ToggleButton loopButton { "Loop" };
 
-    juce::Label timelineHeader { {}, "Timeline" }, channelsHeader { {}, "Channel rack" }, mixerHeader { {}, "Mixer" },
+    juce::Label timelineHint { {}, "Drag clips to move them and their edges to trim. Double-click for a new clip. "
+                                   "Del deletes, Ctrl+D duplicates, S splits at the playhead." },
+                timelineHeader { {}, "Timeline" }, channelsHeader { {}, "Channel rack" }, mixerHeader { {}, "Mixer" },
                 consoleHeader { {}, "Command console (JSON)" };
 
     juce::TextEditor consoleInput, consoleOutput;
