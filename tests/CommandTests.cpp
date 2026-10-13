@@ -186,6 +186,126 @@ namespace
         CHECK (tools[0]["inputSchema"]["type"] == "object");
     }
 
+    void testRenameAndRecolourStayInSyncWhileLinked (tracktion::Engine& engine)
+    {
+        std::cout << "rename_track and set_track_colour keep linked channels and strips in sync\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Kick" } }));
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Snare" } }));
+
+        CHECK (f.dispatcher.execute ("rename_track", obj ({ { "track", "Kick" }, { "name", "Big kick" } })).ok);
+        auto s = f.state();
+        CHECK (s["channels"][0]["name"] == "Big kick");
+        CHECK (s["strips"][0]["name"] == "Big kick");
+
+        // Renaming from the strip side works too.
+        CHECK (f.dispatcher.execute ("rename_track", obj ({ { "track", s["strips"][0]["id"] }, { "name", "Kick" } })).ok);
+        CHECK (f.state()["channels"][0]["name"] == "Kick");
+
+        CHECK (f.dispatcher.execute ("set_track_colour", obj ({ { "track", "Kick" }, { "colour", "#112233" } })).ok);
+        s = f.state();
+        CHECK (s["channels"][0]["colour"] == "#112233");
+        CHECK (s["strips"][0]["colour"] == "#112233");
+
+        // Once detached, the channel changes on its own.
+        f.dispatcher.execute ("route", obj ({ { "channel", "Snare" }, { "strip", "Kick" } }));
+        CHECK (f.dispatcher.execute ("rename_track", obj ({ { "track", "Snare" }, { "name", "Clap" } })).ok);
+        CHECK (f.dispatcher.execute ("set_track_colour", obj ({ { "track", "Clap" }, { "colour", "445566" } })).ok);
+        s = f.state();
+        CHECK (s["channels"][1]["name"] == "Clap");
+        CHECK (s["strips"][1]["name"] == "Snare");
+        CHECK (s["channels"][1]["colour"] == "#445566");
+        CHECK (s["strips"][1]["colour"] != "#445566");
+
+        // One undo step each.
+        CHECK (f.dispatcher.undo());
+        CHECK (f.state()["channels"][1]["colour"] != "#445566");
+        CHECK (f.dispatcher.undo());
+        CHECK (f.state()["channels"][1]["name"] == "Snare");
+
+        CHECK (! f.dispatcher.execute ("rename_track", obj ({ { "track", "Kick" }, { "name", "  " } })).ok);
+        CHECK (! f.dispatcher.execute ("rename_track", obj ({ { "track", "Nobody" }, { "name", "X" } })).ok);
+        CHECK (! f.dispatcher.execute ("set_track_colour", obj ({ { "track", "Kick" }, { "colour", "blue" } })).ok);
+        CHECK (! f.dispatcher.execute ("create_track", obj ({ { "colour", "#12" } })).ok);
+    }
+
+    void testDeleteTrack (tracktion::Engine& engine)
+    {
+        std::cout << "delete_track removes channels and strips and fixes up routing\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Kick" } }));
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Snare" } }));
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Hat" } }));
+
+        // A channel takes its own strip with it.
+        CHECK (f.dispatcher.execute ("delete_track", obj ({ { "track", "Hat" } })).ok);
+        auto s = f.state();
+        CHECK (s["channels"].size() == 2);
+        CHECK (s["strips"].size() == 2);
+
+        // ...but not while another channel still feeds that strip.
+        f.dispatcher.execute ("route", obj ({ { "channel", "Snare" }, { "strip", "Kick" } }));
+        CHECK (f.dispatcher.execute ("delete_track", obj ({ { "track", "Kick" } })).ok);
+        s = f.state();
+        CHECK (s["channels"].size() == 1);
+        CHECK (s["strips"].size() == 2);
+        CHECK (s["channels"][0]["output"] == s["strips"][0]["id"]);
+
+        // Deleting a strip sends what fed it to master.
+        auto r = f.dispatcher.execute ("delete_track", obj ({ { "track", s["strips"][0]["id"] } }));
+        CHECK (r.ok && r.value["rerouted_to_master"].size() == 1);
+        s = f.state();
+        CHECK (s["strips"].size() == 1);
+        CHECK (s["channels"][0]["output"] == "master");
+
+        // Undo brings back the strip and its routing.
+        CHECK (f.dispatcher.undo());
+        s = f.state();
+        CHECK (s["strips"].size() == 2);
+        CHECK (s["channels"][0]["output"] == s["strips"][0]["id"]);
+
+        // Track numbers shift as tracks go and come back; routing still follows the right strips.
+        CHECK (f.dispatcher.undo());   // the Kick channel comes back, feeding its own strip
+        s = f.state();
+        CHECK (s["channels"].size() == 2);
+        CHECK (s["channels"][0]["output"] == s["strips"][0]["id"]);
+        CHECK (s["channels"][1]["output"] == s["strips"][0]["id"]);
+
+        CHECK (f.dispatcher.redo());
+        CHECK (f.dispatcher.redo());
+        s = f.state();
+        CHECK (s["channels"].size() == 1 && s["strips"].size() == 1);
+        CHECK (s["channels"][0]["output"] == "master");
+        CHECK (s["strips"][0]["name"] == "Snare");
+
+        CHECK (! f.dispatcher.execute ("delete_track", obj ({ { "track", "Nobody" } })).ok);
+    }
+
+    void testSetInstrument (tracktion::Engine& engine)
+    {
+        std::cout << "set_instrument swaps a channel's instrument\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } }));
+        CHECK (f.state()["channels"][0]["instrument"] == "4osc");
+
+        CHECK (f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Lead" }, { "instrument", "none" } })).ok);
+        CHECK (f.state()["channels"][0]["instrument"] == "none");
+        CHECK (f.state()["channels"][0]["plugins"].size() == 0);
+
+        CHECK (f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Lead" }, { "instrument", "4osc" } })).ok);
+        CHECK (f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Lead" }, { "instrument", "4osc" } })).ok);
+        CHECK (f.state()["channels"][0]["plugins"].size() == 1);
+
+        CHECK (f.dispatcher.undo());
+        CHECK (f.dispatcher.undo());
+        CHECK (f.state()["channels"][0]["instrument"] == "none");
+
+        CHECK (! f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Lead" }, { "instrument", "kazoo" } })).ok);
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -248,6 +368,9 @@ int main()
         testUndoIsOneStepPerCommand (engine);
         testFailuresRollBack (engine);
         testJsonBridgeAndToolList (engine);
+        testRenameAndRecolourStayInSyncWhileLinked (engine);
+        testDeleteTrack (engine);
+        testSetInstrument (engine);
         testRendersAudio (engine);
     }
 

@@ -20,16 +20,92 @@ namespace
     }
 
     //==============================================================================
-    /** One instrument in the channel rack, with a picker for which mixer strip it feeds. */
+    /** A colour chip that opens the track palette; picking a colour runs set_track_colour. */
+    class ColourSwatch  : public juce::Component,
+                         public juce::SettableTooltipClient
+    {
+    public:
+        ColourSwatch (CommandDispatcher& d, juce::String trackId, juce::Colour c)
+            : dispatcher (d), id (std::move (trackId)), colour (c)
+        {
+            setTooltip ("Change colour");
+            setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            g.setColour (colour);
+            g.fillRoundedRectangle (getLocalBounds().toFloat(), 3.0f);
+        }
+
+        void mouseUp (const juce::MouseEvent&) override
+        {
+            juce::PopupMenu menu;
+            auto palette = Session::getPalette();
+
+            for (int i = 0; i < palette.size(); ++i)
+                menu.addColouredItem (i + 1, juce::String::fromUTF8 ("\xe2\x96\xa0  ") + "#" + palette[i].toDisplayString (false),
+                                      palette[i], true, palette[i] == colour);
+
+            menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+                                [&d = dispatcher, trackId = id, palette] (int result)
+                                {
+                                    if (result > 0)
+                                        d.execute ("set_track_colour", makeObject ({ { "track", trackId },
+                                                                                     { "colour", "#" + palette[result - 1].toDisplayString (false) } }));
+                                });
+        }
+
+    private:
+        CommandDispatcher& dispatcher;
+        juce::String id;
+        juce::Colour colour;
+    };
+
+    /** A name you can double-click to edit; committing the edit runs rename_track. */
+    void setUpNameLabel (juce::Label& label, CommandDispatcher& dispatcher, const juce::String& trackId, const juce::String& name)
+    {
+        label.setText (name, juce::dontSendNotification);
+        label.setEditable (false, true, false);
+        label.setTooltip ("Double-click to rename");
+        label.onTextChange = [&label, &dispatcher, trackId]
+        {
+            dispatcher.execute ("rename_track", makeObject ({ { "track", trackId }, { "name", label.getText() } }));
+        };
+    }
+
+    void setUpDeleteButton (juce::TextButton& button, CommandDispatcher& dispatcher, const juce::String& trackId, const juce::String& what)
+    {
+        button.setButtonText (juce::String::fromUTF8 ("\xc3\x97"));
+        button.setTooltip ("Delete " + what);
+        button.onClick = [&dispatcher, trackId]
+        {
+            dispatcher.execute ("delete_track", makeObject ({ { "track", trackId } }));
+        };
+    }
+
+    //==============================================================================
+    /** One instrument in the channel rack: name, colour, instrument, which strip it feeds. */
     class ChannelRow  : public juce::Component
     {
     public:
         ChannelRow (CommandDispatcher& d, const juce::var& channel, const juce::var& strips)
-            : dispatcher (d), id (channel["id"].toString()), colour (colourFrom (channel["colour"]))
+            : dispatcher (d), id (channel["id"].toString()), swatch (d, id, colourFrom (channel["colour"]))
         {
-            name.setText (channel["name"].toString(), juce::dontSendNotification);
+            setUpNameLabel (name, dispatcher, id, channel["name"].toString());
+            setUpDeleteButton (deleteButton, dispatcher, id, "channel");
+
             status.setText (channel["linked"] ? "linked" : "detached", juce::dontSendNotification);
             status.setColour (juce::Label::textColourId, juce::Colours::grey);
+
+            instrument.addItem ("4OSC synth", 1);
+            instrument.addItem ("No instrument", 2);
+            instrument.setSelectedId (channel["instrument"] == "4osc" ? 1 : 2, juce::dontSendNotification);
+            instrument.onChange = [this]
+            {
+                dispatcher.execute ("set_instrument", makeObject ({ { "channel", id },
+                                                                    { "instrument", instrument.getSelectedId() == 1 ? "4osc" : "none" } }));
+            };
 
             output.addItem ("Master", 1);
             int selected = 1;
@@ -52,69 +128,74 @@ namespace
                 dispatcher.execute ("route", makeObject ({ { "channel", id }, { "strip", dest } }));
             };
 
-            addAndMakeVisible (name);
-            addAndMakeVisible (status);
-            addAndMakeVisible (output);
-        }
-
-        void paint (juce::Graphics& g) override
-        {
-            g.setColour (colour);
-            g.fillRoundedRectangle (getLocalBounds().removeFromLeft (8).reduced (0, 4).toFloat(), 2.0f);
+            for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &status, &instrument, &output, &deleteButton })
+                addAndMakeVisible (c);
         }
 
         void resized() override
         {
-            auto r = getLocalBounds().withTrimmedLeft (14).reduced (0, 4);
-            output.setBounds (r.removeFromRight (160));
-            status.setBounds (r.removeFromRight (70));
+            auto r = getLocalBounds().reduced (0, 4);
+            swatch.setBounds (r.removeFromLeft (14));
+            r.removeFromLeft (6);
+            deleteButton.setBounds (r.removeFromRight (26));
+            r.removeFromRight (4);
+            output.setBounds (r.removeFromRight (130));
+            r.removeFromRight (4);
+            instrument.setBounds (r.removeFromRight (120));
+            status.setBounds (r.removeFromRight (64));
             name.setBounds (r);
         }
 
     private:
         CommandDispatcher& dispatcher;
         juce::String id;
-        juce::Colour colour;
+        ColourSwatch swatch;
         juce::StringArray stripIds;
         juce::Label name, status;
-        juce::ComboBox output;
+        juce::ComboBox instrument, output;
+        juce::TextButton deleteButton;
     };
 
     /** One mixer strip and how many channels feed it. */
     class StripRow  : public juce::Component
     {
     public:
-        explicit StripRow (const juce::var& strip)
-            : colour (colourFrom (strip["colour"]))
+        StripRow (CommandDispatcher& d, const juce::var& strip)
+            : id (strip["id"].toString()), colour (colourFrom (strip["colour"])), swatch (d, id, colour)
         {
-            name.setText (strip["name"].toString(), juce::dontSendNotification);
+            setUpNameLabel (name, d, id, strip["name"].toString());
+            setUpDeleteButton (deleteButton, d, id, "mixer strip");
 
             auto numInputs = strip["inputs"].size();
             inputs.setText (juce::String (numInputs) + (numInputs == 1 ? " input" : " inputs"), juce::dontSendNotification);
             inputs.setColour (juce::Label::textColourId, juce::Colours::grey);
 
-            addAndMakeVisible (name);
-            addAndMakeVisible (inputs);
+            for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &inputs, &deleteButton })
+                addAndMakeVisible (c);
         }
 
         void paint (juce::Graphics& g) override
         {
             g.setColour (colour.withAlpha (0.25f));
             g.fillRoundedRectangle (getLocalBounds().reduced (0, 2).toFloat(), 4.0f);
-            g.setColour (colour);
-            g.fillRoundedRectangle (getLocalBounds().removeFromLeft (8).reduced (0, 2).toFloat(), 2.0f);
         }
 
         void resized() override
         {
-            auto r = getLocalBounds().withTrimmedLeft (14).reduced (0, 2);
+            auto r = getLocalBounds().reduced (0, 2);
+            swatch.setBounds (r.removeFromLeft (14).reduced (0, 2));
+            r.removeFromLeft (6);
+            deleteButton.setBounds (r.removeFromRight (26).reduced (0, 2));
             inputs.setBounds (r.removeFromRight (80));
             name.setBounds (r);
         }
 
     private:
+        juce::String id;
         juce::Colour colour;
+        ColourSwatch swatch;
         juce::Label name, inputs;
+        juce::TextButton deleteButton;
     };
 }
 
@@ -247,7 +328,7 @@ void MainComponent::rebuildRows()
         addAndMakeVisible (channelRows.add (new ChannelRow (dispatcher, c, strips)));
 
     for (auto& s : *strips.getArray())
-        addAndMakeVisible (stripRows.add (new StripRow (s)));
+        addAndMakeVisible (stripRows.add (new StripRow (dispatcher, s)));
 
     resized();
 }

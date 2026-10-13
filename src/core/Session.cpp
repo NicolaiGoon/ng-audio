@@ -25,6 +25,16 @@ juce::String toString (Session::Role role)
     return {};
 }
 
+std::optional<juce::Colour> parseColour (const juce::String& text)
+{
+    auto hex = text.trim().removeCharacters ("#");
+
+    if ((hex.length() != 6 && hex.length() != 8) || ! hex.containsOnly ("0123456789abcdefABCDEF"))
+        return std::nullopt;
+
+    return juce::Colour::fromString (hex.paddedLeft ('f', 8));
+}
+
 //==============================================================================
 Session::Session (te::Engine& e)
     : engine (e)
@@ -129,6 +139,45 @@ bool Session::isLinked (const te::AudioTrack& channel) const
     return own != nullptr && getDestinationStrip (channel) == own;
 }
 
+te::AudioTrack* Session::getLinkedPartner (const te::AudioTrack& track) const
+{
+    if (getRole (track) == Role::channel)
+        return isLinked (track) ? getOwnStrip (track) : nullptr;
+
+    if (getRole (track) == Role::strip)
+        for (auto c : getChannels())
+            if (getOwnStrip (*c) == &track && isLinked (*c))
+                return c;
+
+    return nullptr;
+}
+
+void Session::writeTrackOutputs()
+{
+    for (auto t : te::getAudioTracks (*edit))
+        t->getOutput().flushStateToValueTree();
+}
+
+void Session::refreshTrackOutputs()
+{
+    for (auto t : te::getAudioTracks (*edit))
+        t->getOutput().updateOutput();
+}
+
+te::AudioTrack* Session::findAnyTrack (const juce::String& idOrName) const
+{
+    if (auto t = findTrack (idOrName, Role::channel))
+        return t;
+
+    return findTrack (idOrName, Role::strip);
+}
+
+juce::Array<juce::Colour> Session::getPalette()
+{
+    return { juce::Colour (0xffe0603c), juce::Colour (0xffe8b23a), juce::Colour (0xff8cc84b), juce::Colour (0xff3cb4a0),
+             juce::Colour (0xff3c8ce0), juce::Colour (0xff8c64dc), juce::Colour (0xffd85aa8), juce::Colour (0xff9aa0a6) };
+}
+
 //==============================================================================
 juce::var Session::toVar() const
 {
@@ -155,6 +204,14 @@ juce::var Session::toVar() const
                 plugins.add (p->getPluginType());
 
         obj->setProperty ("plugins", plugins);
+
+        juce::String instrument ("none");
+
+        for (auto p : c->pluginList)
+            if (p->isSynth())
+                instrument = p->getPluginType();
+
+        obj->setProperty ("instrument", instrument);
         obj->setProperty ("clips", c->getClips().size());
         channels.add (juce::var (obj));
     }

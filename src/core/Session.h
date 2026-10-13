@@ -2,6 +2,8 @@
 
 #include <tracktion_engine/tracktion_engine.h>
 
+#include <optional>
+
 namespace ng
 {
 namespace te = tracktion;
@@ -52,6 +54,23 @@ public:
     /** Where a channel's audio currently goes (nullptr means straight to master). */
     te::AudioTrack* getDestinationStrip (const te::AudioTrack& channel) const;
 
+    /** For a linked channel, its strip; for a strip, the channel linked to it. Renaming or
+        recolouring either one changes both. Returns nullptr when there is no live link. */
+    te::AudioTrack* getLinkedPartner (const te::AudioTrack&) const;
+
+    /** Tracktion stores a track's output as "track <number>", so deleting a track shifts what
+        those numbers mean. writeTrackOutputs() rewrites them for the current track order
+        (part of the undo step, called after deleting tracks); refreshTrackOutputs() re-reads
+        them (called after undo, redo and rollback, when the stored numbers match the order again). */
+    void writeTrackOutputs();
+    void refreshTrackOutputs();
+
+    /** Finds a channel or a mixer strip by id or name (channels are searched first). */
+    te::AudioTrack* findAnyTrack (const juce::String& idOrName) const;
+
+    /** The colours new channels cycle through, also offered in the UI's colour menu. */
+    static juce::Array<juce::Colour> getPalette();
+
     /** The whole project as plain data, for the UI, tests and AI tools. */
     juce::var toVar() const;
 
@@ -63,5 +82,8 @@ private:
 };
 
 juce::String toString (Session::Role);
+
+/** Reads "#3c8ce0" or "3c8ce0" (alpha optional); nullopt if it isn't a hex colour. */
+std::optional<juce::Colour> parseColour (const juce::String&);
 
 } // namespace ng
