@@ -1,4 +1,5 @@
 #include "MixerView.h"
+#include "BrowserPanel.h"
 #include "Widgets.h"
 
 namespace ng
@@ -231,6 +232,16 @@ private:
             showError (result.error);
     }
 
+    void savePreset (int index)
+    {
+        auto list = session.findEffectList (stripId);
+        auto effect = list != nullptr ? Session::getEffects (*list)[index] : nullptr;
+
+        if (effect != nullptr)
+            browser::savePresetWithName (dispatcher, getTopLevelComponent(), effect->getName(),
+                                         makeObject ({ { "strip", stripId }, { "effect", effect->itemID.toString() } }));
+    }
+
     void showSlotMenu (int index, const juce::var& effect)
     {
         auto enabled = static_cast<bool> (effect["enabled"]);
@@ -241,6 +252,7 @@ private:
         menu.addItem (2, enabled ? "Bypass" : "Turn on");
         menu.addItem (3, "Move up", index > 0);
         menu.addItem (4, "Move down", index < slots.size() - 1);
+        menu.addItem (6, "Save as preset...", ! effect.hasProperty ("missing"));
         menu.addSeparator();
         menu.addItem (5, "Remove");
 
@@ -258,6 +270,7 @@ private:
                                     case 3:  safeThis->run ("move_effect", index, { { "index", index - 1 } }); break;
                                     case 4:  safeThis->run ("move_effect", index, { { "index", index + 1 } }); break;
                                     case 5:  safeThis->run ("remove_effect", index); break;
+                                    case 6:  safeThis->savePreset (index); break;
                                     default: break;
                                 }
                             });
@@ -590,7 +603,8 @@ private:
 
 //==============================================================================
 /** One mixer strip, or the master strip when id is "master". */
-class MixerView::StripColumn  : public juce::Component
+class MixerView::StripColumn  : public juce::Component,
+                                public juce::DragAndDropTarget
 {
 public:
     StripColumn (Session& s, CommandDispatcher& d, const juce::var& strip, const juce::var& allStrips,
@@ -674,6 +688,26 @@ public:
 
         if (sends != nullptr)
             sends->setValues (strip["sends"]);
+    }
+
+    // Effects and effect presets dragged from the browser go after the strip's other effects.
+    bool isInterestedInDragSource (const SourceDetails& details) override   { return browser::canDropOnStrip (details.description); }
+    void itemDragEnter (const SourceDetails&) override     { setDropHighlight (true); }
+    void itemDragExit (const SourceDetails&) override      { setDropHighlight (false); }
+
+    void itemDropped (const SourceDetails& details) override
+    {
+        setDropHighlight (false);
+        browser::showDropError (getTopLevelComponent(), browser::dropOnStrip (dispatcher, id, { details.description }));
+    }
+
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        if (dropHighlight)
+        {
+            g.setColour (juce::Colour (0xff3c8ce0));
+            g.drawRoundedRectangle (getLocalBounds().reduced (2, 0).toFloat(), 5.0f, 2.0f);
+        }
     }
 
     void paint (juce::Graphics& g) override
@@ -777,6 +811,13 @@ private:
     EffectSlots effects;
     std::unique_ptr<SendSlots> sends;
     Meter meter;
+    bool dropHighlight = false;
+
+    void setDropHighlight (bool on)
+    {
+        dropHighlight = on;
+        repaint();
+    }
 };
 
 //==============================================================================
