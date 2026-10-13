@@ -73,6 +73,7 @@ private:
     CommandRegistry registry;
     CommandDispatcher dispatcher { session, registry };
 
+    juce::TextButton addBusButton { "Add bus" };
     juce::TextButton newButton { "New" }, openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save as" },
                      addButton { "Add instrument" }, playButton { "Play" }, returnButton { "|<" }, recordButton { "Rec" },
                      undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio" }, pluginsButton { "Plugins" }, shortcutsButton { "?" },

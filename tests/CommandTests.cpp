@@ -1420,6 +1420,107 @@ namespace
         CHECK (! f.dispatcher.execute ("show_effect_window", obj ({ { "strip", "Lead" }, { "effect", 0 } })).ok);
     }
 
+    void testBusesAndSends (tracktion::Engine& engine)
+    {
+        std::cout << "buses and sends\n";
+        Fixture f (engine);
+
+        CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } })).ok);
+        f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "length_beats", 4 },
+                                                      { "notes", juce::Array<juce::var> { note (60, 0, 4) } } }));
+
+        auto created = f.dispatcher.execute ("create_bus", obj ({ { "name", "Verb" } }));
+        CHECK (created.ok);
+        auto strip = [&] (int i) { return f.state()["strips"][i]; };
+        CHECK (strip (1)["name"] == "Verb" && static_cast<bool> (strip (1)["bus"]) && ! static_cast<bool> (strip (0)["bus"]));
+        CHECK (strip (1)["output"] == "master" && strip (1)["sends"].size() == 0);
+
+        auto send = [&] (std::initializer_list<std::pair<const char*, juce::var>> extra)
+        {
+            auto params = obj ({ { "strip", "Lead" }, { "bus", "Verb" } });
+
+            for (auto& [k, v] : extra)
+                params.getDynamicObject()->setProperty (k, v);
+
+            return f.dispatcher.execute ("set_send", params);
+        };
+
+        // A new send: post-fader at 0 dB, one undo step; changing it is another.
+        CHECK (send ({}).ok);
+        auto sends = [&] { return strip (0)["sends"]; };
+        CHECK (sends().size() == 1 && sends()[0]["bus"] == created.value["strip"] && sends()[0]["bus_name"] == "Verb");
+        CHECK (near (sends()[0]["level_db"], 0.0) && ! static_cast<bool> (sends()[0]["pre_fader"]));
+        CHECK (send ({ { "level_db", -6 } }).ok);
+        CHECK (near (sends()[0]["level_db"], -6.0) && sends().size() == 1);
+        f.dispatcher.undo();
+        CHECK (near (sends()[0]["level_db"], 0.0));
+        f.dispatcher.undo();
+        CHECK (sends().size() == 0);
+        f.dispatcher.redo();
+        f.dispatcher.redo();
+        CHECK (sends().size() == 1 && near (sends()[0]["level_db"], -6.0));
+
+        // Bad requests change nothing.
+        CHECK (! send ({ { "level_db", 10 } }).ok);
+        CHECK (! f.dispatcher.execute ("set_send", obj ({ { "strip", "Verb" }, { "bus", "Lead" } })).ok);   // not a bus
+        CHECK (! f.dispatcher.execute ("set_send", obj ({ { "strip", "Verb" }, { "bus", "Verb" } })).ok);   // itself
+        CHECK (near (sends()[0]["level_db"], -6.0));
+
+        // Sends that would loop are refused.
+        CHECK (f.dispatcher.execute ("create_bus", obj ({ { "name", "Echo" } })).ok);
+        CHECK (f.dispatcher.execute ("set_send", obj ({ { "strip", "Verb" }, { "bus", "Echo" } })).ok);
+        CHECK (! f.dispatcher.execute ("set_send", obj ({ { "strip", "Echo" }, { "bus", "Verb" } })).ok);
+        CHECK (f.dispatcher.execute ("remove_send", obj ({ { "strip", "Verb" }, { "bus", "Echo" } })).ok);
+        CHECK (! f.dispatcher.execute ("remove_send", obj ({ { "strip", "Verb" }, { "bus", "Echo" } })).ok);
+        CHECK (f.dispatcher.execute ("delete_track", obj ({ { "track", "Echo" } })).ok);
+
+        // The sound: with the strip's fader down, a post-fader send is silent too, a pre-fader
+        // send still reaches the bus, and the bus's own fader then silences it.
+        CHECK (send ({ { "level_db", 0 } }).ok);
+        CHECK (f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Lead" }, { "volume_db", -100 } })).ok);
+        auto postFader = renderRms (f);
+        CHECK (send ({ { "pre_fader", true } }).ok);
+        CHECK (static_cast<bool> (sends()[0]["pre_fader"]));
+        auto preFader = renderRms (f);
+        CHECK (f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Verb" }, { "volume_db", -100 } })).ok);
+        auto busDown = renderRms (f);
+        std::cout << "       strip fader down: post-fader send RMS " << postFader << ", pre-fader " << preFader
+                  << ", bus fader down too " << busDown << "\n";
+        CHECK (postFader < 0.0001f && preFader > 0.01f && busDown < 0.0001f);
+        CHECK (f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Verb" }, { "volume_db", 0 } })).ok);
+        for (int i = 0; i < 3; ++i)   // both bus fader moves, then the switch to pre-fader
+            f.dispatcher.undo();
+
+        CHECK (! static_cast<bool> (sends()[0]["pre_fader"]));
+
+        for (int i = 0; i < 3; ++i)
+            f.dispatcher.redo();
+
+        CHECK (static_cast<bool> (sends()[0]["pre_fader"]));
+
+        // A bus holds effects after its return, like any strip.
+        CHECK (f.dispatcher.execute ("add_effect", obj ({ { "strip", "Verb" }, { "effect", "reverb" }, { "index", 0 } })).ok);
+        CHECK (strip (1)["effects"].size() == 1);
+        auto& busList = f.session.getStrips()[1]->pluginList;
+        CHECK (dynamic_cast<tracktion::AuxReturnPlugin*> (busList[0]) != nullptr
+               && dynamic_cast<tracktion::ReverbPlugin*> (busList[1]) != nullptr);
+
+        // Saved and reopened, the bus and send come back as they were.
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (f.dispatcher.execute ("save_project", obj ({ { "path", path } })).ok);
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (static_cast<bool> (strip (1)["bus"]) && sends().size() == 1);
+        CHECK (near (sends()[0]["level_db"], 0.0) && static_cast<bool> (sends()[0]["pre_fader"]));
+        CHECK (renderRms (f) > 0.01f);
+
+        // Deleting the bus takes the sends to it along; undo brings both back.
+        CHECK (f.dispatcher.execute ("delete_track", obj ({ { "track", "Verb" } })).ok);
+        CHECK (f.state()["strips"].size() == 1 && sends().size() == 0);
+        f.dispatcher.undo();
+        CHECK (f.state()["strips"].size() == 2 && sends().size() == 1 && sends()[0]["bus_name"] == "Verb");
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -1503,6 +1604,7 @@ int main()
         testPluginScanning (engine);
         testPluginInstrument (engine);
         testEffects (engine);
+        testBusesAndSends (engine);
         testRendersAudio (engine);
     }
 
