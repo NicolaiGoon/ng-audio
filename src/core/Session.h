@@ -158,6 +158,24 @@ public:
     /** Calls fn for every effect on every strip and the master. */
     void forEachEffect (const std::function<void (te::Plugin&)>&) const;
 
+    //==============================================================================
+    /** A bus is a mixer strip that sends can feed: it holds an aux return for one of
+        Tracktion's numbered aux buses. Returns the bus number, or -1 for other strips. */
+    static int getBusNumber (const te::AudioTrack& strip);
+
+    /** The strip that returns an aux bus, or nullptr. */
+    te::AudioTrack* findBus (int busNumber) const;
+
+    /** A strip's sends, in the order they appear in its plugin list. */
+    static juce::Array<te::AuxSendPlugin*> getSends (const te::AudioTrack& strip);
+
+    /** True if a send is before the strip's fader, so the fader doesn't change it. */
+    static bool isPreFader (const te::AuxSendPlugin&);
+
+    /** True if audio from 'from' can reach 'to' through strip outputs and sends,
+        e.g. to refuse a send that would feed a bus back into itself. */
+    bool feeds (const te::AudioTrack& from, const te::AudioTrack& to) const;
+
     /** True for the clip set_steps keeps in sync with a channel's step pattern. */
     static bool isPatternClip (const te::Clip&);
 

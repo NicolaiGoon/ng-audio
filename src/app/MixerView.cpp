@@ -32,6 +32,19 @@ namespace
                          + "|" + juce::String (s["inputs"].size()) + "|" + getEffectsKey (s));
 
         parts.add ("master|" + getEffectsKey (state["master"]));
+
+        // The sends (not their levels, which update in place) and which strips are buses.
+        for (auto& st : *strips.getArray())
+        {
+            juce::String sendKey (static_cast<bool> (st["bus"]) ? "bus" : "");
+            auto sends = st["sends"];
+
+            for (auto& send : *sends.getArray())
+                sendKey << ">" << send["bus"].toString() << ":" << send["bus_name"].toString()
+                        << (static_cast<bool> (send["pre_fader"]) ? ":pre" : "");
+
+            parts.add (sendKey);
+        }
         return parts.joinIntoString (";");
     }
 
@@ -151,7 +164,7 @@ public:
         addAndMakeVisible (addButton);
     }
 
-    static constexpr int slotHeight = 18, visibleSlots = 3;
+    static constexpr int slotHeight = 18, visibleSlots = 2;
     static constexpr int preferredHeight = slotHeight * (visibleSlots + 1) + 2;
 
     void resized() override
@@ -307,11 +320,281 @@ private:
 };
 
 //==============================================================================
+/** A strip's sends to buses: a level bar per send (drag it; a drag is one undo step) and
+    a button to add one. Right-click a send to switch it pre- or post-fader, or remove it. */
+class MixerView::SendSlots  : public juce::Component
+{
+public:
+    SendSlots (CommandDispatcher& d, juce::String strip, const juce::var& sends, const juce::var& allStrips)
+        : dispatcher (d), stripId (std::move (strip))
+    {
+        for (int i = 0; i < sends.size(); ++i)
+        {
+            auto send = sends[i];
+            auto* row = rows.add (new SendRow (*this, send["bus"].toString(), send["bus_name"].toString(),
+                                               static_cast<bool> (send["pre_fader"])));
+            holder.addAndMakeVisible (row);
+        }
+
+        // Buses this strip could send to: not itself, and not one it already sends to.
+        for (auto& s : *allStrips.getArray())
+        {
+            auto id = s["id"].toString();
+
+            if (static_cast<bool> (s["bus"]) && id != stripId)
+                buses.add ({ id, s["name"].toString(), getRow (id) != nullptr });
+        }
+
+        setValues (sends);
+
+        addButton.setTooltip ("Send this strip to a bus");
+        addButton.onClick = [this] { showAddMenu(); };
+
+        viewport.setViewedComponent (&holder, false);
+        viewport.setScrollBarsShown (true, false);
+        viewport.setScrollBarThickness (6);
+        addAndMakeVisible (viewport);
+        addAndMakeVisible (addButton);
+    }
+
+    static constexpr int rowHeight = 18, visibleRows = 2;
+    static constexpr int preferredHeight = rowHeight * (visibleRows + 1) + 2;
+
+    /** Shows new send levels without rebuilding (a bar being dragged keeps its value). */
+    void setValues (const juce::var& sends)
+    {
+        for (auto& send : *sends.getArray())
+            if (auto* row = getRow (send["bus"].toString()))
+                row->setLevel (send["level_db"]);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        addButton.setBounds (r.removeFromBottom (rowHeight));
+        r.removeFromBottom (2);
+        viewport.setBounds (r);
+
+        auto width = r.getWidth() - (rows.size() > visibleRows ? viewport.getScrollBarThickness() : 0);
+        holder.setSize (width, rows.size() * rowHeight);
+
+        for (int i = 0; i < rows.size(); ++i)
+            rows[i]->setBounds (0, i * rowHeight, width, rowHeight - 1);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        if (rows.isEmpty())
+        {
+            g.setColour (juce::Colours::grey.withAlpha (0.6f));
+            g.setFont (juce::FontOptions (11.0f));
+            g.drawText ("No sends", viewport.getBounds(), juce::Justification::centred);
+        }
+    }
+
+private:
+    /** One send: the bus name over a bar showing the level, dragged like a fader. */
+    class SendRow  : public juce::Component,
+                     public juce::SettableTooltipClient
+    {
+    public:
+        SendRow (SendSlots& o, juce::String bus, juce::String name, bool pre)
+            : owner (o), busId (std::move (bus)), busName (std::move (name)), preFader (pre)
+        {
+            slider.setSliderStyle (juce::Slider::LinearBar);
+            slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+            slider.setRange (-100.0, 6.0, 0.1);
+            slider.setSkewFactorFromMidPoint (-12.0);
+            slider.setDoubleClickReturnValue (true, 0.0);
+            slider.setColour (juce::Slider::trackColourId, juce::Colour (0xff3c6e8c));
+            slider.setPopupDisplayEnabled (true, true, nullptr);
+            slider.setTextValueSuffix (" dB");
+            slider.setInterceptsMouseClicks (false, false);   // the row handles the mouse
+            addAndMakeVisible (slider);
+
+            setTooltip ("Send to " + busName + (preFader ? " (pre-fader)" : " (post-fader)")
+                          + "\nDrag to set the level, double-click for 0 dB, right-click for more");
+        }
+
+        void setLevel (double db)
+        {
+            if (! isMouseButtonDown())
+                slider.setValue (db, juce::dontSendNotification);
+
+            repaint();
+        }
+
+        void resized() override     { slider.setBounds (getLocalBounds()); }
+
+        void paintOverChildren (juce::Graphics& g) override
+        {
+            g.setColour (juce::Colours::white);
+            g.setFont (juce::FontOptions (11.0f));
+            auto text = busName + (preFader ? " (pre)" : "");
+            g.drawFittedText (text, getLocalBounds().reduced (4, 0), juce::Justification::centredLeft, 1, 0.8f);
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            if (e.mods.isPopupMenu())
+            {
+                owner.showRowMenu (*this);
+                return;
+            }
+
+            dragStartValue = slider.getValue();
+            owner.dispatcher.beginGesture ("Send level");
+        }
+
+        void mouseDrag (const juce::MouseEvent& e) override
+        {
+            if (e.mods.isPopupMenu())
+                return;
+
+            // Drag like the bar's own value: across the row is the whole range.
+            auto proportion = slider.valueToProportionOfLength (dragStartValue) + e.getDistanceFromDragStartX() / (double) getWidth();
+            setValue (slider.proportionOfLengthToValue (juce::jlimit (0.0, 1.0, proportion)));
+        }
+
+        void mouseUp (const juce::MouseEvent& e) override
+        {
+            if (! e.mods.isPopupMenu())
+                owner.dispatcher.endGesture();
+        }
+
+        void mouseDoubleClick (const juce::MouseEvent&) override
+        {
+            setValue (0.0);
+        }
+
+        void setValue (double db)
+        {
+            slider.setValue (db, juce::dontSendNotification);
+            owner.send ({ { "bus", busId }, { "level_db", db } });
+        }
+
+        SendSlots& owner;
+        juce::String busId, busName;
+        bool preFader;
+        juce::Slider slider;
+        double dragStartValue = 0.0;
+    };
+
+    struct Bus
+    {
+        juce::String id, name;
+        bool alreadySent;
+    };
+
+    SendRow* getRow (const juce::String& busId) const
+    {
+        for (auto* row : rows)
+            if (row->busId == busId)
+                return row;
+
+        return nullptr;
+    }
+
+    CommandResult send (std::initializer_list<std::pair<const char*, juce::var>> values, const juce::String& command = "set_send")
+    {
+        auto params = makeObject ({ { "strip", stripId } });
+
+        for (auto& [k, v] : values)
+            params.getDynamicObject()->setProperty (k, v);
+
+        auto result = dispatcher.execute (command, params);
+
+        if (! result.ok)
+            showError (result.error);
+
+        return result;
+    }
+
+    void showRowMenu (SendRow& row)
+    {
+        juce::PopupMenu menu;
+        menu.addSectionHeader ("Send to " + row.busName);
+        menu.addItem (1, "Pre-fader (the strip's fader doesn't change it)", true, row.preFader);
+        menu.addItem (2, "Set to 0 dB");
+        menu.addSeparator();
+        menu.addItem (3, "Remove");
+
+        // The menu's actions rebuild the mixer, and this component with it.
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&row),
+                            [safeThis = juce::Component::SafePointer<SendSlots> (this), bus = row.busId, pre = row.preFader] (int result)
+                            {
+                                if (safeThis == nullptr)
+                                    return;
+
+                                switch (result)
+                                {
+                                    case 1:  safeThis->send ({ { "bus", bus }, { "pre_fader", ! pre } }); break;
+                                    case 2:  safeThis->send ({ { "bus", bus }, { "level_db", 0.0 } }); break;
+                                    case 3:  safeThis->send ({ { "bus", bus } }, "remove_send"); break;
+                                    default: break;
+                                }
+                            });
+    }
+
+    void showAddMenu()
+    {
+        juce::PopupMenu menu;
+
+        for (int i = 0; i < buses.size(); ++i)
+            menu.addItem (i + 1, buses[i].name, ! buses[i].alreadySent, buses[i].alreadySent);
+
+        if (! buses.isEmpty())
+            menu.addSeparator();
+
+        menu.addItem (-2, "New bus");
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addButton),
+                            [safeThis = juce::Component::SafePointer<SendSlots> (this)] (int result)
+                            {
+                                if (safeThis == nullptr || result == 0)
+                                    return;
+
+                                if (result > 0)
+                                {
+                                    safeThis->send ({ { "bus", safeThis->buses[result - 1].id } });
+                                    return;
+                                }
+
+                                // A new bus and the send to it, as one undo step.
+                                auto& d = safeThis->dispatcher;
+                                auto strip = safeThis->stripId;
+                                d.beginGesture ("New bus");
+                                auto bus = d.execute ("create_bus");
+
+                                if (bus.ok)
+                                {
+                                    auto sent = d.execute ("set_send", makeObject ({ { "strip", strip }, { "bus", bus.value["strip"] } }));
+
+                                    if (! sent.ok)
+                                        showError (sent.error);
+                                }
+
+                                d.endGesture();
+                            });
+    }
+
+    CommandDispatcher& dispatcher;
+    juce::String stripId;
+    juce::Array<Bus> buses;
+
+    juce::Viewport viewport;
+    juce::Component holder;
+    juce::OwnedArray<SendRow> rows;
+    juce::TextButton addButton { "+ Send" };
+};
+
+//==============================================================================
 /** One mixer strip, or the master strip when id is "master". */
 class MixerView::StripColumn  : public juce::Component
 {
 public:
-    StripColumn (Session& s, CommandDispatcher& d, const juce::var& strip, te::LevelMeterPlugin* meterPlugin)
+    StripColumn (Session& s, CommandDispatcher& d, const juce::var& strip, const juce::var& allStrips,
+                 te::LevelMeterPlugin* meterPlugin)
         : dispatcher (d), id (strip["id"].toString()), isMaster (id == "master"),
           colour (isMaster ? juce::Colours::grey : colourFrom (strip["colour"])),
           swatch (d, id, colour), effects (s, d, id, strip["effects"]), meter (meterPlugin)
@@ -327,7 +610,13 @@ public:
             setUpDeleteButton (deleteButton, dispatcher, id, "mixer strip");
 
             auto numInputs = strip["inputs"].size();
-            inputs.setText (juce::String (numInputs) + (numInputs == 1 ? " input" : " inputs"), juce::dontSendNotification);
+            auto inputsText = juce::String (numInputs) + (numInputs == 1 ? " input" : " inputs");
+            inputs.setText (static_cast<bool> (strip["bus"]) ? "Bus" + (numInputs > 0 ? ", " + inputsText : juce::String())
+                                                             : inputsText,
+                            juce::dontSendNotification);
+
+            sends = std::make_unique<SendSlots> (d, id, strip["sends"], allStrips);
+            addAndMakeVisible (*sends);
             inputs.setColour (juce::Label::textColourId, juce::Colours::grey);
             inputs.setJustificationType (juce::Justification::centred);
             inputs.setFont (juce::FontOptions (12.0f));
@@ -381,6 +670,9 @@ public:
 
         mute.setToggleState (strip["mute"], juce::dontSendNotification);
         solo.setToggleState (strip["solo"], juce::dontSendNotification);
+
+        if (sends != nullptr)
+            sends->setValues (strip["sends"]);
     }
 
     void paint (juce::Graphics& g) override
@@ -412,6 +704,12 @@ public:
 
         effects.setBounds (r.removeFromTop (EffectSlots::preferredHeight));
         r.removeFromTop (4);
+
+        // The master has no sends; leave the space so its fader lines up with the others.
+        if (sends != nullptr)
+            sends->setBounds (r.getX(), r.getY(), r.getWidth(), SendSlots::preferredHeight);
+
+        r.removeFromTop (SendSlots::preferredHeight + 4);
 
         if (! isMaster)
         {
@@ -460,6 +758,7 @@ private:
     juce::Slider pan, fader;
     juce::TextButton mute { "M" }, solo { "S" }, deleteButton;
     EffectSlots effects;
+    std::unique_ptr<SendSlots> sends;
     Meter meter;
 };
 
@@ -498,7 +797,7 @@ void MixerView::update (const juce::var& state)
     {
         auto track = session.findTrack (strip["id"].toString(), Session::Role::strip);
         auto meterPlugin = track != nullptr ? track->getLevelMeterPlugin() : nullptr;
-        columnHolder.addAndMakeVisible (columns.add (new StripColumn (session, dispatcher, strip, meterPlugin)));
+        columnHolder.addAndMakeVisible (columns.add (new StripColumn (session, dispatcher, strip, strips, meterPlugin)));
     }
 
     auto master = state["master"].clone();
@@ -506,7 +805,7 @@ void MixerView::update (const juce::var& state)
     if (auto obj = master.getDynamicObject())
         obj->setProperty ("id", "master");
 
-    masterColumn = std::make_unique<StripColumn> (session, dispatcher, master, session.getMasterMeter());
+    masterColumn = std::make_unique<StripColumn> (session, dispatcher, master, strips, session.getMasterMeter());
     addAndMakeVisible (*masterColumn);
 
     resized();

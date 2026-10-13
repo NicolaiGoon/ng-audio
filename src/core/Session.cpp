@@ -328,7 +328,8 @@ juce::Array<te::Plugin*> Session::getEffects (const te::PluginList& list)
     juce::Array<te::Plugin*> effects;
 
     for (auto p : list)
-        if (! (dynamic_cast<te::VolumeAndPanPlugin*> (p) || dynamic_cast<te::LevelMeterPlugin*> (p)))
+        if (! (dynamic_cast<te::VolumeAndPanPlugin*> (p) || dynamic_cast<te::LevelMeterPlugin*> (p)
+                 || dynamic_cast<te::AuxSendPlugin*> (p) || dynamic_cast<te::AuxReturnPlugin*> (p)))
             effects.add (p);
 
     return effects;
@@ -355,9 +356,10 @@ int Session::getEffectInsertIndex (const te::PluginList& list, int effectIndex)
     if (juce::isPositiveAndBelow (effectIndex, effects.size()))
         return list.indexOf (effects[effectIndex]);
 
-    // At the end of the effects: before the first fader or meter (which come last).
+    // At the end of the effects: before the first fader, meter or send (which come last).
     for (int i = 0; i < list.size(); ++i)
-        if (dynamic_cast<te::VolumeAndPanPlugin*> (list[i]) || dynamic_cast<te::LevelMeterPlugin*> (list[i]))
+        if (dynamic_cast<te::VolumeAndPanPlugin*> (list[i]) || dynamic_cast<te::LevelMeterPlugin*> (list[i])
+              || dynamic_cast<te::AuxSendPlugin*> (list[i]))
             return i;
 
     return list.size();
@@ -614,6 +616,11 @@ void Session::refreshAfterHistoryChange()
                 param->updateFromAttachedValue();
     });
 
+    // Send levels are always stored (set_send writes them), so the same goes for them.
+    for (auto s : getStrips())
+        for (auto send : getSends (*s))
+            send->gain->updateFromAttachedValue();
+
     edit->updateMuteSoloStatuses();
 }
 
@@ -625,6 +632,78 @@ void Session::forEachEffect (const std::function<void (te::Plugin&)>& fn) const
 
     for (auto effect : getEffects (edit->getMasterPluginList()))
         fn (*effect);
+}
+
+int Session::getBusNumber (const te::AudioTrack& strip)
+{
+    if (auto ret = strip.pluginList.findFirstPluginOfType<te::AuxReturnPlugin>())
+        return ret->busNumber.get();
+
+    return -1;
+}
+
+te::AudioTrack* Session::findBus (int busNumber) const
+{
+    if (busNumber < 0)
+        return nullptr;
+
+    for (auto s : getStrips())
+        if (getBusNumber (*s) == busNumber)
+            return s;
+
+    return nullptr;
+}
+
+juce::Array<te::AuxSendPlugin*> Session::getSends (const te::AudioTrack& strip)
+{
+    return strip.pluginList.getPluginsOfType<te::AuxSendPlugin>();
+}
+
+bool Session::isPreFader (const te::AuxSendPlugin& send)
+{
+    auto list = send.getOwnerList();
+
+    if (list == nullptr)
+        return false;
+
+    for (auto p : *list)
+    {
+        if (p == &send)
+            return true;
+
+        if (dynamic_cast<te::VolumeAndPanPlugin*> (p) != nullptr)
+            return false;
+    }
+
+    return false;
+}
+
+bool Session::feeds (const te::AudioTrack& from, const te::AudioTrack& to) const
+{
+    juce::Array<const te::AudioTrack*> visited;
+    juce::Array<const te::AudioTrack*> pending { &from };
+
+    while (! pending.isEmpty())
+    {
+        auto t = pending.removeAndReturn (pending.size() - 1);
+
+        if (t == &to)
+            return true;
+
+        if (visited.contains (t))
+            continue;
+
+        visited.add (t);
+
+        if (auto dest = dynamic_cast<te::AudioTrack*> (t->getOutput().getDestinationTrack()))
+            pending.add (dest);
+
+        for (auto send : getSends (*t))
+            if (auto bus = findBus (send->getBusNumber()))
+                pending.add (bus);
+    }
+
+    return false;
 }
 
 void Session::storeEffectSettings (te::Plugin& effect)
@@ -823,6 +902,24 @@ juce::var Session::toVar() const
         obj->setProperty ("mute", s->isMuted (false));
         obj->setProperty ("solo", s->isSolo (false));
         obj->setProperty ("effects", describeEffects (s->pluginList));
+
+        auto busNumber = getBusNumber (*s);
+        obj->setProperty ("bus", busNumber >= 0);
+
+        juce::Array<juce::var> sends;
+
+        for (auto send : getSends (*s))
+        {
+            auto sendObj = new juce::DynamicObject();
+            auto bus = findBus (send->getBusNumber());
+            sendObj->setProperty ("bus", bus != nullptr ? bus->itemID.toString() : juce::String());
+            sendObj->setProperty ("bus_name", bus != nullptr ? bus->getName() : juce::String ("(no bus)"));
+            sendObj->setProperty ("level_db", std::round (send->getGainDb() * 100.0) / 100.0);
+            sendObj->setProperty ("pre_fader", isPreFader (*send));
+            sends.add (juce::var (sendObj));
+        }
+
+        obj->setProperty ("sends", sends);
 
         strips.add (juce::var (obj));
     }
