@@ -15,7 +15,9 @@ namespace ng
 
     Clips: drag to move (to another lane too), drag an edge to trim, double-click an empty
     spot for a new one-bar clip, and double-click a clip (or press Enter) to edit its notes. Delete removes the selected clip, Ctrl+D duplicates it and
-    S splits it at the playhead; right-click for the same actions. Drags snap to the beat
+    S splits it at the playhead; right-click for the same actions. Ctrl+C copies it and
+    Ctrl+V pastes a copy at the playhead. The arrow keys move it by a beat (Shift: a bar)
+    or to the lane above or below, and Escape deselects it. Drags snap to the beat
     (to 16ths when zoomed in); hold Alt to place freely. Each edit is one command, so one
     undo step.
 
@@ -103,6 +105,8 @@ private:
     void deleteSelected();
     void duplicateSelected();
     void splitSelectedAtPlayhead();
+    void pasteAtPlayhead();
+    void moveSelected (double beats, int lanesDown);
 
     void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;
     void timerCallback() override;
@@ -134,7 +138,7 @@ private:
     int scrollY = 0;
     double lastPlayheadBeat = -1.0;
 
-    juce::String selectedClip;
+    juce::String selectedClip, copiedClip;
     Drag drag;
 
     RulerDrag rulerDrag = RulerDrag::none;

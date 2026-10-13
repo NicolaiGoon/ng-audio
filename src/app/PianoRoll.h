@@ -18,6 +18,9 @@ namespace ng
     Under the grid, the velocity lane shows how hard each note is played. Click or drag
     across it to set the velocity of the notes there (only the selected ones, if any are).
     Quantize (or Q) moves the selected notes, or all of them, onto the grid.
+    Ctrl+C and Ctrl+X copy and cut the selected notes, Ctrl+V pastes them at the playhead
+    (or straight after where they were copied from, when the playhead is outside the
+    clip), and Ctrl+D duplicates them straight after themselves.
 
     Every edit replaces the clip's notes with one set_notes command, so it's one undo step.
     Mouse wheel scrolls pitch, Shift + wheel scrolls time and Ctrl + wheel zooms.
@@ -92,6 +95,11 @@ private:
     void commit (const juce::Array<ClipNote>& newNotes, const juce::Array<bool>& newSelection);
     void deleteSelected();
     void nudgeSelected (int semitones, double beats);
+    void copySelected();
+    void paste();
+    void duplicateSelected();
+    double getSelectionEnd (double start) const;
+    void addNotes (const juce::Array<ClipNote>& added, double offset);
     void setVelocityAt (juce::Point<float>);
 
     void fitToClip();
@@ -112,6 +120,8 @@ private:
     double clipStartBeat = 0.0, clipLengthBeats = 4.0;
     juce::Array<ClipNote> notes;
     juce::Array<bool> selected;
+    juce::Array<ClipNote> clipboard;    // starts are from the first copied note
+    double clipboardNext = 0.0;         // where a paste goes when the playhead is outside the clip
 
     /** Notes to select once the next update() has read them back (otherwise it keeps the selection). */
     std::optional<juce::Array<ClipNote>> toSelect;
