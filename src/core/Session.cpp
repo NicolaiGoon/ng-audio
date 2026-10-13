@@ -346,6 +346,47 @@ int Session::getNumOutputs (te::Plugin& instrument)
     return outs.size();
 }
 
+te::SamplerPlugin* Session::getSampler (const te::AudioTrack& channel)
+{
+    return dynamic_cast<te::SamplerPlugin*> (getInstrument (channel));
+}
+
+juce::var Session::describeSamples (te::SamplerPlugin& sampler)
+{
+    juce::Array<juce::var> samples;
+    int index = 0;
+
+    for (auto v : sampler.state)
+    {
+        if (! v.hasType (te::IDs::SOUND))
+            continue;
+
+        auto file = te::SourceFileReference::findFileFromString (sampler.edit, v[te::IDs::source].toString());
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("index", index++);
+        obj->setProperty ("name", v[te::IDs::name].toString());
+        obj->setProperty ("file", file.getFullPathName());
+        obj->setProperty ("note", juce::jlimit (0, 127, static_cast<int> (v[te::IDs::keyNote])));
+        obj->setProperty ("min_note", juce::jlimit (0, 127, static_cast<int> (v[te::IDs::minNote])));
+        obj->setProperty ("max_note", juce::jlimit (0, 127, static_cast<int> (v[te::IDs::maxNote])));
+        obj->setProperty ("gain_db", std::round (static_cast<double> (v[te::IDs::gainDb]) * 100.0) / 100.0);
+        obj->setProperty ("pan", std::round (static_cast<double> (v[te::IDs::pan]) * 100.0) / 100.0);
+        obj->setProperty ("one_shot", static_cast<bool> (v[te::IDs::openEnded]));
+
+        if (! file.existsAsFile())
+            obj->setProperty ("missing", true);
+
+        samples.add (juce::var (obj));
+    }
+
+    return samples;
+}
+
+juce::String Session::getAudioFileWildcard() const
+{
+    return engine.getAudioFileFormatManager().readFormatManager.getWildcardForAllFormats();
+}
+
 juce::String Session::getInstrumentId (const te::Plugin* instrument)
 {
     return instrument != nullptr ? getPluginId (*instrument) : juce::String ("none");
@@ -921,6 +962,10 @@ juce::var Session::toVar() const
 
         obj->setProperty ("outputs", instrument != nullptr && ! instrument->isMissing() ? getNumOutputs (*instrument) : 2);
         obj->setProperty ("multi_output", getMultiOutputRack (*c) != nullptr);
+
+        if (auto sampler = getSampler (*c))
+            obj->setProperty ("samples", describeSamples (*sampler));
+
         auto pattern = new juce::DynamicObject();
         pattern->setProperty ("steps", getSteps (*c));
         pattern->setProperty ("pitch", getStepPitch (*c));

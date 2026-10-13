@@ -13,7 +13,7 @@ namespace
         return palette[session.getChannels().size() % palette.size()];
     }
 
-    /** An instrument a channel can hold: built in ("4osc", or "none" for nothing), or a
+    /** An instrument a channel can hold: built in ("4osc", "sampler", or "none" for nothing), or a
         scanned plugin, named by its list_plugins id or by its name. */
     struct InstrumentChoice
     {
@@ -24,7 +24,7 @@ namespace
     std::variant<InstrumentChoice, juce::String> findInstrument (Session& session, const juce::String& command,
                                                                  const juce::String& name)
     {
-        if (name == "4osc" || name == "none")
+        if (name == "4osc" || name == "sampler" || name == "none")
             return InstrumentChoice { name, {} };
 
         auto& known = session.getEdit().engine.getPluginManager().knownPluginList;
@@ -47,7 +47,7 @@ namespace
         }
 
         if (found == nullptr)
-            return command + ": unknown instrument '" + name + "' (use 4osc, none, or a plugin from list_plugins)";
+            return command + ": unknown instrument '" + name + "' (use 4osc, sampler, none, or a plugin from list_plugins)";
 
         if (! found->isInstrument)
             return command + ": '" + found->name + "' is an effect, not an instrument";
@@ -67,6 +67,8 @@ namespace
             instrument = edit.getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, *choice.plugin);
         else if (choice.builtIn == "4osc")
             instrument = edit.getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {});
+        else if (choice.builtIn == "sampler")
+            instrument = edit.getPluginCache().createNewPlugin (te::SamplerPlugin::xmlTypeName, {});
 
         if (instrument == nullptr)
             return choice.builtIn == "none" ? juce::String() : "couldn't create the instrument";
@@ -391,8 +393,9 @@ namespace
 
         auto instrument = Session::getInstrument (*channel);
 
-        if (instrument == nullptr || dynamic_cast<te::ExternalPlugin*> (instrument) == nullptr)
-            return CommandResult::failure ("show_plugin_window: '" + channel->getName() + "' has no plugin instrument");
+        if (instrument == nullptr || (dynamic_cast<te::ExternalPlugin*> (instrument) == nullptr
+                                      && dynamic_cast<te::SamplerPlugin*> (instrument) == nullptr))
+            return CommandResult::failure ("show_plugin_window: '" + channel->getName() + "' has no plugin instrument or sampler");
 
         if (instrument->isMissing())
             return CommandResult::failure ("show_plugin_window: '" + instrument->getName() + "' isn't loaded");
@@ -1271,7 +1274,7 @@ void registerProjectCommands (CommandRegistry& registry)
                     "Adds an instrument channel and a mixer strip with the same name and colour, linked to it.",
                     schema ({ { "name", prop ("string", "Name for the channel and its strip") },
                               { "colour", prop ("string", "Hex colour such as #3c8ce0; picked automatically if omitted") },
-                              { "instrument", prop ("string", "\"4osc\" (built-in synth, default), \"none\", or a plugin's id or name from list_plugins") } }),
+                              { "instrument", prop ("string", "\"4osc\" (built-in synth, default), \"sampler\" (plays samples: load them with add_sample or load_drum_kit), \"none\", or a plugin's id or name from list_plugins") } }),
                     true, createTrack });
 
     registry.add ({ "route",
@@ -1312,16 +1315,16 @@ void registerProjectCommands (CommandRegistry& registry)
                     true, deleteTrack });
 
     registry.add ({ "show_plugin_window",
-                    "Opens the editor window of a channel's plugin instrument (or brings it to the front). "
+                    "Opens the editor window of a channel's plugin instrument or sampler (or brings it to the front). "
                     "Not an undo step; shown is false when there's no screen to show it on.",
                     schema ({ { "channel", prop ("string", "Channel id or name") } }, { "channel" }),
                     false, showPluginWindow });
 
     registry.add ({ "set_instrument",
-                    "Replaces a channel's instrument: the built-in \"4osc\" synth, \"none\", or a scanned plugin instrument. "
+                    "Replaces a channel's instrument: the built-in \"4osc\" synth, the \"sampler\", \"none\", or a scanned plugin instrument. "
                     "Fails if the plugin won't load, leaving the old instrument in place.",
                     schema ({ { "channel", prop ("string", "Channel id or name") },
-                              { "instrument", prop ("string", "\"4osc\" (built-in synth), \"none\", or a plugin's id or name from list_plugins") } },
+                              { "instrument", prop ("string", "\"4osc\" (built-in synth), \"sampler\", \"none\", or a plugin's id or name from list_plugins") } },
                             { "channel", "instrument" }),
                     true, setInstrumentCommand });
 
@@ -1485,6 +1488,7 @@ void registerProjectCommands (CommandRegistry& registry)
     registerEffectCommands (registry);
     registerBusCommands (registry);
     registerOutputCommands (registry);
+    registerSamplerCommands (registry);
 }
 
 } // namespace ng
