@@ -121,6 +121,13 @@ public:
     static juce::String getSteps (const te::AudioTrack& channel);
     static int getStepPitch (const te::AudioTrack& channel);
 
+    /** A channel's instrument (the built-in 4OSC synth or a plugin), or nullptr. */
+    static te::Plugin* getInstrument (const te::AudioTrack& channel);
+
+    /** How get_state and set_instrument name an instrument: "4osc", "none", or a plugin's
+        id as list_plugins gives it. */
+    static juce::String getInstrumentId (const te::Plugin*);
+
     /** True for the clip set_steps keeps in sync with a channel's step pattern. */
     static bool isPatternClip (const te::Clip&);
 

@@ -13,29 +13,73 @@ namespace
         return palette[session.getChannels().size() % palette.size()];
     }
 
-    /** The built-in instruments a channel can hold. Third-party plugins come with plugin scanning. */
-    const juce::StringArray& builtInInstruments()
+    /** An instrument a channel can hold: built in ("4osc", or "none" for nothing), or a
+        scanned plugin, named by its list_plugins id or by its name. */
+    struct InstrumentChoice
     {
-        static const juce::StringArray names { "4osc", "none" };
-        return names;
+        juce::String builtIn;
+        std::optional<juce::PluginDescription> plugin;
+    };
+
+    std::variant<InstrumentChoice, juce::String> findInstrument (Session& session, const juce::String& command,
+                                                                 const juce::String& name)
+    {
+        if (name == "4osc" || name == "none")
+            return InstrumentChoice { name, {} };
+
+        auto& known = session.getEdit().engine.getPluginManager().knownPluginList;
+        std::unique_ptr<juce::PluginDescription> found = known.getTypeForIdentifierString (name);
+
+        if (found == nullptr)
+        {
+            juce::Array<juce::PluginDescription> byName;
+
+            for (auto& d : known.getTypes())
+                if (d.name.equalsIgnoreCase (name))
+                    byName.add (d);
+
+            if (byName.size() > 1)
+                return command + ": there are " + juce::String (byName.size()) + " plugins called '" + name
+                         + "'; use its id from list_plugins";
+
+            if (byName.size() == 1)
+                found = std::make_unique<juce::PluginDescription> (byName.getFirst());
+        }
+
+        if (found == nullptr)
+            return command + ": unknown instrument '" + name + "' (use 4osc, none, or a plugin from list_plugins)";
+
+        if (! found->isInstrument)
+            return command + ": '" + found->name + "' is an effect, not an instrument";
+
+        return InstrumentChoice { {}, *found };
     }
 
-    /** Replaces whatever instrument the channel has with a built-in one ("none" just removes it). */
-    void setInstrument (te::Edit& edit, te::AudioTrack& channel, const juce::String& instrument)
+    /** Replaces whatever instrument the channel has. Returns an error if a plugin won't load. */
+    juce::String setInstrument (te::Edit& edit, te::AudioTrack& channel, const InstrumentChoice& choice)
     {
-        for (auto p : channel.pluginList.getPlugins())
-            if (p->isSynth())
-                p->deleteFromParent();
+        while (auto old = Session::getInstrument (channel))
+            old->deleteFromParent();
 
-        if (instrument == "4osc")
-            if (auto synth = edit.getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
-                channel.pluginList.insertPlugin (synth, 0, nullptr);
-    }
+        te::Plugin::Ptr instrument;
 
-    juce::String instrumentError (const juce::String& command, const juce::String& instrument)
-    {
-        return command + ": unknown instrument '" + instrument + "' (use one of: "
-                 + builtInInstruments().joinIntoString (", ") + ")";
+        if (choice.plugin)
+            instrument = edit.getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, *choice.plugin);
+        else if (choice.builtIn == "4osc")
+            instrument = edit.getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {});
+
+        if (instrument == nullptr)
+            return choice.builtIn == "none" ? juce::String() : "couldn't create the instrument";
+
+        if (instrument->isMissing())
+        {
+            auto* external = dynamic_cast<te::ExternalPlugin*> (instrument.get());
+            auto reason = external != nullptr ? external->getLoadError() : juce::String();
+            return "couldn't load '" + instrument->getName() + "'" + (reason.isNotEmpty() ? ": " + reason : juce::String());
+        }
+
+        channel.pluginList.insertPlugin (instrument, 0, nullptr);
+        return {};
     }
 
     juce::var trackRef (Session& session, const te::AudioTrack& t)
@@ -79,8 +123,10 @@ namespace
             colour = *parsed;
         }
 
-        if (! builtInInstruments().contains (instrument))
-            return CommandResult::failure (instrumentError ("create_track", instrument));
+        auto choice = findInstrument (session, "create_track", instrument);
+
+        if (auto error = std::get_if<juce::String> (&choice))
+            return CommandResult::failure (*error);
 
         // The channel: holds the instrument and its clips.
         auto channel = edit.insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (edit), nullptr);
@@ -92,7 +138,8 @@ namespace
         channel->setName (name);
         channel->setColour (colour);
 
-        setInstrument (edit, *channel, instrument);
+        if (auto error = setInstrument (edit, *channel, std::get<InstrumentChoice> (choice)); error.isNotEmpty())
+            return CommandResult::failure ("create_track: " + error);
 
         // Its mixer strip: same name and colour, linked by default, feeding master.
         auto strip = edit.insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (edit), nullptr);
@@ -305,11 +352,37 @@ namespace
         if (channel == nullptr)
             return CommandResult::failure ("set_instrument: no channel called '" + ref + "'");
 
-        if (! builtInInstruments().contains (instrument))
-            return CommandResult::failure (instrumentError ("set_instrument", instrument));
+        auto choice = findInstrument (session, "set_instrument", instrument);
 
-        setInstrument (session.getEdit(), *channel, instrument);
-        return CommandResult::success (idPair ("channel", channel->itemID.toString(), "instrument", instrument));
+        if (auto error = std::get_if<juce::String> (&choice))
+            return CommandResult::failure (*error);
+
+        if (auto error = setInstrument (session.getEdit(), *channel, std::get<InstrumentChoice> (choice)); error.isNotEmpty())
+            return CommandResult::failure ("set_instrument: " + error);
+
+        return CommandResult::success (idPair ("channel", channel->itemID.toString(),
+                                               "instrument", Session::getInstrumentId (Session::getInstrument (*channel))));
+    }
+
+    CommandResult showPluginWindow (Session& session, const juce::var& p)
+    {
+        auto ref = params::getString (p, "channel");
+        auto channel = session.findTrack (ref, Session::Role::channel);
+
+        if (channel == nullptr)
+            return CommandResult::failure ("show_plugin_window: no channel called '" + ref + "'");
+
+        auto instrument = Session::getInstrument (*channel);
+
+        if (instrument == nullptr || dynamic_cast<te::ExternalPlugin*> (instrument) == nullptr)
+            return CommandResult::failure ("show_plugin_window: '" + channel->getName() + "' has no plugin instrument");
+
+        if (instrument->isMissing())
+            return CommandResult::failure ("show_plugin_window: '" + instrument->getName() + "' isn't loaded");
+
+        instrument->showWindowExplicitly();
+        return CommandResult::success (idPair ("channel", channel->itemID.toString(),
+                                               "shown", instrument->windowState->isWindowShowing()));
     }
 
     CommandResult setMixerStrip (Session& session, const juce::var& p)
@@ -1181,7 +1254,7 @@ void registerProjectCommands (CommandRegistry& registry)
                     "Adds an instrument channel and a mixer strip with the same name and colour, linked to it.",
                     schema ({ { "name", prop ("string", "Name for the channel and its strip") },
                               { "colour", prop ("string", "Hex colour such as #3c8ce0; picked automatically if omitted") },
-                              { "instrument", prop ("string", "\"4osc\" (built-in synth, default) or \"none\"") } }),
+                              { "instrument", prop ("string", "\"4osc\" (built-in synth, default), \"none\", or a plugin's id or name from list_plugins") } }),
                     true, createTrack });
 
     registry.add ({ "route",
@@ -1221,10 +1294,17 @@ void registerProjectCommands (CommandRegistry& registry)
                     schema ({ { "track", prop ("string", "Channel or mixer strip id or name") } }, { "track" }),
                     true, deleteTrack });
 
+    registry.add ({ "show_plugin_window",
+                    "Opens the editor window of a channel's plugin instrument (or brings it to the front). "
+                    "Not an undo step; shown is false when there's no screen to show it on.",
+                    schema ({ { "channel", prop ("string", "Channel id or name") } }, { "channel" }),
+                    false, showPluginWindow });
+
     registry.add ({ "set_instrument",
-                    "Replaces a channel's instrument with a built-in one: \"4osc\" (synth) or \"none\".",
+                    "Replaces a channel's instrument: the built-in \"4osc\" synth, \"none\", or a scanned plugin instrument. "
+                    "Fails if the plugin won't load, leaving the old instrument in place.",
                     schema ({ { "channel", prop ("string", "Channel id or name") },
-                              { "instrument", prop ("string", "\"4osc\" or \"none\"") } },
+                              { "instrument", prop ("string", "\"4osc\" (built-in synth), \"none\", or a plugin's id or name from list_plugins") } },
                             { "channel", "instrument" }),
                     true, setInstrumentCommand });
 
