@@ -1,12 +1,14 @@
 #pragma once
 
 #include "MixerView.h"
+#include "TimelineView.h"
 
 namespace ng
 {
 
 /**
-    The main window: a channel rack, a mixer, a transport and a command console.
+    The main window: a transport, the arrangement timeline, a channel rack, a mixer and
+    a command console (hidden until you tick Console).
     Every button here calls the command layer rather than touching the Edit directly,
     so the UI does exactly what an AI client or macro could do.
 */
@@ -54,12 +56,13 @@ private:
                      addButton { "Add instrument" }, playButton { "Play" },
                      undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio settings" },
                      runButton { "Run" };
+    juce::ToggleButton consoleButton { "Console" };
 
     juce::Slider tempo;
     juce::ComboBox timeSignature;
     juce::ToggleButton loopButton { "Loop" };
 
-    juce::Label channelsHeader { {}, "Channel rack" }, mixerHeader { {}, "Mixer" },
+    juce::Label timelineHeader { {}, "Timeline" }, channelsHeader { {}, "Channel rack" }, mixerHeader { {}, "Mixer" },
                 consoleHeader { {}, "Command console (JSON)" };
 
     juce::TextEditor consoleInput, consoleOutput;
@@ -67,6 +70,7 @@ private:
     juce::OwnedArray<juce::Component> channelRows;
     juce::String channelRackKey;
     int playStep = -1;
+    TimelineView timeline { session, dispatcher };
     MixerView mixer { session, dispatcher };
     juce::TooltipWindow tooltips { this };
     std::unique_ptr<juce::FileChooser> fileChooser;
