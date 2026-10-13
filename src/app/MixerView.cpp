@@ -295,6 +295,14 @@ void MixerView::update (const juce::var& state)
     resized();
 }
 
+void MixerView::clear()
+{
+    dispatcher.endGesture();
+    columns.clear();
+    masterColumn = nullptr;
+    structureKey = {};
+}
+
 void MixerView::resized()
 {
     auto r = getLocalBounds();
