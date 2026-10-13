@@ -445,6 +445,8 @@ MainComponent::MainComponent (te::Engine& engine)
     settingsButton.onClick = [this] { showAudioSettings(); };
     settingsButton.setTooltip ("Audio device settings");
     pluginsButton.onClick = [this] { showPluginList(); };
+    addBusButton.setTooltip ("Add a bus: a strip other strips can send to, e.g. for a shared reverb");
+    addBusButton.onClick = [this] { dispatcher.execute ("create_bus"); };
     pluginsButton.setTooltip ("Your VST3 plugins: scan folders for new ones, or remove ones you don't use");
     setUpTransportControls();
     runButton.onClick = [this] { runConsoleCommand(); };
@@ -495,7 +497,7 @@ MainComponent::MainComponent (te::Engine& engine)
                                                              &returnButton, &recordButton, &keysButton, &tempo, &timeSignature, &positionDisplay,
                                                              &loopButton, &metronomeButton,
                                                              &settingsButton, &pluginsButton, &shortcutsButton, &consoleButton, &timelineHeader, &timelineHint, &timeline,
-                                                             &channelsHeader, &mixerHeader, &mixer })
+                                                             &channelsHeader, &mixerHeader, &addBusButton, &mixer })
         addAndMakeVisible (c);
 
     for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton, &keyboard,
@@ -1127,7 +1129,7 @@ void MainComponent::resized()
                                                              &closePianoRollButton, &quantizeButton, &pianoRoll })
         c->setVisible (rollOpen);
 
-    for (auto* c : std::initializer_list<juce::Component*> { &channelsHeader, &mixerHeader, &mixer })
+    for (auto* c : std::initializer_list<juce::Component*> { &channelsHeader, &mixerHeader, &addBusButton, &mixer })
         c->setVisible (! rollOpen);
 
     for (auto* row : channelRows)
@@ -1157,7 +1159,9 @@ void MainComponent::resized()
     for (auto* row : channelRows)
         row->setBounds (left.removeFromTop (60));
 
-    mixerHeader.setBounds (right.removeFromTop (24));
+    auto mixerTop = right.removeFromTop (24);
+    addBusButton.setBounds (mixerTop.removeFromRight (70).reduced (0, 1));
+    mixerHeader.setBounds (mixerTop);
     mixer.setBounds (right);
 }
 

@@ -43,7 +43,8 @@ add_library(ng_core STATIC
     src/core/CommandDispatcher.cpp
     src/core/ProjectCommands.cpp
     src/core/PluginCommands.cpp
-    src/core/EffectCommands.cpp)
+    src/core/EffectCommands.cpp
+    src/core/BusCommands.cpp)
 
 target_include_directories(ng_core PUBLIC src)
 
