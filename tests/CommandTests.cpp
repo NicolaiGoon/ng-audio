@@ -1108,6 +1108,58 @@ namespace
         CHECK (f.session.getArmedChannel() != nullptr);
     }
 
+    void testPluginScanning (tracktion::Engine& engine)
+    {
+        std::cout << "scanning finds a VST3 and lists it\n";
+        Fixture f (engine);
+        auto& known = engine.getPluginManager().knownPluginList;
+        known.clear();
+
+        auto listed = [&] (const char* kind) { return f.dispatcher.execute ("list_plugins", obj ({ { "kind", kind } })).value; };
+        CHECK (listed ("all").size() == 0);
+        CHECK (! f.dispatcher.execute ("list_plugins", obj ({ { "kind", "drums" } })).ok);
+
+        juce::File folder (NG_TEST_PLUGIN_FOLDER);
+        CHECK (folder.getChildFile ("Ng Test Synth.vst3").exists());
+
+        auto scan = [&] (juce::var folders)
+        {
+            return f.dispatcher.execute ("scan_plugins", folders.isVoid() ? obj ({}) : obj ({ { "folders", folders } }));
+        };
+
+        CHECK (! scan (juce::Array<juce::var> { "relative/folder" }).ok);
+        CHECK (! scan (juce::Array<juce::var> { folder.getChildFile ("missing").getFullPathName() }).ok);
+        CHECK (! f.dispatcher.execute ("scan_plugins", obj ({ { "format", "Nope" } })).ok);
+
+        // Nothing in an empty folder.
+        juce::TemporaryFile empty;
+        CHECK (empty.getFile().createDirectory());
+        auto result = scan (juce::Array<juce::var> { empty.getFile().getFullPathName() });
+        CHECK (result.ok && int (result.value["added"]) == 0);
+        empty.getFile().deleteRecursively();
+
+        f.session.markAsSaved();
+        auto couldUndo = f.dispatcher.canUndo();
+
+        result = scan (juce::Array<juce::var> { folder.getFullPathName() });
+        CHECK (result.ok && int (result.value["added"]) == 1 && result.value["failed"].size() == 0);
+
+        auto all = listed ("all");
+        CHECK (all.size() == 1);
+        CHECK (all[0]["name"] == "Ng Test Synth" && all[0]["format"] == "VST3" && static_cast<bool> (all[0]["instrument"]));
+        CHECK (all[0]["id"].toString().isNotEmpty());
+        CHECK (listed ("instrument").size() == 1 && listed ("effect").size() == 0);
+
+        // Scanning again finds nothing new, and with no folders it uses the ones given last.
+        result = scan ({});
+        CHECK (result.ok && int (result.value["added"]) == 0 && int (result.value["total"]) == 1);
+        CHECK (result.value["folders"][0] == folder.getFullPathName());
+
+        // The plugin list belongs to the app, not the song.
+        CHECK (f.dispatcher.canUndo() == couldUndo && ! f.session.hasUnsavedChanges());
+        known.clear();
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -1188,6 +1240,7 @@ int main()
         testEditingNotes (engine);
         testQuantizeAndVelocity (engine);
         testArmingForMidiInput (engine);
+        testPluginScanning (engine);
         testRendersAudio (engine);
     }
 
