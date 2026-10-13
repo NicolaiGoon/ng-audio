@@ -26,17 +26,20 @@ CommandResult CommandDispatcher::execute (const juce::String& name, const juce::
     auto spec = registry.find (name);
     auto& um = session.getUndoManager();
 
-    if (spec != nullptr && spec->undoable)
+    // Inside a gesture, every command joins the gesture's one undo step.
+    auto ownsTransaction = spec != nullptr && spec->undoable && ! gestureOpen;
+
+    if (ownsTransaction)
         um.beginNewTransaction (name);
 
     auto result = run (name, params);
 
-    if (spec != nullptr && spec->undoable)
+    if (ownsTransaction)
     {
         if (! result.ok)
         {
             um.undoCurrentTransactionOnly();
-            session.refreshTrackOutputs();
+            session.refreshAfterHistoryChange();
         }
 
         um.beginNewTransaction();
@@ -65,7 +68,7 @@ CommandResult CommandDispatcher::executeBatch (const juce::String& undoLabel, co
         if (! r.ok)
         {
             um.undoCurrentTransactionOnly();
-            session.refreshTrackOutputs();
+            session.refreshAfterHistoryChange();
             outcome = CommandResult::failure ("Batch '" + undoLabel + "' rolled back. " + r.error);
             break;
         }
@@ -98,11 +101,26 @@ juce::String CommandDispatcher::executeJson (const juce::String& json)
     return juce::JSON::toString (result.toVar(), true);
 }
 
+void CommandDispatcher::beginGesture (const juce::String& undoLabel)
+{
+    session.getUndoManager().beginNewTransaction (undoLabel);
+    gestureOpen = true;
+}
+
+void CommandDispatcher::endGesture()
+{
+    if (! gestureOpen)
+        return;
+
+    gestureOpen = false;
+    session.getUndoManager().beginNewTransaction();
+}
+
 //==============================================================================
 bool CommandDispatcher::undo()
 {
     auto done = session.getUndoManager().undo();
-    session.refreshTrackOutputs();
+    session.refreshAfterHistoryChange();
     notify ("undo", CommandResult { done, {}, {} });
     return done;
 }
@@ -110,7 +128,7 @@ bool CommandDispatcher::undo()
 bool CommandDispatcher::redo()
 {
     auto done = session.getUndoManager().redo();
-    session.refreshTrackOutputs();
+    session.refreshAfterHistoryChange();
     notify ("redo", CommandResult { done, {}, {} });
     return done;
 }

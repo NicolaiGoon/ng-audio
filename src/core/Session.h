@@ -65,8 +65,15 @@ public:
     void writeTrackOutputs();
     void refreshTrackOutputs();
 
+    /** Brings Tracktion's live state back in line with the saved state after undo, redo or
+        a rollback: track outputs (above) and fader and pan parameters. */
+    void refreshAfterHistoryChange();
+
     /** Finds a channel or a mixer strip by id or name (channels are searched first). */
     te::AudioTrack* findAnyTrack (const juce::String& idOrName) const;
+
+    /** The level meter on the master output, for the mixer's master strip. */
+    te::LevelMeterPlugin* getMasterMeter() const;
 
     /** The colours new channels cycle through, also offered in the UI's colour menu. */
     static juce::Array<juce::Colour> getPalette();
