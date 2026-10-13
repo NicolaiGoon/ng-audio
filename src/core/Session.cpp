@@ -4,6 +4,7 @@ namespace ng
 {
 namespace
 {
+    const juce::Identifier loopStartProp ("ngLoopStartBeat"), loopEndProp ("ngLoopEndBeat");
     const juce::Identifier roleProp ("ngRole");
     const juce::Identifier ownStripProp ("ngOwnStrip");
 
@@ -54,6 +55,10 @@ Session::Session (te::Engine& e)
     if (getMasterMeter() == nullptr)
         if (auto meter = edit->getPluginCache().createNewPlugin (te::LevelMeterPlugin::xmlTypeName, {}))
             edit->getMasterPluginList().insertPlugin (meter, -1, nullptr);
+
+    // New projects loop by default, so Play repeats what's there.
+    edit->getTransport().looping = true;
+    updateLoopRange();
 
     edit->getUndoManager().clearUndoHistory();
 }
@@ -203,6 +208,59 @@ te::AudioTrack* Session::findAnyTrack (const juce::String& idOrName) const
     return findTrack (idOrName, Role::strip);
 }
 
+//==============================================================================
+// The custom loop lives on the transport state, which Tracktion keeps out of the undo
+// history (like the play position), and is saved with the project.
+bool Session::hasCustomLoop() const
+{
+    return edit->getTransport().state.hasProperty (loopEndProp);
+}
+
+juce::Range<double> Session::getLoopBeats() const
+{
+    auto& transportState = edit->getTransport().state;
+
+    if (hasCustomLoop())
+        return { static_cast<double> (transportState[loopStartProp]), static_cast<double> (transportState[loopEndProp]) };
+
+    auto& tempo = edit->tempoSequence;
+    auto bars = tempo.toBarsAndBeats (te::toPosition (edit->getLength()));
+    auto wholeBars = std::max (1, bars.bars + (bars.beats > te::BeatDuration::fromBeats (1.0e-6) ? 1 : 0));
+    auto endBeat = tempo.toBeats (te::tempo::BarsAndBeats { wholeBars, {} }).inBeats();
+    return { 0.0, std::round (endBeat * 1.0e6) / 1.0e6 };   // tidy float noise like 6.000000000000001
+}
+
+void Session::setCustomLoop (std::optional<juce::Range<double>> beats)
+{
+    auto transportState = edit->getTransport().state;
+
+    if (beats)
+    {
+        transportState.setProperty (loopStartProp, beats->getStart(), nullptr);
+        transportState.setProperty (loopEndProp, beats->getEnd(), nullptr);
+    }
+    else
+    {
+        transportState.removeProperty (loopStartProp, nullptr);
+        transportState.removeProperty (loopEndProp, nullptr);
+    }
+
+    updateLoopRange();
+}
+
+void Session::updateLoopRange()
+{
+    auto beats = getLoopBeats();
+    auto& tempo = edit->tempoSequence;
+    te::TimeRange range (tempo.toTime (te::BeatPosition::fromBeats (beats.getStart())),
+                         tempo.toTime (te::BeatPosition::fromBeats (beats.getEnd())));
+
+    auto& transport = edit->getTransport();
+
+    if (transport.getLoopRange() != range)
+        transport.setLoopRange (range);
+}
+
 te::LevelMeterPlugin* Session::getMasterMeter() const
 {
     return edit->getMasterPluginList().getPluginsOfType<te::LevelMeterPlugin>().getLast();
@@ -291,6 +349,11 @@ juce::var Session::toVar() const
     transportObj->setProperty ("position_seconds", transport.getPosition().inSeconds());
     transportObj->setProperty ("looping", transport.looping.get());
 
+    auto loopBeats = getLoopBeats();
+    transportObj->setProperty ("loop_start_beat", loopBeats.getStart());
+    transportObj->setProperty ("loop_end_beat", loopBeats.getEnd());
+    transportObj->setProperty ("loop_is_whole_project", ! hasCustomLoop());
+
     auto master = new juce::DynamicObject();
 
     if (auto vp = edit->getMasterVolumePlugin())
@@ -300,7 +363,13 @@ juce::var Session::toVar() const
     }
 
     auto root = new juce::DynamicObject();
+    auto& timeSig = edit->tempoSequence.getTimeSigAt (te::TimePosition());
+    auto timeSigObj = new juce::DynamicObject();
+    timeSigObj->setProperty ("numerator", timeSig.numerator.get());
+    timeSigObj->setProperty ("denominator", timeSig.denominator.get());
+
     root->setProperty ("tempo_bpm", edit->tempoSequence.getBpmAt (te::TimePosition()));
+    root->setProperty ("time_signature", juce::var (timeSigObj));
     root->setProperty ("channels", channels);
     root->setProperty ("strips", strips);
     root->setProperty ("master", juce::var (master));

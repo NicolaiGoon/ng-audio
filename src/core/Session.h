@@ -72,6 +72,19 @@ public:
     /** Finds a channel or a mixer strip by id or name (channels are searched first). */
     te::AudioTrack* findAnyTrack (const juce::String& idOrName) const;
 
+    //==============================================================================
+    /** The loop region in beats. Unless a custom region is set, it covers the whole
+        project, rounded up to whole bars (at least one bar). */
+    juce::Range<double> getLoopBeats() const;
+    bool hasCustomLoop() const;
+
+    /** Sets a custom loop region in beats, or clears it (back to the whole project). */
+    void setCustomLoop (std::optional<juce::Range<double>> beats);
+
+    /** Moves Tracktion's loop points (kept in seconds) to match the loop region in beats.
+        Called after every command, so the loop follows tempo changes and new clips. */
+    void updateLoopRange();
+
     /** The level meter on the master output, for the mixer's master strip. */
     te::LevelMeterPlugin* getMasterMeter() const;
 
