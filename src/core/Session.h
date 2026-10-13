@@ -143,6 +143,24 @@ public:
         Called after every command, so the loop follows tempo changes and new clips. */
     void updateLoopRange();
 
+    //==============================================================================
+    /** The channel that MIDI input plays and records into, or nullptr. Only one channel is
+        armed at a time; arming one disarms the others. This is part of the setup, not the
+        song, so it isn't saved or undone. */
+    te::AudioTrack* getArmedChannel() const;
+    void setArmedChannel (te::AudioTrack*);
+
+    /** The names of the MIDI inputs (keyboards and controllers) the armed channel listens to. */
+    juce::StringArray getMidiInputNames() const;
+
+    /** Plays a MIDI message into the armed channel as if it came from a MIDI keyboard,
+        e.g. from the on-screen keyboard. Records it too while recording. */
+    void sendLiveMidi (const juce::MidiMessage&);
+
+    /** Points every MIDI input at the armed channel, or at nothing. Called when arming and
+        when the project or the MIDI devices change. */
+    void routeMidiInputs();
+
     /** Where the playhead is, as bar.beat.sixteenth counting from 1 (e.g. "3.2.1"). */
     juce::String getPositionText() const;
 
@@ -162,6 +180,7 @@ private:
 
     te::Engine& engine;
     std::unique_ptr<te::Edit> edit;
+    te::EditItemID armedChannel;
     juce::File file;
     juce::String savedState;
 

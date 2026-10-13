@@ -74,6 +74,15 @@ namespace
             setUpNameLabel (name, dispatcher, id, channel["name"].toString());
             setUpDeleteButton (deleteButton, dispatcher, id, "channel");
 
+            armButton.setClickingTogglesState (false);
+            armButton.setToggleState (channel["armed"], juce::dontSendNotification);
+            armButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd0402f));
+            armButton.setTooltip ("Arm for MIDI input: play this channel from a MIDI keyboard (or Keys) and record into it");
+            armButton.onClick = [this]
+            {
+                dispatcher.execute ("arm_channel", makeObject ({ { "channel", id }, { "armed", ! armButton.getToggleState() } }));
+            };
+
             status.setText (channel["linked"] ? "linked" : "detached", juce::dontSendNotification);
             status.setColour (juce::Label::textColourId, juce::Colours::grey);
 
@@ -107,7 +116,7 @@ namespace
                 dispatcher.execute ("route", makeObject ({ { "channel", id }, { "strip", dest } }));
             };
 
-            for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &status, &instrument, &output, &deleteButton, &grid })
+            for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &status, &armButton, &instrument, &output, &deleteButton, &grid })
                 addAndMakeVisible (c);
         }
 
@@ -123,6 +132,8 @@ namespace
             output.setBounds (r.removeFromRight (130));
             r.removeFromRight (4);
             instrument.setBounds (r.removeFromRight (120));
+            r.removeFromRight (4);
+            armButton.setBounds (r.removeFromRight (26));
             status.setBounds (r.removeFromRight (64));
             name.setBounds (r);
         }
@@ -134,7 +145,7 @@ namespace
         juce::StringArray stripIds;
         juce::Label name, status;
         juce::ComboBox instrument, output;
-        juce::TextButton deleteButton;
+        juce::TextButton deleteButton, armButton { juce::String::fromUTF8 ("\xe2\x97\x8f") };
         StepGrid grid;
     };
 }
@@ -178,6 +189,17 @@ MainComponent::MainComponent (te::Engine& engine)
         dispatcher.execute (session.getEdit().getTransport().isPlaying() ? "stop" : "play");
     };
     returnButton.onClick = [this] { dispatcher.execute ("set_position", makeObject ({ { "beat", 0 } })); };
+    recordButton.onClick = [this] { toggleRecording(); };
+    recordButton.setTooltip ("Record MIDI into the armed channel from the playhead; click again (or Stop) to finish");
+    recordButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd0402f));
+
+    keysButton.setTooltip ("Show a keyboard to play the armed channel with the mouse or the computer keys (A W S E D ...)");
+    keysButton.onClick = [this] { showKeyboard (keysButton.getToggleState()); };
+    keyboardState.addListener (this);
+    keyboard.setAvailableRange (24, 108);
+    keyboard.setLowestVisibleKey (48);
+    keyboard.setKeyPressBaseOctave (5);
+    keyboard.setOctaveForMiddleC (4);   // middle C is C4, as in the piano roll
     returnButton.setTooltip ("Back to the start (Home)");
     undoButton.onClick = [this] { dispatcher.undo(); };
     redoButton.onClick = [this] { dispatcher.redo(); };
@@ -229,13 +251,13 @@ MainComponent::MainComponent (te::Engine& engine)
 
     for (auto* c : std::initializer_list<juce::Component*> { &newButton, &openButton, &saveButton, &saveAsButton,
                                                              &addButton, &playButton, &undoButton, &redoButton,
-                                                             &returnButton, &tempo, &timeSignature, &positionDisplay,
+                                                             &returnButton, &recordButton, &keysButton, &tempo, &timeSignature, &positionDisplay,
                                                              &loopButton, &metronomeButton,
                                                              &settingsButton, &consoleButton, &timelineHeader, &timelineHint, &timeline,
                                                              &channelsHeader, &mixerHeader, &mixer })
         addAndMakeVisible (c);
 
-    for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton,
+    for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton, &keyboard,
                                                              &pianoRollHeader, &pianoRollHint, &snapLabel, &snapBox,
                                                              &closePianoRollButton, &quantizeButton, &pianoRoll })
         addChildComponent (c);
@@ -243,12 +265,13 @@ MainComponent::MainComponent (te::Engine& engine)
     loadStarterProject();
 
     setWantsKeyboardFocus (true);
-    setSize (1280, 860);
+    setSize (1360, 860);
     startTimerHz (30);
 }
 
 MainComponent::~MainComponent()
 {
+    keyboardState.removeListener (this);
     dispatcher.onCommandExecuted = nullptr;
     session.onEditAboutToChange = nullptr;
 }
@@ -472,6 +495,45 @@ void MainComponent::setUpTransportControls()
     positionDisplay.setTooltip ("Song position: bar . beat . sixteenth");
 }
 
+void MainComponent::toggleRecording()
+{
+    if (session.getEdit().getTransport().isRecording())
+    {
+        dispatcher.execute ("stop");
+        return;
+    }
+
+    auto result = dispatcher.execute ("record");
+
+    if (! result.ok)
+        showError ("Can't record yet", "Arm a channel first: click its " + juce::String::fromUTF8 ("\xe2\x97\x8f")
+                                         + " button in the channel rack. Its MIDI input is what gets recorded.");
+}
+
+void MainComponent::showKeyboard (bool shouldShow)
+{
+    keyboard.setVisible (shouldShow);
+
+    // Something has to be listening: arm the first channel if none is.
+    if (shouldShow && session.getArmedChannel() == nullptr && ! session.getChannels().isEmpty())
+        dispatcher.execute ("arm_channel", makeObject ({ { "channel", session.getChannels().getFirst()->itemID.toString() } }));
+
+    if (shouldShow)
+        keyboard.grabKeyboardFocus();
+
+    resized();
+}
+
+void MainComponent::handleNoteOn (juce::MidiKeyboardState*, int midiChannel, int note, float velocity)
+{
+    session.sendLiveMidi (juce::MidiMessage::noteOn (midiChannel, note, velocity));
+}
+
+void MainComponent::handleNoteOff (juce::MidiKeyboardState*, int midiChannel, int note, float velocity)
+{
+    session.sendLiveMidi (juce::MidiMessage::noteOff (midiChannel, note, velocity));
+}
+
 void MainComponent::updatePositionDisplay()
 {
     auto text = session.getPositionText();
@@ -556,6 +618,7 @@ void MainComponent::updatePlayStep()
 void MainComponent::updateButtons()
 {
     playButton.setButtonText (session.getEdit().getTransport().isPlaying() ? "Stop" : "Play");
+    recordButton.setToggleState (session.getEdit().getTransport().isRecording(), juce::dontSendNotification);
     undoButton.setEnabled (dispatcher.canUndo());
     redoButton.setEnabled (dispatcher.canRedo());
 }
@@ -640,9 +703,9 @@ void MainComponent::resized()
 
     toolbar.removeFromLeft (14);
 
-    for (auto* b : { &addButton, &returnButton, &playButton, &undoButton, &redoButton })
+    for (auto* b : { &addButton, &returnButton, &playButton, &recordButton, &undoButton, &redoButton })
     {
-        b->setBounds (toolbar.removeFromLeft (b == &addButton ? 110 : b == &returnButton ? 34 : 56));
+        b->setBounds (toolbar.removeFromLeft (b == &addButton ? 110 : b == &returnButton ? 34 : b == &recordButton ? 44 : 56));
         toolbar.removeFromLeft (4);
     }
 
@@ -659,7 +722,17 @@ void MainComponent::resized()
     settingsButton.setBounds (toolbar.removeFromRight (64));
     toolbar.removeFromRight (8);
     consoleButton.setBounds (toolbar.removeFromRight (90));
+    keysButton.setBounds (toolbar.removeFromRight (64));
     r.removeFromTop (10);
+
+    if (keyboard.isVisible())
+    {
+        keyboard.setBounds (r.removeFromBottom (70));
+
+        // Spread the 50 white keys from C0 to C7 across the window.
+        keyboard.setKeyWidth ((float) keyboard.getWidth() / 50.0f);
+        r.removeFromBottom (10);
+    }
 
     if (consoleButton.getToggleState())
     {
