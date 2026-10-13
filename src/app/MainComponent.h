@@ -16,7 +16,8 @@ namespace ng
 */
 class MainComponent  : public juce::Component,
                        private juce::Timer,
-                       private juce::AsyncUpdater
+                       private juce::AsyncUpdater,
+                       private juce::MidiKeyboardState::Listener
 {
 public:
     explicit MainComponent (te::Engine&);
@@ -33,6 +34,10 @@ public:
 private:
     void timerCallback() override;
     void handleAsyncUpdate() override;
+    void handleNoteOn (juce::MidiKeyboardState*, int midiChannel, int note, float velocity) override;
+    void handleNoteOff (juce::MidiKeyboardState*, int midiChannel, int note, float velocity) override;
+    void toggleRecording();
+    void showKeyboard (bool);
 
     void addInstrument();
     void loadStarterProject();
@@ -59,11 +64,13 @@ private:
     CommandDispatcher dispatcher { session, registry };
 
     juce::TextButton newButton { "New" }, openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save as" },
-                     addButton { "Add instrument" }, playButton { "Play" }, returnButton { "|<" },
+                     addButton { "Add instrument" }, playButton { "Play" }, returnButton { "|<" }, recordButton { "Rec" },
                      undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio" },
                      runButton { "Run" }, closePianoRollButton { "Close" },
                      quantizeButton { "Quantize" };
-    juce::ToggleButton consoleButton { "Console" };
+    juce::ToggleButton consoleButton { "Console" }, keysButton { "Keys" };
+    juce::MidiKeyboardState keyboardState;
+    juce::MidiKeyboardComponent keyboard { keyboardState, juce::KeyboardComponentBase::horizontalKeyboard };
 
     juce::Slider tempo;
     juce::ComboBox timeSignature, snapBox;

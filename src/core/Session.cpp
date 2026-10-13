@@ -79,6 +79,7 @@ void Session::adoptEdit (std::unique_ptr<te::Edit> newEdit, const juce::File& ne
         if (auto meter = edit->getPluginCache().createNewPlugin (te::LevelMeterPlugin::xmlTypeName, {}))
             edit->getMasterPluginList().insertPlugin (meter, -1, nullptr);
 
+    armedChannel = {};
     updateLoopRange();
     edit->getUndoManager().clearUndoHistory();
     markAsSaved();
@@ -261,6 +262,101 @@ bool Session::isPatternClip (const te::Clip& clip)
     return clip.state["ngPattern"];
 }
 
+//==============================================================================
+te::AudioTrack* Session::getArmedChannel() const
+{
+    for (auto c : getChannels())
+        if (c->itemID == armedChannel)
+            return c;
+
+    return nullptr;
+}
+
+void Session::setArmedChannel (te::AudioTrack* channel)
+{
+    armedChannel = channel != nullptr ? channel->itemID : te::EditItemID();
+    routeMidiInputs();
+}
+
+namespace
+{
+    /** The MIDI inputs to route: Tracktion's "All MIDI Ins", which merges every keyboard,
+        or each keyboard on its own if that isn't there. */
+    std::vector<std::shared_ptr<te::MidiInputDevice>> getMidiInputsToRoute (te::Engine& engine)
+    {
+        std::vector<std::shared_ptr<te::MidiInputDevice>> all, physical;
+
+        for (auto& d : engine.getDeviceManager().getMidiInDevices())
+        {
+            if (auto v = dynamic_cast<te::VirtualMidiInputDevice*> (d.get()); v != nullptr && v->useAllInputs)
+                all.push_back (d);
+            else if (dynamic_cast<te::PhysicalMidiInputDevice*> (d.get()) != nullptr)
+                physical.push_back (d);
+        }
+
+        return all.empty() ? physical : all;
+    }
+}
+
+juce::StringArray Session::getMidiInputNames() const
+{
+    juce::StringArray names;
+
+    for (auto& d : engine.getDeviceManager().getMidiInDevices())
+        if (dynamic_cast<te::PhysicalMidiInputDevice*> (d.get()) != nullptr)
+            names.add (d->getName());
+
+    return names;
+}
+
+void Session::routeMidiInputs()
+{
+    auto& deviceManager = engine.getDeviceManager();
+
+    // Keyboards are switched on, so "All MIDI Ins" hears them.
+    for (auto& d : deviceManager.getMidiInDevices())
+        if (! d->isEnabled())
+            d->setEnabled (true);
+
+    auto armed = getArmedChannel();
+    auto inputs = getMidiInputsToRoute (engine);
+
+    if (armed == nullptr && inputs.empty())
+        return;
+
+    edit->getTransport().ensureContextAllocated();
+
+    for (auto instance : edit->getAllInputDevices())
+    {
+        if (! instance->getInputDevice().isMidi())
+            continue;
+
+        for (auto target : instance->getTargets())
+            if (target != armedChannel || armed == nullptr)
+                (void) instance->removeTarget (target, nullptr);
+
+        auto wanted = std::any_of (inputs.begin(), inputs.end(),
+                                   [instance] (auto& d) { return d.get() == &instance->getInputDevice(); });
+
+        if (armed != nullptr && wanted)
+        {
+            if (! instance->getTargets().contains (armedChannel))
+                (void) instance->setTarget (armedChannel, false, nullptr, 0);
+
+            instance->setRecordingEnabled (armedChannel, true);
+        }
+    }
+}
+
+void Session::sendLiveMidi (const juce::MidiMessage& message)
+{
+    for (auto& d : getMidiInputsToRoute (engine))
+    {
+        d->handleIncomingMidiMessage (nullptr, message);
+        return;
+    }
+}
+
 juce::String Session::getPositionText() const
 {
     auto& tempo = edit->tempoSequence;
@@ -379,6 +475,10 @@ void Session::refreshTrackOutputs()
 void Session::refreshAfterHistoryChange()
 {
     refreshTrackOutputs();
+
+    // An undone delete brings an armed channel back; point the MIDI inputs at it again.
+    if (getArmedChannel() != nullptr)
+        routeMidiInputs();
 
     // Only touch parameters that are out of step: updating one writes its value back to the
     // edit, and an edit change after an undo would clear the redo history.
@@ -535,6 +635,7 @@ juce::var Session::toVar() const
         }
 
         obj->setProperty ("clips", clips);
+        obj->setProperty ("armed", c->itemID == armedChannel);
         channels.add (juce::var (obj));
     }
 
@@ -579,6 +680,7 @@ juce::var Session::toVar() const
     transportObj->setProperty ("position", getPositionText());
     transportObj->setProperty ("looping", transport.looping.get());
     transportObj->setProperty ("metronome", edit->clickTrackEnabled.get());
+    transportObj->setProperty ("recording", transport.isRecording());
 
     auto loopBeats = getLoopBeats();
     transportObj->setProperty ("loop_start_beat", loopBeats.getStart());
@@ -600,6 +702,7 @@ juce::var Session::toVar() const
     timeSigObj->setProperty ("denominator", timeSig.denominator.get());
 
     root->setProperty ("tempo_bpm", edit->tempoSequence.getBpmAt (te::TimePosition()));
+    root->setProperty ("midi_inputs", getMidiInputNames());
     root->setProperty ("time_signature", juce::var (timeSigObj));
     root->setProperty ("channels", channels);
     root->setProperty ("strips", strips);
