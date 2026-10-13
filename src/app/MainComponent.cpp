@@ -67,7 +67,9 @@ namespace
     class ChannelRow  : public juce::Component
     {
     public:
-        ChannelRow (CommandDispatcher& d, const juce::var& channel, const juce::var& strips, const int& playStep)
+        /** pluginInstruments: the scanned plugin instruments, as (id, name). */
+        ChannelRow (CommandDispatcher& d, const juce::var& channel, const juce::var& strips,
+                    const juce::Array<std::pair<juce::String, juce::String>>& pluginInstruments, const int& playStep)
             : dispatcher (d), id (channel["id"].toString()), swatch (d, id, colourFrom (channel["colour"])),
               grid (d, id, channel["pattern"]["steps"].toString(), colourFrom (channel["colour"]), playStep)
         {
@@ -86,13 +88,56 @@ namespace
             status.setText (channel["linked"] ? "linked" : "detached", juce::dontSendNotification);
             status.setColour (juce::Label::textColourId, juce::Colours::grey);
 
+            // The built-in choices, then every scanned plugin instrument. A plugin the project
+            // uses but this computer doesn't have still shows, marked missing.
+            instrumentIds = { "4osc", "none" };
             instrument.addItem ("4OSC synth", 1);
             instrument.addItem ("No instrument", 2);
-            instrument.setSelectedId (channel["instrument"] == "4osc" ? 1 : 2, juce::dontSendNotification);
+
+            auto current = currentInstrument = channel["instrument"].toString();
+            auto missing = static_cast<bool> (channel["instrument_missing"]);
+
+            if (! pluginInstruments.isEmpty() || missing)
+                instrument.addSectionHeading ("Plugins");
+
+            for (auto& plugin : pluginInstruments)
+            {
+                instrumentIds.add (plugin.first);
+                instrument.addItem (plugin.second, instrumentIds.size());
+            }
+
+            if (! instrumentIds.contains (current))
+            {
+                instrumentIds.add (current);
+                instrument.addItem (channel["instrument_name"].toString() + (missing ? " (missing)" : ""), instrumentIds.size());
+            }
+
+            instrument.setSelectedId (instrumentIds.indexOf (current) + 1, juce::dontSendNotification);
+            instrument.setTooltip (missing ? "This plugin isn't installed on this computer (or didn't load); scan for it in Plugins"
+                                           : "The instrument this channel plays");
             instrument.onChange = [this]
             {
-                dispatcher.execute ("set_instrument", makeObject ({ { "channel", id },
-                                                                    { "instrument", instrument.getSelectedId() == 1 ? "4osc" : "none" } }));
+                auto choice = instrumentIds[instrument.getSelectedId() - 1];
+                auto result = dispatcher.execute ("set_instrument", makeObject ({ { "channel", id }, { "instrument", choice } }));
+
+                if (result.ok)
+                    return;
+
+                instrument.setSelectedId (instrumentIds.indexOf (currentInstrument) + 1, juce::dontSendNotification);
+                juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOk (juce::MessageBoxIconType::WarningIcon,
+                                                                                     "Couldn't change the instrument",
+                                                                                     result.error + "\n\nIf the plugin was moved or "
+                                                                                     "uninstalled, scan again in Plugins.",
+                                                                                     {}, this),
+                                              nullptr);
+            };
+
+            auto isPlugin = current != "4osc" && current != "none";
+            editButton.setEnabled (isPlugin && ! missing);
+            editButton.setTooltip (isPlugin ? "Open the plugin's own window" : "Built-in instruments have no window of their own");
+            editButton.onClick = [this]
+            {
+                dispatcher.execute ("show_plugin_window", makeObject ({ { "channel", id } }));
             };
 
             output.addItem ("Master", 1);
@@ -116,7 +161,7 @@ namespace
                 dispatcher.execute ("route", makeObject ({ { "channel", id }, { "strip", dest } }));
             };
 
-            for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &status, &armButton, &instrument, &output, &deleteButton, &grid })
+            for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &status, &armButton, &instrument, &editButton, &output, &deleteButton, &grid })
                 addAndMakeVisible (c);
         }
 
@@ -131,7 +176,9 @@ namespace
             r.removeFromRight (4);
             output.setBounds (r.removeFromRight (130));
             r.removeFromRight (4);
-            instrument.setBounds (r.removeFromRight (120));
+            editButton.setBounds (r.removeFromRight (40));
+            r.removeFromRight (2);
+            instrument.setBounds (r.removeFromRight (150));
             r.removeFromRight (4);
             armButton.setBounds (r.removeFromRight (26));
             status.setBounds (r.removeFromRight (64));
@@ -142,10 +189,11 @@ namespace
         CommandDispatcher& dispatcher;
         juce::String id;
         ColourSwatch swatch;
-        juce::StringArray stripIds;
+        juce::StringArray stripIds, instrumentIds;
+        juce::String currentInstrument;
         juce::Label name, status;
         juce::ComboBox instrument, output;
-        juce::TextButton deleteButton, armButton { juce::String::fromUTF8 ("\xe2\x97\x8f") };
+        juce::TextButton deleteButton, armButton { juce::String::fromUTF8 ("\xe2\x97\x8f") }, editButton { "Edit" };
         StepGrid grid;
     };
 
@@ -454,6 +502,7 @@ MainComponent::MainComponent (te::Engine& engine)
 
     setWantsKeyboardFocus (true);
     juce::Desktop::getInstance().addFocusChangeListener (this);
+    session.getEngine().getPluginManager().knownPluginList.addChangeListener (this);   // a scan adds instruments to pick
     setSize (1360, 860);
     startTimerHz (30);
 }
@@ -461,6 +510,7 @@ MainComponent::MainComponent (te::Engine& engine)
 MainComponent::~MainComponent()
 {
     juce::Desktop::getInstance().removeFocusChangeListener (this);
+    session.getEngine().getPluginManager().knownPluginList.removeChangeListener (this);
     keyboardState.removeListener (this);
     dispatcher.onCommandExecuted = nullptr;
     session.onEditAboutToChange = nullptr;
@@ -918,11 +968,24 @@ void MainComponent::rebuildRows()
     auto state = session.toVar();
     auto strips = state["strips"];
 
-    // The rack shows channels and the strip names they can route to; fader moves don't change it.
+    juce::Array<std::pair<juce::String, juce::String>> pluginInstruments;
+
+    for (auto& d : session.getEngine().getPluginManager().knownPluginList.getTypes())
+        if (d.isInstrument)
+            pluginInstruments.add ({ d.createIdentifierString(), d.name });
+
+    std::sort (pluginInstruments.begin(), pluginInstruments.end(),
+               [] (auto& a, auto& b) { return a.second.compareNatural (b.second) < 0; });
+
+    // The rack shows channels, the strip names they can route to and the instruments they
+    // can pick; fader moves don't change it.
     juce::String key = juce::JSON::toString (state["channels"], true);
 
     for (auto& s : *strips.getArray())
         key << "|" << s["id"].toString() << ":" << s["name"].toString();
+
+    for (auto& plugin : pluginInstruments)
+        key << "|" << plugin.first;
 
     if (key != channelRackKey)
     {
@@ -930,7 +993,7 @@ void MainComponent::rebuildRows()
         channelRows.clear();
 
         for (auto& c : *state["channels"].getArray())
-            addAndMakeVisible (channelRows.add (new ChannelRow (dispatcher, c, strips, playStep)));
+            addAndMakeVisible (channelRows.add (new ChannelRow (dispatcher, c, strips, pluginInstruments, playStep)));
     }
 
     mixer.update (state);

@@ -56,7 +56,10 @@ and every action available to AI tools through one command layer.
 - **Plugins.** *Plugins* opens the list of VST3 plugins found on this computer. *Scan for VST3
   plugins...* asks which folders to look in (the usual places are filled in) and adds what it
   finds; right-click a plugin to remove it. The list is saved with the app's settings, and a
-  plugin that crashes a scan is skipped the next time. Loading them onto channels comes next.
+  plugin that crashes a scan is skipped the next time. Scanned instruments appear in every
+  channel's instrument menu; *Edit* next to it opens the plugin's own window. The plugin and its
+  settings are saved with the project. A project that uses a plugin this computer doesn't have
+  still opens, with the plugin marked missing.
 - **A mixer.** Each strip has a fader, pan, mute, solo and a level meter, with a master strip
   on the right. A whole fader drag is one undo step; mute and solo aren't undo steps, as in
   most DAWs.
@@ -72,7 +75,7 @@ and every action available to AI tools through one command layer.
   | `rename_track` | Renames a channel or strip; a linked pair is renamed together |
   | `set_track_colour` | Recolours a channel or strip; a linked pair changes together |
   | `delete_track` | Deletes a channel (and its own strip, unless shared) or a strip (its inputs go to master) |
-  | `set_instrument` | Swaps a channel's instrument (`4osc` or `none` for now) |
+  | `set_instrument` | Swaps a channel's instrument: `4osc`, `none`, or a scanned plugin by id or name |
   | `set_mixer_strip` | Sets a strip's (or `master`'s) fader, pan, mute and solo |
   | `set_tempo` / `set_time_signature` | Project tempo (clips keep their beats) and time signature |
   | `set_loop` | Loop on/off and the loop region in beats (default: the whole project, in whole bars) |
@@ -86,6 +89,7 @@ and every action available to AI tools through one command layer.
   | `arm_channel` / `record` | Arms a channel for MIDI input, and records into it until `stop` |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
   | `scan_plugins` / `list_plugins` | Scans folders for VST3 plugins, and lists the ones found with the ids used to load them |
+  | `show_plugin_window` | Opens the editor window of a channel's plugin instrument |
   | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
 
   Each editing command is one undo step, a batch of commands is one undo step, and a failing command
@@ -152,4 +156,4 @@ Releasing this app closed-source needs commercial licences for both.
 - An MCP server executable that wraps `CommandRegistry::describe()` and `executeJson()`
 - Multi-output instruments getting a folder of strips that sums to one bus
 - Tags (`drums`, `bass`, `vox`) that create and route buses automatically
-- Loading scanned VST3 instruments and effects, and CLAP support
+- VST3 effects on mixer strips, and CLAP support

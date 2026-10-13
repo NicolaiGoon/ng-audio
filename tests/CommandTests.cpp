@@ -1160,6 +1160,76 @@ namespace
         known.clear();
     }
 
+    void testPluginInstrument (tracktion::Engine& engine)
+    {
+        std::cout << "a scanned plugin plays as a channel's instrument\n";
+        Fixture f (engine);
+        auto& known = engine.getPluginManager().knownPluginList;
+        known.clear();
+        CHECK (f.dispatcher.execute ("scan_plugins", obj ({ { "folders", juce::Array<juce::var> { NG_TEST_PLUGIN_FOLDER } } })).ok);
+        auto id = f.dispatcher.execute ("list_plugins").value[0]["id"].toString();
+        CHECK (id.isNotEmpty());
+
+        auto channel = [&] { return f.state()["channels"][0]; };
+
+        CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" }, { "instrument", id } })).ok);
+        CHECK (channel()["instrument"] == id && channel()["instrument_name"] == "Ng Test Synth");
+        CHECK (! channel().hasProperty ("instrument_missing"));
+
+        // It makes the sound: the test synth plays a sine for each note.
+        f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "length_beats", 4 },
+                                                      { "notes", juce::Array<juce::var> { note (69, 0, 2) } } }));
+        auto rms = renderRms (f);
+        std::cout << "       rendered through the plugin, RMS " << rms << "\n";
+        CHECK (rms > 0.01f);
+
+        // Swapping instruments is one undo step each way; a name works as well as an id.
+        CHECK (f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Lead" }, { "instrument", "4osc" } })).ok);
+        CHECK (channel()["instrument"] == "4osc");
+        f.dispatcher.undo();
+        CHECK (channel()["instrument"] == id);
+        CHECK (f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Lead" }, { "instrument", "ng test synth" } })).ok);
+        CHECK (channel()["instrument"] == id);
+
+        CHECK (! f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Lead" }, { "instrument", "Nonexistent" } })).ok);
+        CHECK (! f.dispatcher.execute ("create_track", obj ({ { "instrument", "Nonexistent" } })).ok);
+        CHECK (f.state()["channels"].size() == 1 && channel()["instrument"] == id);
+
+        // The editor window: headless there's no screen, but the plugin is there to show.
+        auto shown = f.dispatcher.execute ("show_plugin_window", obj ({ { "channel", "Lead" } }));
+        CHECK (shown.ok && ! static_cast<bool> (shown.value["shown"]));
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Built in" } }));
+        CHECK (! f.dispatcher.execute ("show_plugin_window", obj ({ { "channel", "Built in" } })).ok);
+
+        // Saved and reopened, the channel still has the plugin, with its settings.
+        auto volume = [&]() -> juce::AudioProcessorParameter*
+        {
+            if (auto plugin = dynamic_cast<tracktion::ExternalPlugin*> (ng::Session::getInstrument (*f.session.getChannels()[0])))
+                if (auto instance = plugin->getAudioPluginInstance())
+                    return instance->getParameters()[0];
+
+            return nullptr;
+        };
+
+        CHECK (volume() != nullptr);
+
+        if (auto p = volume())
+            p->setValueNotifyingHost (0.25f);
+
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (f.dispatcher.execute ("save_project", obj ({ { "path", path } })).ok);
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (channel()["instrument"] == id && ! channel().hasProperty ("instrument_missing"));
+        CHECK (volume() != nullptr && std::abs (volume()->getValue() - 0.25f) < 0.001f);
+
+        // On a computer without the plugin, the project still opens and says it's missing.
+        known.clear();
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (channel()["instrument_name"] == "Ng Test Synth" && static_cast<bool> (channel()["instrument_missing"]));
+        CHECK (! f.dispatcher.execute ("show_plugin_window", obj ({ { "channel", "Lead" } })).ok);
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -1241,6 +1311,7 @@ int main()
         testQuantizeAndVelocity (engine);
         testArmingForMidiInput (engine);
         testPluginScanning (engine);
+        testPluginInstrument (engine);
         testRendersAudio (engine);
     }
 
