@@ -72,6 +72,11 @@ public:
     /** Finds a channel or a mixer strip by id or name (channels are searched first). */
     te::AudioTrack* findAnyTrack (const juce::String& idOrName) const;
 
+    /** A channel's step pattern as 'x' (on) and '.' (off), one per 16th note (16 off by
+        default), and the MIDI note the steps play (default 60). Changed by set_steps. */
+    static juce::String getSteps (const te::AudioTrack& channel);
+    static int getStepPitch (const te::AudioTrack& channel);
+
     //==============================================================================
     /** The loop region in beats. Unless a custom region is set, it covers the whole
         project, rounded up to whole bars (at least one bar). */

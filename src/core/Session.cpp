@@ -150,6 +150,17 @@ bool Session::isLinked (const te::AudioTrack& channel) const
     return own != nullptr && getDestinationStrip (channel) == own;
 }
 
+juce::String Session::getSteps (const te::AudioTrack& channel)
+{
+    auto steps = channel.state["ngSteps"].toString();
+    return steps.isEmpty() ? juce::String::repeatedString (".", 16) : steps;
+}
+
+int Session::getStepPitch (const te::AudioTrack& channel)
+{
+    return channel.state.getProperty ("ngStepPitch", 60);
+}
+
 te::AudioTrack* Session::getLinkedPartner (const te::AudioTrack& track) const
 {
     if (getRole (track) == Role::channel)
@@ -306,6 +317,11 @@ juce::var Session::toVar() const
                 instrument = p->getPluginType();
 
         obj->setProperty ("instrument", instrument);
+        auto pattern = new juce::DynamicObject();
+        pattern->setProperty ("steps", getSteps (*c));
+        pattern->setProperty ("pitch", getStepPitch (*c));
+        obj->setProperty ("pattern", juce::var (pattern));
+
         obj->setProperty ("clips", c->getClips().size());
         channels.add (juce::var (obj));
     }
