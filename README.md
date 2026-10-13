@@ -67,6 +67,10 @@ and every action available to AI tools through one command layer.
   delay, or a scanned VST3 effect. Effects run top to bottom, before the fader. Click one to open
   its window (the plugin's own, or sliders for a built-in effect); right-click it to bypass, move
   or remove it. Effects and their settings are saved with the project.
+- **Buses and sends.** *Add bus* (above the mixer) adds a bus: a strip other strips send to, such
+  as a shared reverb. *+ Send* on a strip sends it to a bus (or makes a new one); drag the send's
+  bar to set its level, and right-click it to make it pre-fader or remove it. Sends that would
+  loop back into themselves are refused. Channels can also be routed straight to a bus.
 - **Linked-by-default mixer strips.** Adding an instrument creates a channel *and* a mixer strip
   with the same name and colour, already routed. Pick a different strip in the channel rack to
   detach it; several channels can share one strip; pick its own strip again to re-link it.
@@ -97,6 +101,7 @@ and every action available to AI tools through one command layer.
   | `add_effect` / `remove_effect` / `move_effect` | Insert effects on a strip or `master`: `eq`, `compressor`, `reverb`, `delay`, or a scanned plugin |
   | `set_effect` / `get_effect` | Bypass an effect and set its parameters; list them with their ranges |
   | `show_effect_window` | Opens an effect's window |
+  | `create_bus` / `set_send` / `remove_send` | Adds a bus; sends a strip to it with a level, pre- or post-fader |
   | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
 
   Each editing command is one undo step, a batch of commands is one undo step, and a failing command
@@ -119,8 +124,9 @@ src/core/CommandDispatcher.*  runs commands, batches, JSON requests, undo/redo
 src/core/ProjectCommands.cpp  create_track, route, set_steps, add_midi_clip, play, stop, projects, get_state
 src/core/PluginCommands.cpp   scan_plugins, list_plugins
 src/core/EffectCommands.cpp   insert effects on mixer strips
+src/core/BusCommands.cpp      buses and sends
 src/app/                      the JUCE window (timeline, channel rack, mixer, transport, console)
-src/app/MixerView.*           mixer strips: fader, pan, effects, mute/solo, meters, master
+src/app/MixerView.*           mixer strips: fader, pan, effects, sends, mute/solo, meters, master
 src/app/PluginWindow.*        plugin editor windows, and sliders for built-in effects
 src/app/TimelineView.*        the arrangement timeline: lanes, clips, ruler, playhead, zoom
 src/app/PianoRoll.*           the piano roll: keyboard, note grid, drawing and editing notes
@@ -167,4 +173,4 @@ Releasing this app closed-source needs commercial licences for both.
 - An MCP server executable that wraps `CommandRegistry::describe()` and `executeJson()`
 - Multi-output instruments getting a folder of strips that sums to one bus
 - Tags (`drums`, `bass`, `vox`) that create and route buses automatically
-- Sends and buses, and CLAP support
+- CLAP support

@@ -310,6 +310,15 @@ namespace
 
         juce::Array<juce::var> deleted, rerouted;
 
+        // Sends to a deleted bus would have nowhere to go.
+        for (auto t : toDelete)
+            if (auto bus = Session::getBusNumber (*t); bus >= 0)
+                for (auto s : session.getStrips())
+                    if (! toDelete.contains (s))
+                        for (auto send : Session::getSends (*s))
+                            if (send->getBusNumber() == bus)
+                                send->deleteFromParent();
+
         for (auto t : toDelete)
         {
             // Anything that fed this track now goes straight to master, and channels
@@ -1290,7 +1299,7 @@ void registerProjectCommands (CommandRegistry& registry)
 
     registry.add ({ "delete_track",
                     "Deletes a channel or mixer strip. A channel takes its own strip with it unless other channels "
-                    "still feed that strip; anything that fed a deleted strip is sent to master.",
+                    "still feed that strip; anything that fed a deleted strip is sent to master, and sends to a deleted bus are removed.",
                     schema ({ { "track", prop ("string", "Channel or mixer strip id or name") } }, { "track" }),
                     true, deleteTrack });
 
@@ -1466,6 +1475,7 @@ void registerProjectCommands (CommandRegistry& registry)
 
     registerPluginCommands (registry);
     registerEffectCommands (registry);
+    registerBusCommands (registry);
 }
 
 } // namespace ng
