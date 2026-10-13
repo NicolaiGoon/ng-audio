@@ -22,6 +22,9 @@ public:
 
     void update (const juce::var& state);
 
+    /** Drops every column (and its meter), e.g. before the project is replaced. */
+    void clear();
+
     void resized() override;
 
 private:
