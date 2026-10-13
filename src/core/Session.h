@@ -112,6 +112,9 @@ public:
     static juce::String getSteps (const te::AudioTrack& channel);
     static int getStepPitch (const te::AudioTrack& channel);
 
+    /** True for the clip set_steps keeps in sync with a channel's step pattern. */
+    static bool isPatternClip (const te::Clip&);
+
     //==============================================================================
     /** The loop region in beats. Unless a custom region is set, it covers the whole
         project, rounded up to whole bars (at least one bar). */

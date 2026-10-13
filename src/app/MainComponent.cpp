@@ -157,6 +157,7 @@ MainComponent::MainComponent (te::Engine& engine)
     session.onEditAboutToChange = [this]
     {
         mixer.clear();
+        timeline.clear();
         channelRows.clear();
         channelRackKey = {};
     };
@@ -181,7 +182,16 @@ MainComponent::MainComponent (te::Engine& engine)
     setUpTransportControls();
     runButton.onClick = [this] { runConsoleCommand(); };
 
-    for (auto* l : { &channelsHeader, &mixerHeader, &consoleHeader })
+    consoleButton.setTooltip ("Show the JSON command console");
+    consoleButton.onClick = [this]
+    {
+        for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton })
+            c->setVisible (consoleButton.getToggleState());
+
+        resized();
+    };
+
+    for (auto* l : { &timelineHeader, &channelsHeader, &mixerHeader, &consoleHeader })
         l->setFont (juce::FontOptions (15.0f, juce::Font::bold));
 
     consoleInput.setMultiLine (true);
@@ -196,15 +206,17 @@ MainComponent::MainComponent (te::Engine& engine)
     for (auto* c : std::initializer_list<juce::Component*> { &newButton, &openButton, &saveButton, &saveAsButton,
                                                              &addButton, &playButton, &undoButton, &redoButton,
                                                              &tempo, &timeSignature, &loopButton,
-                                                             &settingsButton, &runButton, &channelsHeader,
-                                                             &mixerHeader, &consoleHeader, &consoleInput, &mixer,
-                                                             &consoleOutput })
+                                                             &settingsButton, &consoleButton, &timelineHeader, &timeline,
+                                                             &channelsHeader, &mixerHeader, &mixer })
         addAndMakeVisible (c);
+
+    for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton })
+        addChildComponent (c);
 
     loadStarterProject();
 
     setWantsKeyboardFocus (true);
-    setSize (1180, 760);
+    setSize (1280, 860);
     startTimerHz (30);
 }
 
@@ -518,6 +530,7 @@ void MainComponent::rebuildRows()
     }
 
     mixer.update (state);
+    timeline.update (state);
     updateTransportControls (state);
     resized();
 }
@@ -555,16 +568,26 @@ void MainComponent::resized()
     loopButton.setBounds (toolbar.removeFromLeft (70));
 
     settingsButton.setBounds (toolbar.removeFromRight (120));
+    toolbar.removeFromRight (8);
+    consoleButton.setBounds (toolbar.removeFromRight (90));
     r.removeFromTop (10);
 
-    auto console = r.removeFromBottom (170);
-    consoleHeader.setBounds (console.removeFromTop (24));
-    auto consoleTop = console.removeFromTop (60);
-    runButton.setBounds (consoleTop.removeFromRight (70).reduced (4, 14));
-    consoleInput.setBounds (consoleTop);
-    console.removeFromTop (6);
-    consoleOutput.setBounds (console);
-    r.removeFromBottom (10);
+    if (consoleButton.getToggleState())
+    {
+        auto console = r.removeFromBottom (170);
+        consoleHeader.setBounds (console.removeFromTop (24));
+        auto consoleTop = console.removeFromTop (60);
+        runButton.setBounds (consoleTop.removeFromRight (70).reduced (4, 14));
+        consoleInput.setBounds (consoleTop);
+        console.removeFromTop (6);
+        consoleOutput.setBounds (console);
+        r.removeFromBottom (10);
+    }
+
+    // The timeline gets a bit under half; the rack and mixer share the rest.
+    timelineHeader.setBounds (r.removeFromTop (24));
+    timeline.setBounds (r.removeFromTop (juce::jmax (140, (r.getHeight() - 10) * 9 / 20)));
+    r.removeFromTop (10);
 
     auto left = r.removeFromLeft (juce::jmax (500, r.getWidth() * 9 / 20)).withTrimmedRight (8);
     auto right = r.withTrimmedLeft (8);
