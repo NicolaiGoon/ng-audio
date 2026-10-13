@@ -144,6 +144,16 @@ namespace
         CHECK (f.state()["channels"][0]["pattern"]["steps"] == juce::String::repeatedString (".", 16));
         settle();
         CHECK (f.dispatcher.canRedo());
+
+        // Moving one clip past another reorders the track's clips, which Tracktion also tidies later.
+        auto first = f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Synth" }, { "start_beat", 0 } })).value["clip"];
+        f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Synth" }, { "start_beat", 8 } }));
+        settle();
+        f.dispatcher.execute ("move_clip", obj ({ { "clip", first }, { "start_beat", 16 } }));
+        settle();
+        CHECK (f.session.getUndoManager().getUndoDescriptions()[0] == "move_clip");
+        CHECK (f.dispatcher.undo());
+        CHECK (near (f.state()["channels"][0]["clips"][0]["start_beat"], 0.0));
     }
 
     void testRouteDetachesAndShares (tracktion::Engine& engine)
@@ -801,6 +811,132 @@ namespace
         CHECK (! f.dispatcher.execute ("set_position").ok);
     }
 
+    /** The clips on a channel, from get_state. */
+    juce::var clipsOf (Fixture& f, int channelIndex)
+    {
+        return f.state()["channels"][channelIndex]["clips"];
+    }
+
+    void testClipEditing (tracktion::Engine& engine)
+    {
+        std::cout << "clips move, resize, split, duplicate and delete\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } }));
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Bass" } }));
+        auto added = f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "start_beat", 4 }, { "length_beats", 4 },
+                                                                     { "notes", juce::Array<juce::var> { note (60, 0, 1), note (62, 2, 1) } } }));
+        auto id = added.value["clip"].toString();
+
+        // Move in time, then to another channel; the notes go with it.
+        auto moved = f.dispatcher.execute ("move_clip", obj ({ { "clip", id }, { "start_beat", 8 } }));
+        CHECK (moved.ok);
+        CHECK (near (clipsOf (f, 0)[0]["start_beat"], 8.0));
+        CHECK (near (clipsOf (f, 0)[0]["length_beats"], 4.0));
+        CHECK (f.dispatcher.execute ("move_clip", obj ({ { "clip", id }, { "channel", "Bass" } })).ok);
+        CHECK (clipsOf (f, 0).size() == 0);
+        CHECK (clipsOf (f, 1).size() == 1);
+        CHECK (near (clipsOf (f, 1)[0]["start_beat"], 8.0));
+        CHECK (static_cast<int> (clipsOf (f, 1)[0]["notes"]) == 2);
+        CHECK (f.dispatcher.undo());
+        CHECK (clipsOf (f, 0).size() == 1);
+        CHECK (f.dispatcher.redo());
+
+        // Trim the end, then the start: the edges move but the notes stay put in the song.
+        CHECK (f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", 11 } })).ok);
+        CHECK (f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "start_beat", 10 } })).ok);
+        auto clip = clipsOf (f, 1)[0];
+        CHECK (near (clip["start_beat"], 10.0));
+        CHECK (near (clip["length_beats"], 1.0));
+
+        if (auto midi = dynamic_cast<tracktion::MidiClip*> (f.session.findTrack ("Bass", ng::Session::Role::channel)->getClips()[0]))
+            CHECK (near (midi->getOffsetInBeats().inBeats(), 2.0));   // the note at beat 10 is still at beat 10
+
+        // Pulling the start back can't go past the content's start (beat 8).
+        CHECK (f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "start_beat", 2 } })).ok);
+        CHECK (near (clipsOf (f, 1)[0]["start_beat"], 8.0));
+        CHECK (! f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", 8 } })).ok);
+        CHECK (! f.dispatcher.execute ("resize_clip", obj ({ { "clip", id } })).ok);
+
+        // Split, duplicate and delete.
+        auto long_ = f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "start_beat", 16 }, { "length_beats", 8 },
+                                                                     { "notes", juce::Array<juce::var> { note (60, 0, 1), note (64, 6, 1) } } }));
+        auto longId = long_.value["clip"].toString();
+        auto halves = f.dispatcher.execute ("split_clip", obj ({ { "clip", longId }, { "beat", 20 } }));
+        CHECK (halves.ok);
+        CHECK (halves.value.size() == 2);
+        auto lead = clipsOf (f, 0);
+        CHECK (lead.size() == 2);
+        CHECK (near (lead[0]["start_beat"], 16.0) && near (lead[0]["length_beats"], 4.0));
+        CHECK (near (lead[1]["start_beat"], 20.0) && near (lead[1]["length_beats"], 4.0));
+        CHECK (! f.dispatcher.execute ("split_clip", obj ({ { "clip", longId }, { "beat", 30 } })).ok);
+
+        auto secondHalf = halves.value[1]["clip"].toString();
+        auto copy = f.dispatcher.execute ("duplicate_clip", obj ({ { "clip", secondHalf } }));
+        CHECK (copy.ok);
+        CHECK (copy.value["clip"].toString() != secondHalf);
+        CHECK (near (copy.value["start_beat"], 24.0));   // right after the original
+        CHECK (clipsOf (f, 0).size() == 3);
+
+        CHECK (f.dispatcher.execute ("delete_clip", obj ({ { "clip", copy.value["clip"] } })).ok);
+        CHECK (clipsOf (f, 0).size() == 2);
+        CHECK (f.dispatcher.undo());
+        CHECK (clipsOf (f, 0).size() == 3);
+
+        CHECK (! f.dispatcher.execute ("delete_clip", obj ({ { "clip", "nope" } })).ok);
+        CHECK (! f.dispatcher.execute ("move_clip", obj ({ { "clip", secondHalf }, { "start_beat", -1 } })).ok);
+        CHECK (! f.dispatcher.execute ("move_clip", obj ({ { "clip", secondHalf }, { "channel", "Nobody" } })).ok);
+    }
+
+    void testPatternCopiesFollowSteps (tracktion::Engine& engine)
+    {
+        std::cout << "copies of a step pattern follow the channel's steps\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Kick" } }));
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Other" } }));
+        f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "steps", "x...x...x...x..." } }));
+        auto pattern = clipsOf (f, 0)[0]["id"].toString();
+
+        auto copy = f.dispatcher.execute ("duplicate_clip", obj ({ { "clip", pattern }, { "start_beat", 8 } }));
+        CHECK (copy.ok);
+        CHECK (f.dispatcher.execute ("move_clip", obj ({ { "clip", pattern }, { "start_beat", 4 } })).ok);
+
+        // One step change refills both copies where they stand.
+        CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "step", 2 } })).ok);
+        auto clips = clipsOf (f, 0);
+        CHECK (clips.size() == 2);
+        CHECK (near (clips[0]["start_beat"], 4.0));
+        CHECK (near (clips[1]["start_beat"], 8.0));
+
+        for (auto& c : *clips.getArray())
+        {
+            CHECK (c["pattern"] == juce::var (true));
+            CHECK (static_cast<int> (c["notes"]) == 5);
+            CHECK (near (c["length_beats"], 4.0));
+        }
+
+        // A shorter pattern shortens every copy.
+        CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "length", 8 } })).ok);
+        CHECK (near (clipsOf (f, 0)[1]["length_beats"], 2.0));
+
+        // Patterns stay on their channel and keep their own length.
+        CHECK (! f.dispatcher.execute ("move_clip", obj ({ { "clip", pattern }, { "channel", "Other" } })).ok);
+        CHECK (! f.dispatcher.execute ("resize_clip", obj ({ { "clip", pattern }, { "end_beat", 12 } })).ok);
+        CHECK (! f.dispatcher.execute ("split_clip", obj ({ { "clip", pattern }, { "beat", 5 } })).ok);
+
+        // With every copy deleted, the next step change puts the pattern back at the start.
+        auto remaining = clipsOf (f, 0);
+
+        for (auto& c : *remaining.getArray())
+            f.dispatcher.execute ("delete_clip", obj ({ { "clip", c["id"] } }));
+
+        CHECK (clipsOf (f, 0).size() == 0);
+        CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "step", 1 } })).ok);
+        CHECK (clipsOf (f, 0).size() == 1);
+        CHECK (near (clipsOf (f, 0)[0]["start_beat"], 0.0));
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -876,6 +1012,8 @@ int main()
         testPatternRenders (engine);
         testSaveAndOpen (engine);
         testClipsAndPlayheadInState (engine);
+        testClipEditing (engine);
+        testPatternCopiesFollowSteps (engine);
         testRendersAudio (engine);
     }
 

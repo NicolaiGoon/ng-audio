@@ -194,6 +194,10 @@ MainComponent::MainComponent (te::Engine& engine)
     for (auto* l : { &timelineHeader, &channelsHeader, &mixerHeader, &consoleHeader })
         l->setFont (juce::FontOptions (15.0f, juce::Font::bold));
 
+    timelineHint.setFont (juce::FontOptions (12.0f));
+    timelineHint.setColour (juce::Label::textColourId, juce::Colours::grey);
+    timelineHint.setJustificationType (juce::Justification::centredRight);
+
     consoleInput.setMultiLine (true);
     consoleInput.setReturnKeyStartsNewLine (true);
     consoleInput.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::plain));
@@ -206,7 +210,7 @@ MainComponent::MainComponent (te::Engine& engine)
     for (auto* c : std::initializer_list<juce::Component*> { &newButton, &openButton, &saveButton, &saveAsButton,
                                                              &addButton, &playButton, &undoButton, &redoButton,
                                                              &tempo, &timeSignature, &loopButton,
-                                                             &settingsButton, &consoleButton, &timelineHeader, &timeline,
+                                                             &settingsButton, &consoleButton, &timelineHeader, &timelineHint, &timeline,
                                                              &channelsHeader, &mixerHeader, &mixer })
         addAndMakeVisible (c);
 
@@ -585,7 +589,9 @@ void MainComponent::resized()
     }
 
     // The timeline gets a bit under half; the rack and mixer share the rest.
-    timelineHeader.setBounds (r.removeFromTop (24));
+    auto timelineTop = r.removeFromTop (24);
+    timelineHeader.setBounds (timelineTop.removeFromLeft (120));
+    timelineHint.setBounds (timelineTop);
     timeline.setBounds (r.removeFromTop (juce::jmax (140, (r.getHeight() - 10) * 9 / 20)));
     r.removeFromTop (10);
 
