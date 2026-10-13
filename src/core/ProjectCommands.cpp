@@ -937,6 +937,107 @@ namespace
         return CommandResult::success (result);
     }
 
+    CommandResult quantizeNotes (Session& session, const juce::var& p)
+    {
+        te::MidiClip* midi = nullptr;
+
+        if (auto error = requireNoteClip (session, "quantize_notes", p, midi))
+            return *error;
+
+        if (Session::isPatternClip (*midi))
+            return CommandResult::failure ("quantize_notes: a step pattern is always on its steps");
+
+        auto grid = params::getDouble (p, "grid", 0.25);
+
+        if (! (grid >= 1.0 / 64.0 && grid <= 16.0))
+            return CommandResult::failure ("quantize_notes: grid must be from 1/64 to 16 beats (0.25 is a 16th note)");
+
+        auto strength = params::getDouble (p, "strength", 1.0);
+
+        if (! (strength > 0.0 && strength <= 1.0))
+            return CommandResult::failure ("quantize_notes: strength must be above 0 and at most 1");
+
+        auto notes = Session::getNotes (*midi);
+        juce::Array<bool> chosen;
+        chosen.insertMultiple (0, ! p.hasProperty ("notes"), notes.size());
+
+        if (p.hasProperty ("notes"))
+        {
+            if (! p["notes"].isArray())
+                return CommandResult::failure ("quantize_notes: notes must be an array of indexes, as listed by get_notes");
+
+            for (auto& i : *p["notes"].getArray())
+            {
+                if (! isNumber (i) || ! juce::isPositiveAndBelow (static_cast<int> (i), notes.size()))
+                    return CommandResult::failure ("quantize_notes: no note " + i.toString() + " (the clip has "
+                                                     + juce::String (notes.size()) + ")");
+
+                chosen.set (static_cast<int> (i), true);
+            }
+        }
+
+        auto ends = static_cast<bool> (p.getProperty ("ends", false));
+        auto offset = midi->getOffsetInBeats().inBeats();
+        auto towards = [grid, strength] (double beat) { return beat + (std::round (beat / grid) * grid - beat) * strength; };
+        int changed = 0;
+
+        for (int i = 0; i < notes.size(); ++i)
+        {
+            if (! chosen[i])
+                continue;
+
+            auto& n = notes.getReference (i);
+            auto end = n.start + n.length;
+            auto newStart = std::max (-offset, towards (n.start));
+            auto newEnd = ends ? std::max (newStart + grid * strength, towards (end)) : newStart + n.length;
+
+            if (std::abs (newStart - n.start) > 1.0e-9 || std::abs (newEnd - end) > 1.0e-9)
+                ++changed;
+
+            n.start = newStart;
+            n.length = newEnd - newStart;
+        }
+
+        auto* um = &session.getUndoManager();
+        auto& sequence = midi->getSequence();
+        sequence.clear (um);
+
+        for (auto& n : notes)
+            sequence.addNote (n.pitch, te::BeatPosition::fromBeats (n.start + offset),
+                              te::BeatDuration::fromBeats (n.length), n.velocity, 0, um);
+
+        // Where the quantized notes ended up in the new order, e.g. to keep them selected.
+        auto after = Session::getNotes (*midi);
+        juce::Array<bool> taken;
+        taken.insertMultiple (0, false, after.size());
+        juce::Array<juce::var> quantized;
+
+        for (int i = 0; i < notes.size(); ++i)
+        {
+            if (! chosen[i])
+                continue;
+
+            for (int j = 0; j < after.size(); ++j)
+            {
+                auto& a = after.getReference (j);
+                auto& n = notes.getReference (i);
+
+                if (! taken[j] && a.pitch == n.pitch && std::abs (a.start - n.start) < 1.0e-6 && std::abs (a.length - n.length) < 1.0e-6)
+                {
+                    taken.set (j, true);
+                    quantized.add (j);
+                    break;
+                }
+            }
+        }
+
+        auto result = describeClip (session, *midi);
+        result.getDynamicObject()->setProperty ("moved", changed);
+        result.getDynamicObject()->setProperty ("quantized", quantized);
+        result.getDynamicObject()->setProperty ("notes", notesToVar (after));
+        return CommandResult::success (result);
+    }
+
     CommandResult getState (Session& session, const juce::var&)
     {
         return CommandResult::success (session.toVar());
@@ -1131,6 +1232,16 @@ void registerProjectCommands (CommandRegistry& registry)
                               { "notes", prop ("array", "Notes as {pitch, start, length, velocity}; velocity defaults to 100") } },
                             { "clip", "notes" }),
                     true, setNotes });
+
+    registry.add ({ "quantize_notes",
+                    "Moves a MIDI clip's notes onto a grid. Note lengths stay the same unless ends is true.",
+                    schema ({ { "clip", prop ("string", "Clip id, from get_state") },
+                              { "grid", prop ("number", "Grid in beats: 1 is a quarter note, 0.25 a 16th (default)") },
+                              { "notes", prop ("array", "Indexes of the notes to quantize, as listed by get_notes (default: all)") },
+                              { "strength", prop ("number", "How far towards the grid, above 0 up to 1 (default 1)") },
+                              { "ends", prop ("boolean", "Also snap where notes end (default false)") } },
+                            { "clip" }),
+                    true, quantizeNotes });
 
     registry.add ({ "set_tempo",
                     "Sets the project tempo. Clips keep their positions in beats.",

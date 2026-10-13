@@ -17,7 +17,8 @@ namespace
 
     bool sameNote (const ClipNote& a, const ClipNote& b)
     {
-        return a.pitch == b.pitch && std::abs (a.start - b.start) < 1.0e-6 && std::abs (a.length - b.length) < 1.0e-6;
+        return a.pitch == b.pitch && a.velocity == b.velocity
+                 && std::abs (a.start - b.start) < 1.0e-6 && std::abs (a.length - b.length) < 1.0e-6;
     }
 }
 
@@ -156,7 +157,13 @@ juce::Rectangle<int> PianoRoll::getRulerArea() const
 
 juce::Rectangle<int> PianoRoll::getGridArea() const
 {
-    return { keyboardWidth, rulerHeight, getWidth() - keyboardWidth - scrollBarSize, getHeight() - rulerHeight - scrollBarSize };
+    return { keyboardWidth, rulerHeight, getWidth() - keyboardWidth - scrollBarSize,
+             getHeight() - rulerHeight - scrollBarSize - velocityHeight };
+}
+
+juce::Rectangle<int> PianoRoll::getVelocityArea() const
+{
+    return { keyboardWidth, getHeight() - scrollBarSize - velocityHeight, getWidth() - keyboardWidth - scrollBarSize, velocityHeight };
 }
 
 double PianoRoll::getTotalBeats() const
@@ -281,6 +288,63 @@ void PianoRoll::deleteSelected()
     }
 }
 
+void PianoRoll::setVelocityAt (juce::Point<float> pos)
+{
+    auto area = getVelocityArea().toFloat();
+    auto top = area.getY() + 6.0f, bottom = area.getBottom() - 2.0f;
+    auto velocity = juce::jlimit (1, 127, juce::roundToInt ((bottom - pos.y) / (bottom - top) * 127.0f));
+    auto beat = xToBeat (pos.x);
+    auto onlySelected = countSelected() > 0;
+
+    // Every note playing at that point in time (just the selected ones, if there are any).
+    for (int i = 0; i < notes.size(); ++i)
+    {
+        auto& n = notes.getReference (i);
+
+        if ((! onlySelected || selected[i]) && beat >= n.start && beat < n.start + std::max (n.length, 4.0 / pixelsPerBeat))
+            n.velocity = velocity;
+    }
+
+    drag.velocity = velocity;
+    repaint();
+}
+
+void PianoRoll::quantize()
+{
+    if (clipId.isEmpty() || notes.isEmpty())
+        return;
+
+    auto params = makeObject ({ { "clip", clipId }, { "grid", grid } });
+    auto anySelected = countSelected() > 0;
+
+    if (anySelected)
+    {
+        juce::Array<juce::var> indexes;
+
+        for (int i = 0; i < notes.size(); ++i)
+            if (selected[i])
+                indexes.add (i);
+
+        params.getDynamicObject()->setProperty ("notes", indexes);
+    }
+
+    auto result = dispatcher.execute ("quantize_notes", params);
+
+    // Keep the same notes selected where they landed.
+    if (result.ok && anySelected)
+    {
+        juce::Array<ClipNote> keep;
+
+        for (auto& i : *result.value["quantized"].getArray())
+        {
+            auto n = result.value["notes"][static_cast<int> (i)];
+            keep.add ({ n["pitch"], n["start"], n["length"], n["velocity"] });
+        }
+
+        toSelect = keep;
+    }
+}
+
 void PianoRoll::nudgeSelected (int semitones, double beats)
 {
     auto moved = notes;
@@ -336,14 +400,14 @@ void PianoRoll::timerCallback()
     if (std::abs (beat - lastPlayheadBeat) > 1.0e-4)
     {
         lastPlayheadBeat = beat;
-        repaint (getGridArea().getUnion (getRulerArea()));
+        repaint (getGridArea().getUnion (getRulerArea()).getUnion (getVelocityArea()));
     }
 }
 
 void PianoRoll::resized()
 {
     horizontal.setBounds (keyboardWidth, getHeight() - scrollBarSize, getWidth() - keyboardWidth - scrollBarSize, scrollBarSize);
-    vertical.setBounds (getWidth() - scrollBarSize, rulerHeight, scrollBarSize, getHeight() - rulerHeight - scrollBarSize);
+    vertical.setBounds (getWidth() - scrollBarSize, rulerHeight, scrollBarSize, getGridArea().getHeight());
 
     if (needsFit && getWidth() > 0)
         fitToClip();
@@ -356,6 +420,7 @@ void PianoRoll::paint (juce::Graphics& g)
 {
     g.fillAll (whiteRow);
     paintGrid (g);
+    paintVelocities (g);
     paintKeyboard (g);
     paintRuler (g);
 
@@ -368,7 +433,7 @@ void PianoRoll::paint (juce::Graphics& g)
     if (x >= keyboardWidth && x <= getRulerArea().getRight())
     {
         g.setColour (playheadColour);
-        g.drawLine (x, 0.0f, x, (float) getGridArea().getBottom(), 1.5f);
+        g.drawLine (x, 0.0f, x, (float) getVelocityArea().getBottom(), 1.5f);
 
         juce::Path head;
         head.addTriangle (x - 5.0f, 0.0f, x + 5.0f, 0.0f, x, 7.0f);
@@ -479,6 +544,64 @@ void PianoRoll::paintGrid (juce::Graphics& g)
     }
 }
 
+void PianoRoll::paintVelocities (juce::Graphics& g)
+{
+    auto area = getVelocityArea();
+    juce::Graphics::ScopedSaveState save (g);
+
+    // The label sits under the keyboard.
+    g.setColour (keyboardBackground);
+    g.fillRect (0, area.getY(), getWidth(), area.getHeight() + scrollBarSize);
+    g.setColour (juce::Colours::grey);
+    g.setFont (juce::FontOptions (11.0f));
+    g.drawText ("Velocity", 0, area.getY(), keyboardWidth - 4, 18, juce::Justification::centredRight);
+
+    g.reduceClipRegion (area);
+    g.setColour (juce::Colours::black.withAlpha (0.5f));
+    g.drawHorizontalLine (area.getY(), (float) area.getX(), (float) area.getRight());
+
+    auto endX = (float) beatToX (clipLengthBeats);
+
+    if (endX < (float) area.getRight())
+    {
+        g.setColour (juce::Colours::black.withAlpha (0.35f));
+        g.fillRect (juce::Rectangle<float> (endX, (float) area.getY(), (float) area.getRight() - endX, (float) area.getHeight()));
+    }
+
+    // A stem per note, as tall as it is loud, with a line across the note's length.
+    auto top = (float) area.getY() + 6.0f, bottom = (float) area.getBottom() - 2.0f;
+
+    for (int pass = 0; pass < 2; ++pass)   // selected notes on top
+    {
+        for (int i = 0; i < notes.size(); ++i)
+        {
+            if (selected[i] != (pass == 1))
+                continue;
+
+            auto& n = notes.getReference (i);
+            auto x = (float) beatToX (n.start);
+            auto width = std::max (3.0f, (float) (n.length * pixelsPerBeat));
+
+            if (x + width < (float) area.getX() || x > (float) area.getRight())
+                continue;
+
+            auto y = bottom - (bottom - top) * (float) n.velocity / 127.0f;
+            auto c = selected[i] ? colour.brighter (0.6f) : colour.withAlpha (0.8f);
+            g.setColour (c.withAlpha (0.35f));
+            g.drawHorizontalLine ((int) y, x, x + width - 1.0f);
+            g.setColour (c);
+            g.fillRect (x, y, 2.0f, bottom - y);
+            g.fillEllipse (x - 2.5f, y - 3.0f, 7.0f, 7.0f);
+        }
+    }
+
+    if (drag.mode == DragMode::velocity && drag.velocity > 0)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.8f));
+        g.drawText (juce::String (drag.velocity), area.getX() + 6, area.getY() + 2, 60, 16, juce::Justification::centredLeft);
+    }
+}
+
 void PianoRoll::paintKeyboard (juce::Graphics& g)
 {
     auto area = juce::Rectangle<int> (0, rulerHeight, keyboardWidth, getGridArea().getHeight());
@@ -565,6 +688,15 @@ void PianoRoll::mouseDown (const juce::MouseEvent& e)
     {
         auto beat = clipStartBeat + std::max (-clipStartBeat, snapBeat (xToBeat (e.position.x), e.mods, false));
         dispatcher.execute ("set_position", makeObject ({ { "beat", beat } }));
+        return;
+    }
+
+    if (getVelocityArea().contains (e.getPosition()))
+    {
+        drag.mode = DragMode::velocity;
+        drag.original = notes;
+        drag.moved = true;
+        setVelocityAt (e.position);
         return;
     }
 
@@ -655,6 +787,10 @@ void PianoRoll::mouseDrag (const juce::MouseEvent& e)
 
     switch (drag.mode)
     {
+        case DragMode::velocity:
+            setVelocityAt (e.position);
+            break;
+
         case DragMode::select:
         {
             drag.box = juce::Rectangle<float> (e.mouseDownPosition, e.position);
@@ -737,7 +873,8 @@ void PianoRoll::mouseUp (const juce::MouseEvent&)
         return;
 
     // The next note drawn is as long as the one just drawn, resized or moved.
-    lastLength = notes[finished.anchor].length;
+    if (juce::isPositiveAndBelow (finished.anchor, notes.size()))
+        lastLength = notes[finished.anchor].length;
 
     auto changed = finished.created || notes.size() != finished.original.size();
 
@@ -787,6 +924,12 @@ bool PianoRoll::keyPressed (const juce::KeyPress& key)
 {
     if (clipId.isEmpty())
         return false;
+
+    if (key == juce::KeyPress ('q', juce::ModifierKeys::noModifiers, 0))
+    {
+        quantize();
+        return true;
+    }
 
     if (key == juce::KeyPress ('a', juce::ModifierKeys::commandModifier, 0))
     {

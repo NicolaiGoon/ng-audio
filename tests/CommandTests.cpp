@@ -1002,6 +1002,57 @@ namespace
         CHECK (! f.dispatcher.execute ("get_notes", obj ({ { "clip", "nope" } })).ok);
     }
 
+    void testQuantizeAndVelocity (tracktion::Engine& engine)
+    {
+        std::cout << "notes quantize to a grid and keep their velocities\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Keys" } }));
+        auto added = f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Keys" }, { "length_beats", 4 },
+                                                                     { "notes", juce::Array<juce::var> {
+                                                                         obj ({ { "pitch", 60 }, { "start", 0.1 }, { "length", 0.9 }, { "velocity", 30 } }),
+                                                                         note (62, 1.4, 0.3), note (64, 2.9, 0.6) } } }));
+        auto id = added.value["clip"].toString();
+        auto notesNow = [&] { return f.dispatcher.execute ("get_notes", obj ({ { "clip", id } })).value["notes"]; };
+
+        // Only the chosen notes move, to the nearest half beat; lengths stay.
+        auto q = f.dispatcher.execute ("quantize_notes", obj ({ { "clip", id }, { "grid", 0.5 },
+                                                                  { "notes", juce::Array<juce::var> { 0, 2 } } }));
+        CHECK (q.ok);
+        CHECK (static_cast<int> (q.value["moved"]) == 2);
+        CHECK (q.value["quantized"].size() == 2);
+        CHECK (static_cast<int> (q.value["quantized"][1]) == 2);
+        auto notes = notesNow();
+        CHECK (near (notes[0]["start"], 0.0) && near (notes[0]["length"], 0.9));
+        CHECK (static_cast<int> (notes[0]["velocity"]) == 30);   // velocity survives
+        CHECK (near (notes[1]["start"], 1.4));                   // not chosen
+        CHECK (near (notes[2]["start"], 3.0));
+        CHECK (f.dispatcher.undo());
+        CHECK (near (notesNow()[0]["start"], 0.1));
+        CHECK (f.dispatcher.redo());
+
+        // Half strength goes half way; ends snaps the note ends too.
+        CHECK (f.dispatcher.execute ("quantize_notes", obj ({ { "clip", id }, { "grid", 1 }, { "strength", 0.5 },
+                                                              { "notes", juce::Array<juce::var> { 1 } } })).ok);
+        CHECK (near (notesNow()[1]["start"], 1.2));
+        CHECK (f.dispatcher.execute ("quantize_notes", obj ({ { "clip", id }, { "grid", 0.25 }, { "ends", true } })).ok);
+        notes = notesNow();
+        CHECK (near (notes[0]["length"], 1.0));   // 0 to 0.9 becomes 0 to 1
+        CHECK (near (notes[1]["start"], 1.25) && near (notes[1]["length"], 0.25));
+
+        CHECK (! f.dispatcher.execute ("quantize_notes", obj ({ { "clip", id }, { "grid", 0 } })).ok);
+        CHECK (! f.dispatcher.execute ("quantize_notes", obj ({ { "clip", id }, { "strength", 2 } })).ok);
+        CHECK (! f.dispatcher.execute ("quantize_notes", obj ({ { "clip", id }, { "notes", juce::Array<juce::var> { 7 } } })).ok);
+
+        // Velocity is set through set_notes like the rest of a note.
+        auto edited = notesNow();
+        edited[2].getDynamicObject()->setProperty ("velocity", 127);
+        CHECK (f.dispatcher.execute ("set_notes", obj ({ { "clip", id }, { "notes", edited } })).ok);
+        CHECK (static_cast<int> (notesNow()[2]["velocity"]) == 127);
+        edited[2].getDynamicObject()->setProperty ("velocity", 0);
+        CHECK (! f.dispatcher.execute ("set_notes", obj ({ { "clip", id }, { "notes", edited } })).ok);
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -1080,6 +1131,7 @@ int main()
         testClipEditing (engine);
         testPatternCopiesFollowSteps (engine);
         testEditingNotes (engine);
+        testQuantizeAndVelocity (engine);
         testRendersAudio (engine);
     }
 
