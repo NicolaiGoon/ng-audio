@@ -10,9 +10,11 @@ and every action available to AI tools through one command layer.
 ## What's here (v0.1)
 
 - **A window that plays audio.** It opens with one synth (Tracktion's built-in 4OSC) playing a
-  short arpeggio. *Add instrument*, *Play*, *Undo* and *Redo* all go through the command layer.
+  four-on-the-floor pattern. *Add instrument*, *Play*, *Undo* and *Redo* all go through the command layer.
   In the channel rack and mixer, double-click a name to rename it, click the colour chip to
   recolour, pick an instrument, or press × to delete.
+- **A step sequencer.** Each channel has a row of 16 steps (16th notes) under its name; click a
+  step to turn it on or off. The step under the playhead is outlined while playing.
 - **A transport** with Play, tempo (type it, click the arrows or drag), time signature and a
   Loop switch. New projects loop the whole project, rounded up to whole bars.
 - **A mixer.** Each strip has a fader, pan, mute, solo and a level meter, with a master strip
@@ -34,6 +36,7 @@ and every action available to AI tools through one command layer.
   | `set_mixer_strip` | Sets a strip's (or `master`'s) fader, pan, mute and solo |
   | `set_tempo` / `set_time_signature` | Project tempo (clips keep their beats) and time signature |
   | `set_loop` | Loop on/off and the loop region in beats (default: the whole project, in whole bars) |
+  | `set_steps` | Sets or toggles a channel's step pattern (`steps`, `step`, `length`, `pitch`) |
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
   | `play` / `stop` | Transport |
   | `get_state` | The whole project as JSON, so an AI can "see" the session |
@@ -55,7 +58,7 @@ and every action available to AI tools through one command layer.
 src/core/Session.*            the open project: Tracktion Edit + channel/strip model
 src/core/CommandRegistry.*    command specs (name, description, JSON schema, handler)
 src/core/CommandDispatcher.*  runs commands, batches, JSON requests, undo/redo
-src/core/ProjectCommands.cpp  create_track, route, add_midi_clip, play, stop, get_state
+src/core/ProjectCommands.cpp  create_track, route, set_steps, add_midi_clip, play, stop, get_state
 src/app/                      the JUCE window (channel rack, mixer, transport, console)
 src/app/MixerView.*           mixer strips: fader, pan, mute/solo, meters, master
 tests/CommandTests.cpp        headless tests, including an offline render that checks for sound

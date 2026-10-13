@@ -396,6 +396,125 @@ namespace
         return CommandResult::success (juce::var (obj));
     }
 
+    //==============================================================================
+    // Step patterns: each channel has a row of steps (16th notes) that plays one pitch.
+    // The steps are stored on the channel and turned into a MIDI clip at the start of the
+    // project, marked as the channel's pattern clip and rebuilt whenever the steps change.
+    const juce::Identifier stepsProp ("ngSteps"), stepPitchProp ("ngStepPitch"), patternClipProp ("ngPattern");
+    constexpr int maxStepCount = 64;
+    constexpr double beatsPerStep = 0.25;
+
+    void rebuildPatternClip (Session& session, te::AudioTrack& channel)
+    {
+        auto& edit = session.getEdit();
+        auto* um = &session.getUndoManager();
+
+        for (auto clip : channel.getClips())
+            if (clip->state[patternClipProp])
+                clip->removeFromParent();
+
+        auto steps = Session::getSteps (channel);
+
+        if (! steps.containsChar ('x'))
+            return;
+
+        auto& tempo = edit.tempoSequence;
+        auto lengthBeats = te::BeatDuration::fromBeats (steps.length() * beatsPerStep);
+        auto clip = channel.insertMIDIClip ("Pattern", { tempo.toTime (te::BeatPosition()), tempo.toTime (te::BeatPosition() + lengthBeats) }, nullptr);
+
+        if (clip == nullptr)
+            return;
+
+        clip->state.setProperty (patternClipProp, true, um);
+        auto pitch = Session::getStepPitch (channel);
+
+        for (int i = 0; i < steps.length(); ++i)
+            if (steps[i] == 'x')
+                clip->getSequence().addNote (pitch, te::BeatPosition::fromBeats (i * beatsPerStep),
+                                             te::BeatDuration::fromBeats (beatsPerStep), 100, 0, um);
+    }
+
+    CommandResult setSteps (Session& session, const juce::var& p)
+    {
+        auto ref = params::getString (p, "channel");
+        auto channel = session.findTrack (ref, Session::Role::channel);
+
+        if (channel == nullptr)
+            return CommandResult::failure ("set_steps: no channel called '" + ref + "'");
+
+        auto steps = Session::getSteps (*channel);
+        auto pitch = Session::getStepPitch (*channel);
+
+        // The whole row, as a string ("x..." or "1000...") or an array of booleans.
+        if (p.hasProperty ("steps"))
+        {
+            auto value = p["steps"];
+            juce::String newSteps;
+
+            if (auto arr = value.getArray())
+            {
+                for (auto& v : *arr)
+                    newSteps << (static_cast<bool> (v) ? "x" : ".");
+            }
+            else
+            {
+                auto text = value.toString().removeCharacters (" |");
+
+                if (! text.containsOnly ("x.10X-"))
+                    return CommandResult::failure ("set_steps: steps must be a string of 'x' and '.' (or 1 and 0), or an array of booleans");
+
+                for (auto c : text)
+                    newSteps << ((c == 'x' || c == 'X' || c == '1') ? "x" : ".");
+            }
+
+            if (newSteps.isEmpty() || newSteps.length() > maxStepCount)
+                return CommandResult::failure ("set_steps: a pattern has 1 to " + juce::String (maxStepCount) + " steps");
+
+            steps = newSteps;
+        }
+
+        // Or change the length, keeping the steps that still fit.
+        if (p.hasProperty ("length"))
+        {
+            auto length = static_cast<int> (p["length"]);
+
+            if (length < 1 || length > maxStepCount)
+                return CommandResult::failure ("set_steps: length must be 1 to " + juce::String (maxStepCount));
+
+            steps = steps.substring (0, length).paddedRight ('.', length);
+        }
+
+        // Or switch single steps: {"step": 4, "on": true}.
+        if (p.hasProperty ("step"))
+        {
+            auto index = static_cast<int> (p["step"]);
+
+            if (! juce::isPositiveAndBelow (index, steps.length()))
+                return CommandResult::failure ("set_steps: step must be 0 to " + juce::String (steps.length() - 1));
+
+            auto on = p.hasProperty ("on") ? static_cast<bool> (p["on"]) : steps[index] != 'x';
+            steps = steps.substring (0, index) + (on ? "x" : ".") + steps.substring (index + 1);
+        }
+
+        if (p.hasProperty ("pitch"))
+        {
+            pitch = static_cast<int> (p["pitch"]);
+
+            if (! juce::isPositiveAndBelow (pitch, 128))
+                return CommandResult::failure ("set_steps: pitch must be a MIDI note from 0 to 127");
+        }
+
+        channel->state.setProperty (stepsProp, steps, &session.getUndoManager());
+        channel->state.setProperty (stepPitchProp, pitch, &session.getUndoManager());
+        rebuildPatternClip (session, *channel);
+
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("channel", channel->itemID.toString());
+        obj->setProperty ("steps", steps);
+        obj->setProperty ("pitch", pitch);
+        return CommandResult::success (juce::var (obj));
+    }
+
     CommandResult play (Session& session, const juce::var& p)
     {
         auto& transport = session.getEdit().getTransport();
@@ -563,6 +682,19 @@ void registerProjectCommands (CommandRegistry& registry)
                               { "solo", prop ("boolean", "Solo the strip; other strips go silent while any strip is soloed") } },
                             { "strip" }),
                     true, setMixerStrip });
+
+    registry.add ({ "set_steps",
+                    "Sets a channel's step pattern: a row of 16th-note steps from the start of the project that "
+                    "plays one pitch and loops with the project. Give the whole row, a new length, or one step.",
+                    schema ({ { "channel", prop ("string", "Channel id or name") },
+                              { "steps", prop ("string", "The row as 'x' (on) and '.' (off), e.g. \"x...x...x...x...\"; "
+                                                         "an array of booleans also works") },
+                              { "length", prop ("integer", "Number of steps, 1 to 64 (default 16)") },
+                              { "step", prop ("integer", "One step to change, from 0") },
+                              { "on", prop ("boolean", "With step: turn it on or off (toggles if omitted)") },
+                              { "pitch", prop ("integer", "MIDI note the steps play (default 60, middle C)") } },
+                            { "channel" }),
+                    true, setSteps });
 
     registry.add ({ "set_tempo",
                     "Sets the project tempo. Clips keep their positions in beats.",
