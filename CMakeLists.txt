@@ -41,7 +41,8 @@ add_library(ng_core STATIC
     src/core/Session.cpp
     src/core/CommandRegistry.cpp
     src/core/CommandDispatcher.cpp
-    src/core/ProjectCommands.cpp)
+    src/core/ProjectCommands.cpp
+    src/core/PluginCommands.cpp)
 
 target_include_directories(ng_core PUBLIC src)
 
@@ -112,8 +113,28 @@ target_link_libraries(NgDaw PRIVATE ng_core juce::juce_recommended_warning_flags
 # ------------------------------------------------------------------------------
 include(CTest)
 if (BUILD_TESTING)
+    # A tiny VST3 instrument, so scanning and loading are tested against a real plugin.
+    juce_add_plugin(NgTestSynth
+        PRODUCT_NAME "Ng Test Synth"
+        COMPANY_NAME "Ng Audio"
+        PLUGIN_MANUFACTURER_CODE NgAu
+        PLUGIN_CODE NgTs
+        IS_SYNTH TRUE
+        NEEDS_MIDI_INPUT TRUE
+        FORMATS VST3
+        VST3_AUTO_MANIFEST FALSE)
+    target_sources(NgTestSynth PRIVATE tests/TestSynth/TestSynth.cpp)
+    target_compile_definitions(NgTestSynth PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
+                                                  JUCE_DISPLAY_SPLASH_SCREEN=0)
+    target_link_libraries(NgTestSynth PRIVATE juce::juce_audio_utils juce::juce_recommended_config_flags)
+
     juce_add_console_app(NgDawTests PRODUCT_NAME "NgDawTests")
     target_sources(NgDawTests PRIVATE tests/CommandTests.cpp)
     target_link_libraries(NgDawTests PRIVATE ng_core)
+    add_dependencies(NgDawTests NgTestSynth_VST3)
+
+    # The folder holding the built Ng Test Synth.vst3, for the tests to scan.
+    target_compile_definitions(NgDawTests PRIVATE
+        NG_TEST_PLUGIN_FOLDER="${CMAKE_CURRENT_BINARY_DIR}/NgTestSynth_artefacts/$<CONFIG>/VST3")
     add_test(NAME command_layer COMMAND NgDawTests)
 endif()

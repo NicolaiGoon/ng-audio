@@ -53,6 +53,10 @@ and every action available to AI tools through one command layer.
   down move it to the next channel, and Esc deselects. In the piano roll, Ctrl+C, Ctrl+X and
   Ctrl+V copy, cut and paste notes at the playhead, Ctrl+D duplicates them, and Esc closes it.
   F1 or the ? button lists them all.
+- **Plugins.** *Plugins* opens the list of VST3 plugins found on this computer. *Scan for VST3
+  plugins...* asks which folders to look in (the usual places are filled in) and adds what it
+  finds; right-click a plugin to remove it. The list is saved with the app's settings, and a
+  plugin that crashes a scan is skipped the next time. Loading them onto channels comes next.
 - **A mixer.** Each strip has a fader, pan, mute, solo and a level meter, with a master strip
   on the right. A whole fader drag is one undo step; mute and solo aren't undo steps, as in
   most DAWs.
@@ -81,6 +85,7 @@ and every action available to AI tools through one command layer.
   | `set_metronome` | Turns the metronome on or off |
   | `arm_channel` / `record` | Arms a channel for MIDI input, and records into it until `stop` |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
+  | `scan_plugins` / `list_plugins` | Scans folders for VST3 plugins, and lists the ones found with the ids used to load them |
   | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
 
   Each editing command is one undo step, a batch of commands is one undo step, and a failing command
@@ -147,4 +152,4 @@ Releasing this app closed-source needs commercial licences for both.
 - An MCP server executable that wraps `CommandRegistry::describe()` and `executeJson()`
 - Multi-output instruments getting a folder of strips that sums to one bus
 - Tags (`drums`, `bass`, `vox`) that create and route buses automatically
-- Plugin scanning and VST3/CLAP instruments, project save/load
+- Loading scanned VST3 instruments and effects, and CLAP support
