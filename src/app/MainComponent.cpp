@@ -91,9 +91,10 @@ namespace
 
             // The built-in choices, then every scanned plugin instrument. A plugin the project
             // uses but this computer doesn't have still shows, marked missing.
-            instrumentIds = { "4osc", "none" };
+            instrumentIds = { "4osc", "sampler", "none" };
             instrument.addItem ("4OSC synth", 1);
-            instrument.addItem ("No instrument", 2);
+            instrument.addItem ("Sampler", 2);
+            instrument.addItem ("No instrument", 3);
 
             auto current = currentInstrument = channel["instrument"].toString();
             auto missing = static_cast<bool> (channel["instrument_missing"]);
@@ -133,9 +134,11 @@ namespace
                                               nullptr);
             };
 
-            auto isPlugin = current != "4osc" && current != "none";
-            editButton.setEnabled (isPlugin && ! missing);
-            editButton.setTooltip (isPlugin ? "Open the plugin's own window" : "Built-in instruments have no window of their own");
+            auto isPlugin = current != "4osc" && current != "sampler" && current != "none";
+            auto isSampler = current == "sampler";
+            editButton.setEnabled ((isPlugin && ! missing) || isSampler);
+            editButton.setTooltip (isSampler ? "Open the sampler: add samples or load a drum kit"
+                                             : isPlugin ? "Open the plugin's own window" : "The 4OSC synth has no window of its own");
             editButton.onClick = [this]
             {
                 dispatcher.execute ("show_plugin_window", makeObject ({ { "channel", id } }));

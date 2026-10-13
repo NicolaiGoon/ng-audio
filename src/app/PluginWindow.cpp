@@ -1,4 +1,5 @@
 #include "PluginWindow.h"
+#include "SamplerEditor.h"
 #include "Widgets.h"
 
 namespace ng
@@ -180,6 +181,9 @@ namespace
         {
             setEditor (nullptr);
             auto newEditor = plugin.createEditor();
+
+            if (auto sampler = dynamic_cast<te::SamplerPlugin*> (&plugin); sampler != nullptr && dispatcher != nullptr)
+                newEditor = createSamplerEditor (*sampler, *dispatcher);
 
             if (newEditor == nullptr && dispatcher != nullptr && dynamic_cast<te::ExternalPlugin*> (&plugin) == nullptr)
                 newEditor = std::make_unique<GenericEffectEditor> (plugin, *dispatcher);

@@ -1648,6 +1648,192 @@ namespace
         known.clear();
     }
 
+    /** Writes a short mono WAV: a decaying tone at the frequency, or noise when it's 0. */
+    juce::File writeSample (const juce::File& folder, const juce::String& name, double hz, double seconds)
+    {
+        auto file = folder.getChildFile (name);
+        file.deleteFile();
+        std::unique_ptr<juce::FileOutputStream> stream (file.createOutputStream());
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), 44100.0, 1, 16, {}, 0));
+
+        if (writer == nullptr)
+            return {};
+
+        stream.release();   // the writer owns it now
+        juce::AudioBuffer<float> buffer (1, (int) (seconds * 44100.0));
+        juce::Random random (1);
+
+        for (int i = 0; i < buffer.getNumSamples(); ++i)
+        {
+            auto t = i / 44100.0;
+            auto level = 0.8f * (float) std::exp (-3.0 * t / seconds);
+            buffer.setSample (0, i, level * (hz > 0 ? (float) std::sin (juce::MathConstants<double>::twoPi * hz * t)
+                                                     : random.nextFloat() * 2.0f - 1.0f));
+        }
+
+        writer->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples());
+        return file;
+    }
+
+    void testSampler (tracktion::Engine& engine)
+    {
+        std::cout << "the sampler plays one-shots and drum kits\n";
+        Fixture f (engine);
+        auto settle = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil (200); };
+
+        auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NgDawSamplerTest");
+        folder.deleteRecursively();
+        auto kit = folder.getChildFile ("Kit");
+        CHECK (kit.createDirectory());
+        auto kick = writeSample (kit, "Kick 01.wav", 60.0, 0.8);
+        writeSample (kit, "Snare 01.wav", 0.0, 0.4);
+        writeSample (kit, "OpenHat.wav", 0.0, 0.6);
+        writeSample (kit, "Zap.wav", 900.0, 0.3);
+        kit.getChildFile ("readme.txt").replaceWithText ("not a sample");
+
+        CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } })).ok);
+        CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Drums" }, { "instrument", "sampler" } })).ok);
+        auto drums = [&] { return f.state()["channels"][1]; };
+        CHECK (drums()["instrument"] == "sampler" && drums()["samples"].size() == 0);
+        CHECK (! f.state()["channels"][0].hasProperty ("samples"));
+
+        auto add = [&] (const juce::var& extra)
+        {
+            auto p = obj ({ { "channel", "Drums" } });
+
+            if (auto e = extra.getDynamicObject())
+                for (auto& prop : e->getProperties())
+                    p.getDynamicObject()->setProperty (prop.name, prop.value);
+
+            return f.dispatcher.execute ("add_sample", p);
+        };
+
+        // Only a sampler takes samples, and only audio files that are there.
+        CHECK (! f.dispatcher.execute ("add_sample", obj ({ { "channel", "Lead" }, { "file", kick.getFullPathName() } })).ok);
+        CHECK (! add (obj ({ { "file", kit.getChildFile ("readme.txt").getFullPathName() } })).ok);
+        CHECK (! add (obj ({ { "file", kit.getChildFile ("nothing.wav").getFullPathName() } })).ok);
+        CHECK (! add (obj ({ { "file", "Kick 01.wav" } })).ok);
+        CHECK (! add (obj ({ { "file", kick.getFullPathName() }, { "note", 200 } })).ok);
+        CHECK (drums()["samples"].size() == 0);
+
+        // A new sample is a one-shot on the next free key from C1.
+        auto r = add (obj ({ { "file", kick.getFullPathName() } }));
+        CHECK (r.ok && static_cast<int> (r.value["note"]) == 36 && static_cast<int> (r.value["min_note"]) == 36 && static_cast<int> (r.value["max_note"]) == 36);
+        CHECK (r.value["name"] == "Kick 01" && static_cast<bool> (r.value["one_shot"]) && r.value["file"] == kick.getFullPathName());
+        r = add (obj ({ { "file", kit.getChildFile ("Zap.wav").getFullPathName() }, { "name", "Zap" } }));
+        CHECK (r.ok && static_cast<int> (r.value["note"]) == 37 && static_cast<int> (r.value["index"]) == 1);
+
+        // A short note on the kick's key plays the whole sample; on a key with nothing, silence.
+        CHECK (f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Drums" }, { "length_beats", 4 },
+                                                             { "notes", juce::Array<juce::var> { note (36, 0, 0.1) } } })).ok);
+        auto clip = drums()["clips"][0]["id"].toString();
+        settle();
+        auto oneShot = renderRms (f);
+        CHECK (f.dispatcher.execute ("set_sample", obj ({ { "channel", "Drums" }, { "sample", "kick 01" }, { "one_shot", false } })).ok);
+        settle();
+        auto cut = renderRms (f);
+        std::cout << "       kick as a one-shot RMS " << oneShot << ", stopped with the note " << cut << "\n";
+        CHECK (oneShot > 0.01f && cut > 0.0001f && cut < oneShot * 0.7f);
+
+        CHECK (f.dispatcher.execute ("set_sample", obj ({ { "channel", "Drums" }, { "sample", 0 }, { "one_shot", true } })).ok);
+        CHECK (f.dispatcher.execute ("set_sample", obj ({ { "channel", "Drums" }, { "sample", 0 }, { "note", 40 } })).ok);
+        CHECK (static_cast<int> (drums()["samples"][0]["min_note"]) == 40 && static_cast<int> (drums()["samples"][0]["max_note"]) == 40);
+        settle();
+        CHECK (renderRms (f) < 0.0001f);
+
+        // Undo puts the kick back on its key, playing as before.
+        f.dispatcher.undo();
+        CHECK (static_cast<int> (drums()["samples"][0]["note"]) == 36);
+        settle();
+        CHECK (std::abs (renderRms (f) - oneShot) < 0.002f);
+
+        // Level, and pitched across the keyboard.
+        CHECK (f.dispatcher.execute ("set_sample", obj ({ { "channel", "Drums" }, { "sample", "0" }, { "gain_db", -6 } })).ok);
+        settle();
+        auto quieter = renderRms (f);
+        CHECK (std::abs (quieter - oneShot * 0.5f) < oneShot * 0.05f);
+        CHECK (! f.dispatcher.execute ("set_sample", obj ({ { "channel", "Drums" }, { "sample", 0 }, { "gain_db", 60 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_sample", obj ({ { "channel", "Drums" }, { "sample", 5 }, { "gain_db", 0 } })).ok);
+        CHECK (f.dispatcher.execute ("set_sample", obj ({ { "channel", "Drums" }, { "sample", "Zap" }, { "note", 60 },
+                                                          { "min_note", 48 }, { "max_note", 72 } })).ok);
+        auto zap = drums()["samples"][1];
+        CHECK (static_cast<int> (zap["note"]) == 60 && static_cast<int> (zap["min_note"]) == 48 && static_cast<int> (zap["max_note"]) == 72);
+        // The next free key skips the ones the zap plays on.
+        r = add (obj ({ { "file", kick.getFullPathName() } }));
+        CHECK (r.ok && static_cast<int> (r.value["note"]) == 37);
+
+        CHECK (f.dispatcher.execute ("remove_sample", obj ({ { "channel", "Drums" }, { "sample", 2 } })).ok);
+        CHECK (drums()["samples"].size() == 2);
+        CHECK (! f.dispatcher.execute ("remove_sample", obj ({ { "channel", "Drums" }, { "sample", "Snare" } })).ok);
+        f.dispatcher.undo();
+        CHECK (drums()["samples"].size() == 3);
+
+        // A kit folder: named samples on their General MIDI keys, the rest on free keys from C1.
+        CHECK (! f.dispatcher.execute ("load_drum_kit", obj ({ { "channel", "Drums" }, { "folder", folder.getChildFile ("none").getFullPathName() } })).ok);
+        r = f.dispatcher.execute ("load_drum_kit", obj ({ { "channel", "Drums" }, { "folder", kit.getFullPathName() } }));
+        CHECK (r.ok && r.value["loaded"].size() == 4);
+        auto keyOf = [&] (const juce::String& name)
+        {
+            auto samples = drums()["samples"];
+
+            for (auto& s : *samples.getArray())
+                if (s["name"] == name)
+                    return static_cast<int> (s["note"]);
+
+            return -1;
+        };
+        CHECK (drums()["samples"].size() == 4);
+        CHECK (keyOf ("Kick 01") == 36 && keyOf ("Snare 01") == 38 && keyOf ("OpenHat") == 46 && keyOf ("Zap") == 37);
+
+        // From a folder of folders, added to what's there.
+        auto pack = folder.getChildFile ("Pack");
+        CHECK (pack.getChildFile ("Claps").createDirectory());
+        writeSample (pack.getChildFile ("Claps"), "Clap.wav", 0.0, 0.2);
+        r = f.dispatcher.execute ("load_drum_kit", obj ({ { "channel", "Drums" }, { "folder", pack.getFullPathName() }, { "replace", false } }));
+        CHECK (r.ok && drums()["samples"].size() == 5 && keyOf ("Clap") == 39);
+        f.dispatcher.undo();
+        CHECK (drums()["samples"].size() == 4);
+
+        // Snare and kick together, saved and reopened.
+        CHECK (f.dispatcher.execute ("set_notes", obj ({ { "clip", clip }, { "notes", juce::Array<juce::var> { note (36, 0, 0.1), note (38, 1, 0.1) } } })).ok);
+        settle();
+        auto both = renderRms (f);
+        CHECK (both > oneShot);
+
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (f.dispatcher.execute ("save_project", obj ({ { "path", path } })).ok);
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (drums()["samples"].size() == 4 && keyOf ("Snare 01") == 38);
+        settle();
+        auto reopened = renderRms (f);
+        std::cout << "       kick and snare RMS " << both << ", after reopening " << reopened << "\n";
+        CHECK (std::abs (reopened - both) < 0.002f);
+
+        // A sample whose file has gone shows as missing. (The project is edited rather than the
+        // file deleted: Windows won't delete a file the sampler has open.)
+        auto saved = temp.getFile().loadFileAsString();
+        CHECK (saved.contains ("Zap.wav"));
+        temp.getFile().replaceWithText (saved.replace ("Zap.wav", "Gone.wav"));
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        auto missing = 0;
+        auto samples = drums()["samples"];
+
+        for (auto& s : *samples.getArray())
+            if (static_cast<bool> (s["missing"]))
+                CHECK (s["name"] == "Zap"), ++missing;
+
+        CHECK (missing == 1);
+
+        // Swapping the instrument away drops the samples from the state.
+        CHECK (f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Drums" }, { "instrument", "4osc" } })).ok);
+        CHECK (! drums().hasProperty ("samples"));
+        CHECK (! f.dispatcher.execute ("load_drum_kit", obj ({ { "channel", "Drums" }, { "folder", kit.getFullPathName() } })).ok);
+
+        folder.deleteRecursively();
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -1733,6 +1919,7 @@ int main()
         testEffects (engine);
         testBusesAndSends (engine);
         testMultiOutputInstrument (engine);
+        testSampler (engine);
         testRendersAudio (engine);
     }
 
