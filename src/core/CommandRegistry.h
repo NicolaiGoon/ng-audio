@@ -54,7 +54,7 @@ private:
 };
 
 /** Registers create_track, route, rename_track, set_track_colour, delete_track, set_instrument,
-    set_mixer_strip, add_midi_clip, play, stop and get_state. */
+    set_mixer_strip, set_tempo, set_time_signature, set_loop, add_midi_clip, play, stop and get_state. */
 void registerProjectCommands (CommandRegistry&);
 
 //==============================================================================
