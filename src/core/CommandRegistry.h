@@ -55,7 +55,7 @@ private:
 
 /** Registers create_track, route, rename_track, set_track_colour, delete_track, set_instrument,
     set_mixer_strip, set_steps, set_tempo, set_time_signature, set_loop, add_midi_clip, move_clip, resize_clip, split_clip,
-    duplicate_clip, delete_clip, get_notes, set_notes, quantize_notes, play, stop, set_metronome, set_position, new_project,
+    duplicate_clip, delete_clip, get_notes, set_notes, quantize_notes, play, stop, record, arm_channel, set_metronome, set_position, new_project,
     open_project, save_project and get_state. */
 void registerProjectCommands (CommandRegistry&);
 

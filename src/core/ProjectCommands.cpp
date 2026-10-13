@@ -665,7 +665,58 @@ namespace
 
     CommandResult stop (Session& session, const juce::var&)
     {
-        session.getEdit().getTransport().stop (false, false);
+        auto& transport = session.getEdit().getTransport();
+
+        if (! transport.isRecording())
+        {
+            transport.stop (false, false);
+            return CommandResult::success();
+        }
+
+        // What was recorded lands as clips when recording stops: one undo step, tidied
+        // up like any other command so the first Undo removes it.
+        auto& um = session.getUndoManager();
+        um.beginNewTransaction ("Record");
+        transport.stop (false, false);
+        session.sortTrackContents();
+        um.beginNewTransaction();
+        return CommandResult::success();
+    }
+
+    CommandResult armChannel (Session& session, const juce::var& p)
+    {
+        auto ref = params::getString (p, "channel");
+        auto armed = static_cast<bool> (p.getProperty ("armed", true));
+        auto channel = session.findTrack (ref, Session::Role::channel);
+
+        if (armed && channel == nullptr)
+            return CommandResult::failure ("arm_channel: no channel called '" + ref + "'");
+
+        if (armed)
+            session.setArmedChannel (channel);
+        else if (channel == nullptr || session.getArmedChannel() == channel)
+            session.setArmedChannel (nullptr);
+
+        auto obj = new juce::DynamicObject();
+        auto now = session.getArmedChannel();
+        obj->setProperty ("armed_channel", now != nullptr ? juce::var (now->itemID.toString()) : juce::var());
+        obj->setProperty ("midi_inputs", session.getMidiInputNames());
+        return CommandResult::success (juce::var (obj));
+    }
+
+    CommandResult record (Session& session, const juce::var&)
+    {
+        if (session.getArmedChannel() == nullptr)
+            return CommandResult::failure ("record: arm a channel first (arm_channel), so the recording has somewhere to go");
+
+        auto& transport = session.getEdit().getTransport();
+
+        if (transport.isRecording())
+            return CommandResult::failure ("record: already recording");
+
+        session.routeMidiInputs();
+        session.updateLoopRange();
+        transport.record (false, true);
         return CommandResult::success();
     }
 
@@ -1286,7 +1337,19 @@ void registerProjectCommands (CommandRegistry& registry)
                     schema ({ { "loop", prop ("boolean", "Turn looping on or off before playing") } }),
                     false, play });
 
-    registry.add ({ "stop", "Stops playback.", schema ({}), false, stop });
+    registry.add ({ "stop", "Stops playback. When recording, the recorded notes become clips on the armed "
+                            "channel, as one undo step.", schema ({}), false, stop });
+
+    registry.add ({ "arm_channel",
+                    "Arms a channel for MIDI input: MIDI keyboards (and the on-screen keyboard) play it, and record "
+                    "into it. Arming a channel disarms the others. Not an undo step.",
+                    schema ({ { "channel", prop ("string", "Channel id or name") },
+                              { "armed", prop ("boolean", "false to disarm (default true)") } }),
+                    false, armChannel });
+
+    registry.add ({ "record",
+                    "Starts recording MIDI into the armed channel from the playhead. stop finishes the recording.",
+                    schema ({}), false, record });
 
     registry.add ({ "set_metronome",
                     "Turns the metronome (a click on every beat, louder on the bar) on or off. Like the loop, "
