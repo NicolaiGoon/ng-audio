@@ -47,6 +47,9 @@ private:
             setResizable (true, true);
             centreWithSize (getWidth(), getHeight());
             setVisible (true);
+
+            // So the shortcuts work before anything has been clicked.
+            getContentComponent()->grabKeyboardFocus();
         }
 
         void closeButtonPressed() override
