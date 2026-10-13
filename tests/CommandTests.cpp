@@ -456,6 +456,98 @@ namespace
         CHECK (renderRms (f) > 0.001f);
     }
 
+    double loopSeconds (Fixture& f, bool end)
+    {
+        auto range = f.session.getEdit().getTransport().getLoopRange();
+        return (end ? range.getEnd() : range.getStart()).inSeconds();
+    }
+
+    void testTempoAndTimeSignature (tracktion::Engine& engine)
+    {
+        std::cout << "set_tempo and set_time_signature\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Keys" } }));
+        f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Keys" }, { "length_beats", 4 } }));
+
+        auto s = f.state();
+        CHECK (near (s["tempo_bpm"], 120.0));
+        CHECK (static_cast<int> (s["time_signature"]["numerator"]) == 4);
+        CHECK (near (f.session.getEdit().getLength().inSeconds(), 2.0));
+
+        // At half the tempo the 4-beat clip lasts twice as long.
+        CHECK (f.dispatcher.execute ("set_tempo", obj ({ { "bpm", 60 } })).ok);
+        CHECK (near (f.state()["tempo_bpm"], 60.0));
+        CHECK (near (f.session.getEdit().getLength().inSeconds(), 4.0));
+
+        CHECK (f.dispatcher.undo());
+        CHECK (near (f.state()["tempo_bpm"], 120.0));
+        CHECK (near (f.session.getEdit().getLength().inSeconds(), 2.0));
+
+        CHECK (f.dispatcher.execute ("set_time_signature", obj ({ { "numerator", 3 }, { "denominator", 4 } })).ok);
+        s = f.state();
+        CHECK (static_cast<int> (s["time_signature"]["numerator"]) == 3);
+        CHECK (static_cast<int> (s["time_signature"]["denominator"]) == 4);
+
+        // The whole-project loop rounds the 4-beat clip up to two bars of 3/4.
+        CHECK (near (s["transport"]["loop_end_beat"], 6.0));
+        CHECK (f.dispatcher.undo());
+        CHECK (near (f.state()["transport"]["loop_end_beat"], 4.0));
+
+        CHECK (! f.dispatcher.execute ("set_tempo", obj ({ { "bpm", 0 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_tempo", obj ({ { "bpm", 500 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_tempo", obj ({ { "bpm", "fast" } })).ok);
+        CHECK (! f.dispatcher.execute ("set_time_signature", obj ({ { "numerator", 0 }, { "denominator", 4 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_time_signature", obj ({ { "numerator", 4 }, { "denominator", 5 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_time_signature", obj ({ { "numerator", 4.5 }, { "denominator", 4 } })).ok);
+        CHECK (near (f.state()["tempo_bpm"], 120.0));
+    }
+
+    void testLoopRegion (tracktion::Engine& engine)
+    {
+        std::cout << "set_loop sets the loop region in beats\n";
+        Fixture f (engine);
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Keys" } }));
+        f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Keys" }, { "length_beats", 4 } }));
+
+        // New projects loop the whole project.
+        auto t = f.state()["transport"];
+        CHECK (static_cast<bool> (t["looping"]));
+        CHECK (static_cast<bool> (t["loop_is_whole_project"]));
+        CHECK (near (loopSeconds (f, true), 2.0));
+
+        // The whole-project loop grows with the project.
+        f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Keys" }, { "start_beat", 4 }, { "length_beats", 4 } }));
+        CHECK (near (f.state()["transport"]["loop_end_beat"], 8.0));
+
+        CHECK (f.dispatcher.execute ("set_loop", obj ({ { "start_beat", 2 }, { "end_beat", 6 } })).ok);
+        CHECK (near (loopSeconds (f, false), 1.0));
+        CHECK (near (loopSeconds (f, true), 3.0));
+
+        // The loop stays on the same beats when the tempo changes.
+        f.dispatcher.execute ("set_tempo", obj ({ { "bpm", 60 } }));
+        CHECK (near (loopSeconds (f, false), 2.0));
+        CHECK (near (loopSeconds (f, true), 6.0));
+
+        // set_loop isn't an undo step: undo reverts the tempo, and the loop follows it.
+        CHECK (f.dispatcher.undo());
+        CHECK (near (f.state()["tempo_bpm"], 120.0));
+        CHECK (near (loopSeconds (f, true), 3.0));
+        CHECK (! static_cast<bool> (f.state()["transport"]["loop_is_whole_project"]));
+
+        CHECK (f.dispatcher.execute ("set_loop", obj ({ { "enabled", false } })).ok);
+        CHECK (! static_cast<bool> (f.state()["transport"]["looping"]));
+        CHECK (f.dispatcher.execute ("set_loop", obj ({ { "enabled", true }, { "whole_project", true } })).ok);
+        t = f.state()["transport"];
+        CHECK (static_cast<bool> (t["looping"]) && static_cast<bool> (t["loop_is_whole_project"]));
+        CHECK (near (t["loop_end_beat"], 8.0));
+
+        CHECK (! f.dispatcher.execute ("set_loop", obj ({ { "start_beat", 2 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_loop", obj ({ { "start_beat", 4 }, { "end_beat", 2 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_loop", obj ({ { "start_beat", -1 }, { "end_beat", 2 } })).ok);
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -524,6 +616,8 @@ int main()
         testMixerStripSettings (engine);
         testGestureIsOneUndoStep (engine);
         testMuteAndSoloSilence (engine);
+        testTempoAndTimeSignature (engine);
+        testLoopRegion (engine);
         testRendersAudio (engine);
     }
 

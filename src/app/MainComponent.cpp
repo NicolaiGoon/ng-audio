@@ -100,6 +100,7 @@ MainComponent::MainComponent (te::Engine& engine)
     undoButton.onClick = [this] { dispatcher.undo(); };
     redoButton.onClick = [this] { dispatcher.redo(); };
     settingsButton.onClick = [this] { showAudioSettings(); };
+    setUpTransportControls();
     runButton.onClick = [this] { runConsoleCommand(); };
 
     for (auto* l : { &channelsHeader, &mixerHeader, &consoleHeader })
@@ -115,6 +116,7 @@ MainComponent::MainComponent (te::Engine& engine)
     consoleOutput.setFont (consoleInput.getFont());
 
     for (auto* c : std::initializer_list<juce::Component*> { &addButton, &playButton, &undoButton, &redoButton,
+                                                             &tempo, &timeSignature, &loopButton,
                                                              &settingsButton, &runButton, &channelsHeader,
                                                              &mixerHeader, &consoleHeader, &consoleInput, &mixer,
                                                              &consoleOutput })
@@ -160,6 +162,64 @@ void MainComponent::addInstrument()
 void MainComponent::runConsoleCommand()
 {
     consoleOutput.setText (dispatcher.executeJson (consoleInput.getText()));
+}
+
+namespace
+{
+    // The time signatures offered in the transport; set_time_signature takes any.
+    const std::pair<int, int> commonTimeSignatures[] = { { 2, 4 }, { 3, 4 }, { 4, 4 }, { 5, 4 }, { 6, 8 }, { 7, 8 }, { 12, 8 } };
+}
+
+void MainComponent::setUpTransportControls()
+{
+    tempo.setSliderStyle (juce::Slider::IncDecButtons);
+    tempo.setIncDecButtonsMode (juce::Slider::incDecButtonsDraggable_Vertical);
+    tempo.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 80, 30);
+    tempo.setRange (20.0, 300.0, 1.0);
+    tempo.setTextValueSuffix (" BPM");
+    tempo.setTooltip ("Tempo: type a value, click the arrows or drag up and down");
+    tempo.onDragStart = [this] { dispatcher.beginGesture ("Tempo"); };
+    tempo.onDragEnd = [this] { dispatcher.endGesture(); };
+    tempo.onValueChange = [this] { dispatcher.execute ("set_tempo", makeObject ({ { "bpm", tempo.getValue() } })); };
+
+    for (int i = 0; i < (int) std::size (commonTimeSignatures); ++i)
+        timeSignature.addItem (juce::String (commonTimeSignatures[i].first) + "/" + juce::String (commonTimeSignatures[i].second), i + 1);
+
+    timeSignature.setTooltip ("Time signature");
+    timeSignature.onChange = [this]
+    {
+        auto index = timeSignature.getSelectedId() - 1;
+
+        if (juce::isPositiveAndBelow (index, (int) std::size (commonTimeSignatures)))
+            dispatcher.execute ("set_time_signature", makeObject ({ { "numerator", commonTimeSignatures[index].first },
+                                                                    { "denominator", commonTimeSignatures[index].second } }));
+    };
+
+    loopButton.setTooltip ("Loop playback (the whole project unless a loop region is set)");
+    loopButton.onClick = [this]
+    {
+        dispatcher.execute ("set_loop", makeObject ({ { "enabled", loopButton.getToggleState() } }));
+    };
+}
+
+void MainComponent::updateTransportControls (const juce::var& state)
+{
+    if (! tempo.isMouseButtonDown (true))
+        tempo.setValue (state["tempo_bpm"], juce::dontSendNotification);
+
+    auto numerator = static_cast<int> (state["time_signature"]["numerator"]);
+    auto denominator = static_cast<int> (state["time_signature"]["denominator"]);
+    auto text = juce::String (numerator) + "/" + juce::String (denominator);
+    timeSignature.setSelectedId (0, juce::dontSendNotification);
+
+    for (int i = 0; i < (int) std::size (commonTimeSignatures); ++i)
+        if (commonTimeSignatures[i] == std::make_pair (numerator, denominator))
+            timeSignature.setSelectedId (i + 1, juce::dontSendNotification);
+
+    if (timeSignature.getSelectedId() == 0)
+        timeSignature.setText (text, juce::dontSendNotification);
+
+    loopButton.setToggleState (state["transport"]["looping"], juce::dontSendNotification);
 }
 
 void MainComponent::showAudioSettings()
@@ -216,6 +276,7 @@ void MainComponent::rebuildRows()
     }
 
     mixer.update (state);
+    updateTransportControls (state);
     resized();
 }
 
@@ -235,6 +296,13 @@ void MainComponent::resized()
         b->setBounds (toolbar.removeFromLeft (110));
         toolbar.removeFromLeft (6);
     }
+
+    toolbar.removeFromLeft (14);
+    tempo.setBounds (toolbar.removeFromLeft (150));
+    toolbar.removeFromLeft (6);
+    timeSignature.setBounds (toolbar.removeFromLeft (70));
+    toolbar.removeFromLeft (10);
+    loopButton.setBounds (toolbar.removeFromLeft (70));
 
     settingsButton.setBounds (toolbar.removeFromRight (120));
     r.removeFromTop (10);

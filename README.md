@@ -13,6 +13,8 @@ and every action available to AI tools through one command layer.
   short arpeggio. *Add instrument*, *Play*, *Undo* and *Redo* all go through the command layer.
   In the channel rack and mixer, double-click a name to rename it, click the colour chip to
   recolour, pick an instrument, or press × to delete.
+- **A transport** with Play, tempo (type it, click the arrows or drag), time signature and a
+  Loop switch. New projects loop the whole project, rounded up to whole bars.
 - **A mixer.** Each strip has a fader, pan, mute, solo and a level meter, with a master strip
   on the right. A whole fader drag is one undo step; mute and solo aren't undo steps, as in
   most DAWs.
@@ -30,6 +32,8 @@ and every action available to AI tools through one command layer.
   | `delete_track` | Deletes a channel (and its own strip, unless shared) or a strip (its inputs go to master) |
   | `set_instrument` | Swaps a channel's instrument (`4osc` or `none` for now) |
   | `set_mixer_strip` | Sets a strip's (or `master`'s) fader, pan, mute and solo |
+  | `set_tempo` / `set_time_signature` | Project tempo (clips keep their beats) and time signature |
+  | `set_loop` | Loop on/off and the loop region in beats (default: the whole project, in whole bars) |
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
   | `play` / `stop` | Transport |
   | `get_state` | The whole project as JSON, so an AI can "see" the session |

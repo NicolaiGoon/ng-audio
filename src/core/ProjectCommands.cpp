@@ -398,17 +398,92 @@ namespace
 
     CommandResult play (Session& session, const juce::var& p)
     {
-        auto& edit = session.getEdit();
-        auto& transport = edit.getTransport();
+        auto& transport = session.getEdit().getTransport();
 
-        if (static_cast<bool> (p.getProperty ("loop", true)) && edit.getLength() > te::TimeDuration())
-        {
-            transport.setLoopRange ({ te::TimePosition(), edit.getLength() });
-            transport.looping = true;
-        }
+        if (p.hasProperty ("loop"))
+            transport.looping = static_cast<bool> (p["loop"]);
 
+        session.updateLoopRange();
         transport.play (false);
         return CommandResult::success();
+    }
+
+    bool isNumber (const juce::var& v)
+    {
+        return v.isDouble() || v.isInt() || v.isInt64();
+    }
+
+    CommandResult setTempo (Session& session, const juce::var& p)
+    {
+        auto bpm = p["bpm"];
+
+        if (! isNumber (bpm) || static_cast<double> (bpm) < 20.0 || static_cast<double> (bpm) > 300.0)
+            return CommandResult::failure ("set_tempo: bpm must be a number from 20 to 300");
+
+        // Clips are placed in beats, so they keep their place in the music at the new tempo.
+        session.getEdit().tempoSequence.getTempo (0)->setBpm (static_cast<double> (bpm));
+        session.updateLoopRange();
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("bpm", session.getEdit().tempoSequence.getBpmAt (te::TimePosition()));
+        return CommandResult::success (juce::var (obj));
+    }
+
+    CommandResult setTimeSignature (Session& session, const juce::var& p)
+    {
+        auto numerator = p["numerator"];
+        auto denominator = p["denominator"];
+
+        if (! isNumber (numerator) || static_cast<int> (numerator) < 1 || static_cast<int> (numerator) > 32
+              || static_cast<double> (numerator) != static_cast<int> (numerator))
+            return CommandResult::failure ("set_time_signature: numerator must be a whole number from 1 to 32");
+
+        if (! isNumber (denominator) || ! juce::Array<double> { 1, 2, 4, 8, 16, 32 }.contains (static_cast<double> (denominator)))
+            return CommandResult::failure ("set_time_signature: denominator must be 1, 2, 4, 8, 16 or 32");
+
+        auto& timeSig = *session.getEdit().tempoSequence.getTimeSig (0);
+        timeSig.numerator = static_cast<int> (numerator);
+        timeSig.denominator = static_cast<int> (denominator);
+        session.updateLoopRange();
+
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("numerator", timeSig.numerator.get());
+        obj->setProperty ("denominator", timeSig.denominator.get());
+        return CommandResult::success (juce::var (obj));
+    }
+
+    CommandResult setLoop (Session& session, const juce::var& p)
+    {
+        auto hasStart = p.hasProperty ("start_beat"), hasEnd = p.hasProperty ("end_beat");
+
+        if (hasStart != hasEnd)
+            return CommandResult::failure ("set_loop: give both start_beat and end_beat, or neither");
+
+        if (hasStart)
+        {
+            if (! isNumber (p["start_beat"]) || ! isNumber (p["end_beat"]))
+                return CommandResult::failure ("set_loop: start_beat and end_beat must be numbers");
+
+            auto start = static_cast<double> (p["start_beat"]), end = static_cast<double> (p["end_beat"]);
+
+            if (start < 0.0 || end <= start)
+                return CommandResult::failure ("set_loop: the loop must start at or after beat 0 and end after it starts");
+        }
+
+        if (p.hasProperty ("enabled"))
+            session.getEdit().getTransport().looping = static_cast<bool> (p["enabled"]);
+
+        if (hasStart)
+            session.setCustomLoop (juce::Range<double> (p["start_beat"], p["end_beat"]));
+        else if (static_cast<bool> (p.getProperty ("whole_project", false)))
+            session.setCustomLoop (std::nullopt);
+
+        auto beats = session.getLoopBeats();
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("enabled", session.getEdit().getTransport().looping.get());
+        obj->setProperty ("start_beat", beats.getStart());
+        obj->setProperty ("end_beat", beats.getEnd());
+        obj->setProperty ("whole_project", ! session.hasCustomLoop());
+        return CommandResult::success (juce::var (obj));
     }
 
     CommandResult stop (Session& session, const juce::var&)
@@ -489,8 +564,29 @@ void registerProjectCommands (CommandRegistry& registry)
                             { "strip" }),
                     true, setMixerStrip });
 
-    registry.add ({ "play", "Starts playback, looping the whole project unless loop is false.",
-                    schema ({ { "loop", prop ("boolean", "Loop the project (default true)") } }),
+    registry.add ({ "set_tempo",
+                    "Sets the project tempo. Clips keep their positions in beats.",
+                    schema ({ { "bpm", prop ("number", "Beats per minute, 20 to 300") } }, { "bpm" }),
+                    true, setTempo });
+
+    registry.add ({ "set_time_signature",
+                    "Sets the project time signature, e.g. 3/4 or 6/8.",
+                    schema ({ { "numerator", prop ("integer", "Beats per bar, 1 to 32") },
+                              { "denominator", prop ("integer", "Note value of a beat: 1, 2, 4, 8, 16 or 32") } },
+                            { "numerator", "denominator" }),
+                    true, setTimeSignature });
+
+    registry.add ({ "set_loop",
+                    "Turns looping on or off and sets the loop region in beats. Without a region the loop covers "
+                    "the whole project, rounded up to whole bars. Like the play position, this isn't an undo step.",
+                    schema ({ { "enabled", prop ("boolean", "Loop playback") },
+                              { "start_beat", prop ("number", "Loop start in beats (give with end_beat)") },
+                              { "end_beat", prop ("number", "Loop end in beats (give with start_beat)") },
+                              { "whole_project", prop ("boolean", "true to go back to looping the whole project") } }),
+                    false, setLoop });
+
+    registry.add ({ "play", "Starts playback from the current position. Loops when looping is on (see set_loop).",
+                    schema ({ { "loop", prop ("boolean", "Turn looping on or off before playing") } }),
                     false, play });
 
     registry.add ({ "stop", "Stops playback.", schema ({}), false, stop });
