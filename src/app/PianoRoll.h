@@ -15,6 +15,10 @@ namespace ng
     The arrow keys move the selection (up and down by a semitone, Shift for an octave;
     left and right by the grid). Everything snaps to the grid; hold Alt to place freely.
 
+    Under the grid, the velocity lane shows how hard each note is played. Click or drag
+    across it to set the velocity of the notes there (only the selected ones, if any are).
+    Quantize (or Q) moves the selected notes, or all of them, onto the grid.
+
     Every edit replaces the clip's notes with one set_notes command, so it's one undo step.
     Mouse wheel scrolls pitch, Shift + wheel scrolls time and Ctrl + wheel zooms.
 */
@@ -42,6 +46,9 @@ public:
 
     const juce::Array<ClipNote>& getNotes() const noexcept    { return notes; }
 
+    /** Moves the selected notes, or every note if none is selected, onto the grid. */
+    void quantize();
+
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -51,10 +58,10 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     bool keyPressed (const juce::KeyPress&) override;
 
-    static constexpr int keyboardWidth = 56, rulerHeight = 22, rowHeight = 14, scrollBarSize = 12;
+    static constexpr int keyboardWidth = 56, rulerHeight = 22, rowHeight = 14, scrollBarSize = 12, velocityHeight = 64;
 
 private:
-    enum class DragMode { none, move, resizeEnd, select };
+    enum class DragMode { none, move, resizeEnd, select, velocity };
 
     struct Drag
     {
@@ -63,10 +70,12 @@ private:
         juce::Array<ClipNote> original;     // the notes before the drag
         bool moved = false, created = false;
         juce::Rectangle<float> box;         // for DragMode::select
+        int velocity = 0;                   // for DragMode::velocity, the last value set
     };
 
     juce::Rectangle<int> getRulerArea() const;
     juce::Rectangle<int> getGridArea() const;
+    juce::Rectangle<int> getVelocityArea() const;
     double getTotalBeats() const;
     double beatToX (double beat) const;
     double xToBeat (double x) const;
@@ -83,6 +92,7 @@ private:
     void commit (const juce::Array<ClipNote>& newNotes, const juce::Array<bool>& newSelection);
     void deleteSelected();
     void nudgeSelected (int semitones, double beats);
+    void setVelocityAt (juce::Point<float>);
 
     void fitToClip();
     void updateScrollBars();
@@ -92,6 +102,7 @@ private:
     void paintGrid (juce::Graphics&);
     void paintKeyboard (juce::Graphics&);
     void paintRuler (juce::Graphics&);
+    void paintVelocities (juce::Graphics&);
 
     Session& session;
     CommandDispatcher& dispatcher;

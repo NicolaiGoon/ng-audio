@@ -186,6 +186,8 @@ MainComponent::MainComponent (te::Engine& engine)
     timeline.onOpenClip = [this] (const juce::String& clipId) { openPianoRoll (clipId); };
     closePianoRollButton.onClick = [this] { closePianoRoll(); };
     closePianoRollButton.setTooltip ("Back to the channel rack and mixer");
+    quantizeButton.onClick = [this] { pianoRoll.quantize(); };
+    quantizeButton.setTooltip ("Move the selected notes, or all of them, onto the snap grid (Q)");
 
     // Grid sizes in beats: quarter, eighth, sixteenth and thirty-second notes.
     snapBox.addItemList ({ "1/4", "1/8", "1/16", "1/32" }, 1);
@@ -231,7 +233,7 @@ MainComponent::MainComponent (te::Engine& engine)
 
     for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton,
                                                              &pianoRollHeader, &pianoRollHint, &snapLabel, &snapBox,
-                                                             &closePianoRollButton, &pianoRoll })
+                                                             &closePianoRollButton, &quantizeButton, &pianoRoll })
         addChildComponent (c);
 
     loadStarterProject();
@@ -651,7 +653,7 @@ void MainComponent::resized()
     auto rollOpen = pianoRoll.getClip().isNotEmpty();
 
     for (auto* c : std::initializer_list<juce::Component*> { &pianoRollHeader, &pianoRollHint, &snapLabel, &snapBox,
-                                                             &closePianoRollButton, &pianoRoll })
+                                                             &closePianoRollButton, &quantizeButton, &pianoRoll })
         c->setVisible (rollOpen);
 
     for (auto* c : std::initializer_list<juce::Component*> { &channelsHeader, &mixerHeader, &mixer })
@@ -668,6 +670,8 @@ void MainComponent::resized()
         top.removeFromRight (10);
         snapBox.setBounds (top.removeFromRight (70));
         snapLabel.setBounds (top.removeFromRight (44));
+        top.removeFromRight (8);
+        quantizeButton.setBounds (top.removeFromRight (80));
         top.removeFromRight (10);
         pianoRollHint.setBounds (top);
         r.removeFromTop (4);

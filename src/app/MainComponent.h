@@ -60,7 +60,8 @@ private:
     juce::TextButton newButton { "New" }, openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save as" },
                      addButton { "Add instrument" }, playButton { "Play" },
                      undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio settings" },
-                     runButton { "Run" }, closePianoRollButton { "Close" };
+                     runButton { "Run" }, closePianoRollButton { "Close" },
+                     quantizeButton { "Quantize" };
     juce::ToggleButton consoleButton { "Console" };
 
     juce::Slider tempo;
@@ -70,7 +71,7 @@ private:
     juce::Label timelineHint { {}, "Drag clips to move them and their edges to trim. Double-click empty space for a new clip, "
                                    "or a clip to edit its notes. Del deletes, Ctrl+D duplicates, S splits." },
                 pianoRollHint { {}, "Click to draw, drag to move, drag the right edge to resize. Right-click or Del deletes. "
-                                    "Ctrl+drag selects, arrows move. Alt places freely." },
+                                    "Ctrl+drag selects. Drag in Velocity to set it." },
                 pianoRollHeader { {}, "Piano roll" }, snapLabel { {}, "Snap" },
                 timelineHeader { {}, "Timeline" }, channelsHeader { {}, "Channel rack" }, mixerHeader { {}, "Mixer" },
                 consoleHeader { {}, "Command console (JSON)" };
