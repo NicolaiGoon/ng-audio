@@ -22,6 +22,7 @@ TimelineView::TimelineView (Session& s, CommandDispatcher& d)
     }
 
     vertical.setAutoHide (true);
+    setWantsKeyboardFocus (true);
     startTimerHz (30);
 }
 
@@ -59,6 +60,8 @@ void TimelineView::update (const juce::var& state)
 void TimelineView::clear()
 {
     lanes.clear();
+    selectedClip = {};
+    drag = {};
     repaint();
 }
 
@@ -305,9 +308,40 @@ void TimelineView::paintLanes (juce::Graphics& g)
                 auto area = juce::Rectangle<float> ((float) beatToX (clip.startBeat), (float) y + 3.0f,
                                                     (float) (clip.lengthBeats * pixelsPerBeat), (float) laneHeight - 6.0f);
 
-                if (area.getRight() >= lanesArea.getX() && area.getX() <= lanesArea.getRight())
-                    paintClip (g, lanes[i], clip, area);
+                if (area.getRight() < lanesArea.getX() || area.getX() > lanesArea.getRight())
+                    continue;
+
+                // While dragging, the clip's old place is only a faint outline.
+                if (drag.moved && clip.id == drag.clip.id)
+                {
+                    g.setColour (lanes[i].colour.withAlpha (0.5f));
+                    g.drawRoundedRectangle (area.reduced (0.5f), 3.0f, 1.0f);
+                    continue;
+                }
+
+                paintClip (g, lanes[i], clip, area);
+
+                if (clip.id == selectedClip)
+                {
+                    g.setColour (juce::Colours::white);
+                    g.drawRoundedRectangle (area.reduced (0.5f), 3.0f, 2.0f);
+                }
             }
+        }
+
+        if (drag.moved && juce::isPositiveAndBelow (drag.targetLane, lanes.size()))
+        {
+            auto y = lanesArea.getY() + drag.targetLane * laneHeight - scrollY;
+            auto area = juce::Rectangle<float> ((float) beatToX (drag.start), (float) y + 3.0f,
+                                                (float) ((drag.end - drag.start) * pixelsPerBeat), (float) laneHeight - 6.0f);
+            auto preview = drag.clip;
+            preview.startBeat = drag.start;
+            preview.lengthBeats = drag.end - drag.start;
+            // Trimming the start leaves the notes where they are in the song.
+            auto extraOffset = drag.mode == DragMode::trimStart ? drag.start - drag.clip.startBeat : 0.0;
+            paintClip (g, lanes[drag.lane], preview, area, extraOffset);
+            g.setColour (juce::Colours::white);
+            g.drawRoundedRectangle (area.reduced (0.5f), 3.0f, 2.0f);
         }
     }
 
@@ -330,7 +364,8 @@ void TimelineView::paintLanes (juce::Graphics& g)
     }
 }
 
-void TimelineView::paintClip (juce::Graphics& g, const Lane& lane, const Clip& clip, juce::Rectangle<float> area)
+void TimelineView::paintClip (juce::Graphics& g, const Lane& lane, const Clip& clip, juce::Rectangle<float> area,
+                              double extraOffsetBeats)
 {
     g.setColour (lane.colour.withAlpha (0.35f));
     g.fillRoundedRectangle (area, 3.0f);
@@ -375,7 +410,7 @@ void TimelineView::paintClip (juce::Graphics& g, const Lane& lane, const Clip& c
         auto noteArea = area.reduced (2.0f, 3.0f);
         auto rows = (float) std::max (highest - lowest + 1, 6);
         auto rowHeight = noteArea.getHeight() / rows;
-        auto offset = midi->getOffsetInBeats().inBeats();
+        auto offset = midi->getOffsetInBeats().inBeats() + extraOffsetBeats;
         g.setColour (lane.colour.brighter (0.4f));
 
         for (auto n : notes)
@@ -406,16 +441,290 @@ void TimelineView::movePlayheadTo (float x)
     repaint();
 }
 
+int TimelineView::laneAt (float y) const
+{
+    auto lanesArea = getLanesArea();
+    return (int) std::floor ((y - (float) lanesArea.getY() + (float) scrollY) / (float) laneHeight);
+}
+
+TimelineView::Hit TimelineView::hitTestLanes (juce::Point<float> pos) const
+{
+    Hit hit;
+
+    if (! getLanesArea().toFloat().contains (pos))
+        return hit;
+
+    hit.lane = laneAt (pos.y);
+
+    if (! juce::isPositiveAndBelow (hit.lane, lanes.size()))
+    {
+        hit.lane = -1;
+        return hit;
+    }
+
+    auto& clips = lanes.getReference (hit.lane).clips;
+
+    // Later clips are drawn on top, so look at them first.
+    for (int i = clips.size(); --i >= 0;)
+    {
+        auto& clip = clips.getReference (i);
+        auto left = (float) beatToX (clip.startBeat);
+        auto right = (float) beatToX (clip.startBeat + clip.lengthBeats);
+
+        if (pos.x < left || pos.x > right)
+            continue;
+
+        hit.clip = i;
+        auto edge = std::min (6.0f, (right - left) / 4.0f);
+
+        if (! clip.pattern && pos.x < left + edge)
+            hit.mode = DragMode::trimStart;
+        else if (! clip.pattern && pos.x > right - edge)
+            hit.mode = DragMode::trimEnd;
+        else
+            hit.mode = DragMode::move;
+
+        break;
+    }
+
+    return hit;
+}
+
+double TimelineView::snap (double beat, const juce::ModifierKeys& mods) const
+{
+    // Alt places freely (to a 64th); otherwise beats, or 16ths once there's room for them.
+    auto grid = mods.isAltDown() ? 1.0 / 16.0 : (pixelsPerBeat >= 60.0 ? 0.25 : 1.0);
+    return std::round (beat / grid) * grid;
+}
+
+const TimelineView::Clip* TimelineView::findSelectedClip (int* laneIndex) const
+{
+    for (int i = 0; i < lanes.size(); ++i)
+        for (auto& clip : lanes.getReference (i).clips)
+            if (clip.id == selectedClip)
+            {
+                if (laneIndex != nullptr)
+                    *laneIndex = i;
+
+                return &clip;
+            }
+
+    return nullptr;
+}
+
 void TimelineView::mouseDown (const juce::MouseEvent& e)
 {
+    grabKeyboardFocus();
+
     if (getRulerArea().contains (e.getPosition()))
+    {
         movePlayheadTo (e.position.x);
+        return;
+    }
+
+    auto hit = hitTestLanes (e.position);
+    drag = {};
+
+    if (hit.clip < 0)
+    {
+        selectedClip = {};
+        repaint();
+        return;
+    }
+
+    auto& clip = lanes.getReference (hit.lane).clips.getReference (hit.clip);
+    selectedClip = clip.id;
+    repaint();
+
+    if (e.mods.isPopupMenu())
+    {
+        showClipMenu();
+        return;
+    }
+
+    drag.mode = hit.mode;
+    drag.lane = drag.targetLane = hit.lane;
+    drag.clip = clip;
+    drag.start = clip.startBeat;
+    drag.end = clip.startBeat + clip.lengthBeats;
 }
 
 void TimelineView::mouseDrag (const juce::MouseEvent& e)
 {
     if (getRulerArea().contains (e.getMouseDownPosition()))
+    {
         movePlayheadTo (std::max ((float) headerWidth, e.position.x));
+        return;
+    }
+
+    if (drag.mode == DragMode::none || (! drag.moved && e.getDistanceFromDragStart() < 4))
+        return;
+
+    drag.moved = true;
+    auto delta = (e.position.x - e.mouseDownPosition.x) / pixelsPerBeat;
+    auto originalStart = drag.clip.startBeat, originalEnd = drag.clip.startBeat + drag.clip.lengthBeats;
+    auto minLength = 1.0 / 16.0;
+
+    switch (drag.mode)
+    {
+        case DragMode::move:
+        {
+            drag.start = std::max (0.0, snap (originalStart + delta, e.mods));
+            drag.end = drag.start + drag.clip.lengthBeats;
+
+            // Step patterns stay on their own channel.
+            if (! drag.clip.pattern)
+                drag.targetLane = juce::jlimit (0, lanes.size() - 1, laneAt (e.position.y));
+
+            break;
+        }
+
+        case DragMode::trimStart:
+            drag.start = juce::jlimit (0.0, originalEnd - minLength, snap (originalStart + delta, e.mods));
+            break;
+
+        case DragMode::trimEnd:
+            drag.end = std::max (originalStart + minLength, snap (originalEnd + delta, e.mods));
+            break;
+
+        case DragMode::none:
+            break;
+    }
+
+    repaint();
+}
+
+void TimelineView::mouseUp (const juce::MouseEvent&)
+{
+    auto finished = drag;
+    drag = {};
+
+    if (! finished.moved)
+        return;
+
+    auto clipId = finished.clip.id;
+    auto changedLane = finished.targetLane != finished.lane;
+    auto changedStart = std::abs (finished.start - finished.clip.startBeat) > 1.0e-6;
+    auto changedEnd = std::abs (finished.end - (finished.clip.startBeat + finished.clip.lengthBeats)) > 1.0e-6;
+
+    if (finished.mode == DragMode::move && (changedLane || changedStart))
+    {
+        auto params = makeObject ({ { "clip", clipId }, { "start_beat", finished.start } });
+
+        if (changedLane)
+            params.getDynamicObject()->setProperty ("channel", lanes[finished.targetLane].channelId);
+
+        dispatcher.execute ("move_clip", params);
+    }
+    else if (finished.mode == DragMode::trimStart && changedStart)
+    {
+        dispatcher.execute ("resize_clip", makeObject ({ { "clip", clipId }, { "start_beat", finished.start } }));
+    }
+    else if (finished.mode == DragMode::trimEnd && changedEnd)
+    {
+        dispatcher.execute ("resize_clip", makeObject ({ { "clip", clipId }, { "end_beat", finished.end } }));
+    }
+
+    repaint();
+}
+
+void TimelineView::mouseMove (const juce::MouseEvent& e)
+{
+    switch (hitTestLanes (e.position).mode)
+    {
+        case DragMode::trimStart:
+        case DragMode::trimEnd:  setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); break;
+        case DragMode::move:     setMouseCursor (juce::MouseCursor::DraggingHandCursor); break;
+        case DragMode::none:     setMouseCursor (juce::MouseCursor::NormalCursor); break;
+    }
+}
+
+void TimelineView::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    auto hit = hitTestLanes (e.position);
+
+    if (hit.lane < 0 || hit.clip >= 0)
+        return;
+
+    // A new empty clip, one bar long, at the start of the bar that was clicked.
+    auto& tempo = session.getEdit().tempoSequence;
+    auto clicked = std::max (0.0, xToBeat (e.position.x));
+    auto bar = tempo.toBarsAndBeats (tempo.toTime (te::BeatPosition::fromBeats (clicked))).bars;
+    auto barStart = tempo.toBeats (te::tempo::BarsAndBeats { bar, {} }).inBeats();
+    auto barEnd = tempo.toBeats (te::tempo::BarsAndBeats { bar + 1, {} }).inBeats();
+
+    auto result = dispatcher.execute ("add_midi_clip", makeObject ({ { "channel", lanes[hit.lane].channelId },
+                                                                     { "start_beat", barStart },
+                                                                     { "length_beats", barEnd - barStart } }));
+    if (result.ok)
+        selectedClip = result.value["clip"].toString();
+}
+
+bool TimelineView::keyPressed (const juce::KeyPress& key)
+{
+    if (selectedClip.isEmpty())
+        return false;
+
+    if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
+    {
+        deleteSelected();
+        return true;
+    }
+
+    if (key == juce::KeyPress ('d', juce::ModifierKeys::commandModifier, 0))
+    {
+        duplicateSelected();
+        return true;
+    }
+
+    if (key == juce::KeyPress ('s', juce::ModifierKeys::noModifiers, 0))
+    {
+        splitSelectedAtPlayhead();
+        return true;
+    }
+
+    return false;
+}
+
+void TimelineView::showClipMenu()
+{
+    auto clip = findSelectedClip();
+
+    if (clip == nullptr)
+        return;
+
+    auto playhead = getPlayheadBeat();
+    auto canSplit = ! clip->pattern && playhead > clip->startBeat && playhead < clip->startBeat + clip->lengthBeats;
+
+    juce::PopupMenu menu;
+    menu.addItem ("Split at playhead (S)", canSplit, false, [this] { splitSelectedAtPlayhead(); });
+    menu.addItem ("Duplicate (Ctrl+D)", [this] { duplicateSelected(); });
+    menu.addSeparator();
+    menu.addItem ("Delete (Del)", [this] { deleteSelected(); });
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition());
+}
+
+void TimelineView::deleteSelected()
+{
+    if (dispatcher.execute ("delete_clip", makeObject ({ { "clip", selectedClip } })).ok)
+        selectedClip = {};
+}
+
+void TimelineView::duplicateSelected()
+{
+    auto result = dispatcher.execute ("duplicate_clip", makeObject ({ { "clip", selectedClip } }));
+
+    if (result.ok)
+        selectedClip = result.value["clip"].toString();
+}
+
+void TimelineView::splitSelectedAtPlayhead()
+{
+    auto result = dispatcher.execute ("split_clip", makeObject ({ { "clip", selectedClip }, { "beat", getPlayheadBeat() } }));
+
+    // Keep the right-hand half selected, so pressing S again keeps chopping forwards.
+    if (result.ok)
+        selectedClip = result.value[1]["clip"].toString();
 }
 
 void TimelineView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)

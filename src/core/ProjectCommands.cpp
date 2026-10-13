@@ -404,34 +404,57 @@ namespace
     constexpr int maxStepCount = 64;
     constexpr double beatsPerStep = 0.25;
 
+    /** Brings a channel's pattern clips in line with its steps. A pattern can be placed on the
+        timeline several times (duplicate_clip); every copy plays the same steps, so each one is
+        refilled where it stands. With no copies left, the pattern goes back at the start. */
     void rebuildPatternClip (Session& session, te::AudioTrack& channel)
     {
         auto& edit = session.getEdit();
         auto* um = &session.getUndoManager();
-
-        for (auto clip : channel.getClips())
-            if (clip->state[patternClipProp])
-                clip->removeFromParent();
-
         auto steps = Session::getSteps (channel);
 
+        juce::Array<te::MidiClip*> instances;
+
+        for (auto clip : channel.getClips())
+            if (Session::isPatternClip (*clip))
+                if (auto midi = dynamic_cast<te::MidiClip*> (clip))
+                    instances.add (midi);
+
         if (! steps.containsChar ('x'))
+        {
+            for (auto clip : instances)
+                clip->removeFromParent();
+
             return;
+        }
 
         auto& tempo = edit.tempoSequence;
         auto lengthBeats = te::BeatDuration::fromBeats (steps.length() * beatsPerStep);
-        auto clip = channel.insertMIDIClip ("Pattern", { tempo.toTime (te::BeatPosition()), tempo.toTime (te::BeatPosition() + lengthBeats) }, nullptr);
 
-        if (clip == nullptr)
-            return;
+        if (instances.isEmpty())
+        {
+            auto clip = channel.insertMIDIClip ("Pattern", { tempo.toTime (te::BeatPosition()), tempo.toTime (te::BeatPosition() + lengthBeats) }, nullptr);
 
-        clip->state.setProperty (patternClipProp, true, um);
+            if (clip == nullptr)
+                return;
+
+            clip->state.setProperty (patternClipProp, true, um);
+            instances.add (clip.get());
+        }
+
         auto pitch = Session::getStepPitch (channel);
 
-        for (int i = 0; i < steps.length(); ++i)
-            if (steps[i] == 'x')
-                clip->getSequence().addNote (pitch, te::BeatPosition::fromBeats (i * beatsPerStep),
-                                             te::BeatDuration::fromBeats (beatsPerStep), 100, 0, um);
+        for (auto clip : instances)
+        {
+            auto startBeat = tempo.toBeats (clip->getPosition().getStart());
+            clip->setPosition ({ { clip->getPosition().getStart(), tempo.toTime (startBeat + lengthBeats) }, te::TimeDuration() });
+            clip->getSequence().clear (um);
+
+            for (int i = 0; i < steps.length(); ++i)
+                if (steps[i] == 'x')
+                    clip->getSequence().addNote (pitch, te::BeatPosition::fromBeats (i * beatsPerStep),
+                                                 te::BeatDuration::fromBeats (beatsPerStep), 100, 0, um);
+        }
     }
 
     CommandResult setSteps (Session& session, const juce::var& p)
@@ -628,6 +651,196 @@ namespace
         return CommandResult::success();
     }
 
+    //==============================================================================
+    /** A clip on any channel, by its id. */
+    struct FoundClip
+    {
+        te::Clip* clip = nullptr;
+        te::AudioTrack* channel = nullptr;
+    };
+
+    FoundClip findClip (Session& session, const juce::String& id)
+    {
+        for (auto channel : session.getChannels())
+            for (auto clip : channel->getClips())
+                if (clip->itemID.toString() == id)
+                    return { clip, channel };
+
+        return {};
+    }
+
+    double rounded (double beats)
+    {
+        return std::round (beats * 1.0e6) / 1.0e6;
+    }
+
+    juce::var describeClip (Session& session, te::Clip& clip)
+    {
+        auto& tempo = session.getEdit().tempoSequence;
+        auto start = tempo.toBeats (clip.getPosition().getStart()).inBeats();
+        auto end = tempo.toBeats (clip.getPosition().getEnd()).inBeats();
+
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("clip", clip.itemID.toString());
+
+        if (auto track = clip.getTrack())
+            obj->setProperty ("channel", track->itemID.toString());
+
+        obj->setProperty ("start_beat", rounded (start));
+        obj->setProperty ("length_beats", rounded (end - start));
+        return juce::var (obj);
+    }
+
+    /** Looks up the "clip" param, or explains what's wrong. */
+    std::optional<CommandResult> requireClip (Session& session, const juce::String& command,
+                                              const juce::var& p, FoundClip& found)
+    {
+        auto id = params::getString (p, "clip");
+
+        if (id.isEmpty())
+            return CommandResult::failure (command + ": give the clip's id (from get_state)");
+
+        found = findClip (session, id);
+
+        if (found.clip == nullptr)
+            return CommandResult::failure (command + ": no clip with id '" + id + "'");
+
+        return std::nullopt;
+    }
+
+    constexpr double minClipBeats = 1.0 / 16.0;
+
+    CommandResult moveClip (Session& session, const juce::var& p)
+    {
+        FoundClip found;
+
+        if (auto error = requireClip (session, "move_clip", p, found))
+            return *error;
+
+        auto& tempo = session.getEdit().tempoSequence;
+        auto startBeat = params::getDouble (p, "start_beat", tempo.toBeats (found.clip->getPosition().getStart()).inBeats());
+
+        if (startBeat < 0.0)
+            return CommandResult::failure ("move_clip: start_beat can't be before the start of the project");
+
+        if (p.hasProperty ("channel"))
+        {
+            auto channelRef = params::getString (p, "channel");
+            auto target = session.findTrack (channelRef, Session::Role::channel);
+
+            if (target == nullptr)
+                return CommandResult::failure ("move_clip: no channel called '" + channelRef + "'");
+
+            if (target != found.channel)
+            {
+                if (Session::isPatternClip (*found.clip))
+                    return CommandResult::failure ("move_clip: a step pattern belongs to its channel; it can only move in time");
+
+                if (! found.clip->moveTo (*target))
+                    return CommandResult::failure ("move_clip: couldn't move the clip to '" + channelRef + "'");
+            }
+        }
+
+        found.clip->setStart (tempo.toTime (te::BeatPosition::fromBeats (startBeat)), false, true);
+        return CommandResult::success (describeClip (session, *found.clip));
+    }
+
+    CommandResult resizeClip (Session& session, const juce::var& p)
+    {
+        FoundClip found;
+
+        if (auto error = requireClip (session, "resize_clip", p, found))
+            return *error;
+
+        if (Session::isPatternClip (*found.clip))
+            return CommandResult::failure ("resize_clip: a step pattern's length follows its steps; change it with set_steps");
+
+        if (! p.hasProperty ("start_beat") && ! p.hasProperty ("end_beat"))
+            return CommandResult::failure ("resize_clip: give start_beat, end_beat or both");
+
+        auto& tempo = session.getEdit().tempoSequence;
+        auto& clip = *found.clip;
+        auto start = tempo.toBeats (clip.getPosition().getStart()).inBeats();
+        auto end = tempo.toBeats (clip.getPosition().getEnd()).inBeats();
+
+        // The start can come back as far as the clip's content goes, but no further.
+        auto contentStart = start - clip.getOffsetInBeats().inBeats();
+        auto newStart = std::max (contentStart, params::getDouble (p, "start_beat", start));
+        auto newEnd = params::getDouble (p, "end_beat", end);
+
+        if (newStart < 0.0 || newEnd - newStart < minClipBeats)
+            return CommandResult::failure ("resize_clip: the clip would be shorter than a 64th note or start before the project");
+
+        // Edges move; the notes stay where they are in the song.
+        clip.setEnd (tempo.toTime (te::BeatPosition::fromBeats (newEnd)), true);
+        clip.setStart (tempo.toTime (te::BeatPosition::fromBeats (newStart)), true, false);
+        return CommandResult::success (describeClip (session, clip));
+    }
+
+    CommandResult splitClip (Session& session, const juce::var& p)
+    {
+        FoundClip found;
+
+        if (auto error = requireClip (session, "split_clip", p, found))
+            return *error;
+
+        if (Session::isPatternClip (*found.clip))
+            return CommandResult::failure ("split_clip: a step pattern can't be split; change its steps instead");
+
+        if (! p.hasProperty ("beat"))
+            return CommandResult::failure ("split_clip: give the beat to split at");
+
+        auto& tempo = session.getEdit().tempoSequence;
+        auto beat = params::getDouble (p, "beat", 0.0);
+        auto start = tempo.toBeats (found.clip->getPosition().getStart()).inBeats();
+        auto end = tempo.toBeats (found.clip->getPosition().getEnd()).inBeats();
+
+        if (beat - start < minClipBeats || end - beat < minClipBeats)
+            return CommandResult::failure ("split_clip: beat must be inside the clip (" + juce::String (rounded (start)) + " to "
+                                             + juce::String (rounded (end)) + ")");
+
+        auto second = found.channel->splitClip (*found.clip, tempo.toTime (te::BeatPosition::fromBeats (beat)));
+
+        if (second == nullptr)
+            return CommandResult::failure ("split_clip: couldn't split the clip");
+
+        return CommandResult::success (juce::Array<juce::var> { describeClip (session, *found.clip), describeClip (session, *second) });
+    }
+
+    CommandResult duplicateClip (Session& session, const juce::var& p)
+    {
+        FoundClip found;
+
+        if (auto error = requireClip (session, "duplicate_clip", p, found))
+            return *error;
+
+        auto& tempo = session.getEdit().tempoSequence;
+        auto startBeat = params::getDouble (p, "start_beat", tempo.toBeats (found.clip->getPosition().getEnd()).inBeats());
+
+        if (startBeat < 0.0)
+            return CommandResult::failure ("duplicate_clip: start_beat can't be before the start of the project");
+
+        auto copy = te::duplicateClip (*found.clip);
+
+        if (copy == nullptr)
+            return CommandResult::failure ("duplicate_clip: couldn't copy the clip");
+
+        copy->setStart (tempo.toTime (te::BeatPosition::fromBeats (startBeat)), false, true);
+        return CommandResult::success (describeClip (session, *copy));
+    }
+
+    CommandResult deleteClip (Session& session, const juce::var& p)
+    {
+        FoundClip found;
+
+        if (auto error = requireClip (session, "delete_clip", p, found))
+            return *error;
+
+        auto result = describeClip (session, *found.clip);
+        found.clip->removeFromParent();
+        return CommandResult::success (result);
+    }
+
     CommandResult getState (Session& session, const juce::var&)
     {
         return CommandResult::success (session.toVar());
@@ -773,6 +986,42 @@ void registerProjectCommands (CommandRegistry& registry)
                               { "pitch", prop ("integer", "MIDI note the steps play (default 60, middle C)") } },
                             { "channel" }),
                     true, setSteps });
+
+    registry.add ({ "move_clip",
+                    "Moves a clip to a new start beat, and optionally to another channel. A step pattern can only move in time.",
+                    schema ({ { "clip", prop ("string", "Clip id, from get_state") },
+                              { "start_beat", prop ("number", "New start, in beats (default: where it is)") },
+                              { "channel", prop ("string", "Channel id or name to move it to") } },
+                            { "clip" }),
+                    true, moveClip });
+
+    registry.add ({ "resize_clip",
+                    "Moves a clip's start and/or end; its notes stay where they are in the song. "
+                    "A step pattern's length follows its steps instead.",
+                    schema ({ { "clip", prop ("string", "Clip id, from get_state") },
+                              { "start_beat", prop ("number", "New start, in beats") },
+                              { "end_beat", prop ("number", "New end, in beats") } },
+                            { "clip" }),
+                    true, resizeClip });
+
+    registry.add ({ "split_clip",
+                    "Splits a clip in two at a beat inside it. Returns both halves.",
+                    schema ({ { "clip", prop ("string", "Clip id, from get_state") },
+                              { "beat", prop ("number", "Where to split, in beats from the start of the project") } },
+                            { "clip", "beat" }),
+                    true, splitClip });
+
+    registry.add ({ "duplicate_clip",
+                    "Copies a clip, by default to just after itself. A copied step pattern keeps following the channel's steps.",
+                    schema ({ { "clip", prop ("string", "Clip id, from get_state") },
+                              { "start_beat", prop ("number", "Where the copy starts, in beats (default: the clip's end)") } },
+                            { "clip" }),
+                    true, duplicateClip });
+
+    registry.add ({ "delete_clip",
+                    "Deletes a clip.",
+                    schema ({ { "clip", prop ("string", "Clip id, from get_state") } }, { "clip" }),
+                    true, deleteClip });
 
     registry.add ({ "set_tempo",
                     "Sets the project tempo. Clips keep their positions in beats.",
