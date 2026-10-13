@@ -1811,8 +1811,12 @@ namespace
         std::cout << "       kick and snare RMS " << both << ", after reopening " << reopened << "\n";
         CHECK (std::abs (reopened - both) < 0.002f);
 
-        // A sample whose file has gone shows as missing.
-        kit.getChildFile ("Zap.wav").deleteFile();
+        // A sample whose file has gone shows as missing. (The project is edited rather than the
+        // file deleted: Windows won't delete a file the sampler has open.)
+        auto saved = temp.getFile().loadFileAsString();
+        CHECK (saved.contains ("Zap.wav"));
+        temp.getFile().replaceWithText (saved.replace ("Zap.wav", "Gone.wav"));
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
         auto missing = 0;
         auto samples = drums()["samples"];
 
