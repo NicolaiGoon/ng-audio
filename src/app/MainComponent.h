@@ -1,12 +1,12 @@
 #pragma once
 
-#include "core/CommandDispatcher.h"
+#include "MixerView.h"
 
 namespace ng
 {
 
 /**
-    The first window: a channel rack, a mixer, a transport and a command console.
+    The main window: a channel rack, a mixer, a transport and a command console.
     Every button here calls the command layer rather than touching the Edit directly,
     so the UI does exactly what an AI client or macro could do.
 */
@@ -44,7 +44,9 @@ private:
 
     juce::TextEditor consoleInput, consoleOutput;
 
-    juce::OwnedArray<juce::Component> channelRows, stripRows;
+    juce::OwnedArray<juce::Component> channelRows;
+    juce::String channelRackKey;
+    MixerView mixer { session, dispatcher };
     juce::TooltipWindow tooltips { this };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
