@@ -9,10 +9,47 @@ namespace
 
     juce::Colour pickColour (Session& session)
     {
-        static const juce::uint32 palette[] = { 0xffe0603c, 0xffe8b23a, 0xff8cc84b, 0xff3cb4a0,
-                                                0xff3c8ce0, 0xff8c64dc, 0xffd85aa8, 0xff9aa0a6 };
-        auto index = static_cast<size_t> (session.getChannels().size()) % std::size (palette);
-        return juce::Colour (palette[index]);
+        auto palette = Session::getPalette();
+        return palette[session.getChannels().size() % palette.size()];
+    }
+
+    /** The built-in instruments a channel can hold. Third-party plugins come with plugin scanning. */
+    const juce::StringArray& builtInInstruments()
+    {
+        static const juce::StringArray names { "4osc", "none" };
+        return names;
+    }
+
+    /** Replaces whatever instrument the channel has with a built-in one ("none" just removes it). */
+    void setInstrument (te::Edit& edit, te::AudioTrack& channel, const juce::String& instrument)
+    {
+        for (auto p : channel.pluginList.getPlugins())
+            if (p->isSynth())
+                p->deleteFromParent();
+
+        if (instrument == "4osc")
+            if (auto synth = edit.getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
+                channel.pluginList.insertPlugin (synth, 0, nullptr);
+    }
+
+    juce::String instrumentError (const juce::String& command, const juce::String& instrument)
+    {
+        return command + ": unknown instrument '" + instrument + "' (use one of: "
+                 + builtInInstruments().joinIntoString (", ") + ")";
+    }
+
+    juce::var trackRef (Session& session, const te::AudioTrack& t)
+    {
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("id", t.itemID.toString());
+        obj->setProperty ("role", toString (Session::getRole (t)));
+        obj->setProperty ("name", t.getName());
+        obj->setProperty ("colour", "#" + t.getColour().toDisplayString (false));
+
+        if (auto partner = session.getLinkedPartner (t))
+            obj->setProperty ("linked_to", partner->itemID.toString());
+
+        return juce::var (obj);
     }
 
     juce::var idPair (const juce::String& k1, const juce::String& v1,
@@ -30,11 +67,20 @@ namespace
         auto& edit = session.getEdit();
         auto name = params::getString (p, "name", "Instrument " + juce::String (session.getChannels().size() + 1));
         auto instrument = params::getString (p, "instrument", "4osc");
-        auto colour = p.hasProperty ("colour") ? juce::Colour::fromString (p["colour"].toString().removeCharacters ("#").paddedLeft ('f', 8))
-                                               : pickColour (session);
+        auto colour = pickColour (session);
 
-        if (instrument != "4osc" && instrument != "none")
-            return CommandResult::failure ("create_track: unknown instrument '" + instrument + "' (use \"4osc\" or \"none\")");
+        if (p.hasProperty ("colour"))
+        {
+            auto parsed = parseColour (p["colour"].toString());
+
+            if (! parsed)
+                return CommandResult::failure ("create_track: '" + p["colour"].toString() + "' isn't a hex colour like #3c8ce0");
+
+            colour = *parsed;
+        }
+
+        if (! builtInInstruments().contains (instrument))
+            return CommandResult::failure (instrumentError ("create_track", instrument));
 
         // The channel: holds the instrument and its clips.
         auto channel = edit.insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (edit), nullptr);
@@ -46,9 +92,7 @@ namespace
         channel->setName (name);
         channel->setColour (colour);
 
-        if (instrument == "4osc")
-            if (auto synth = edit.getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
-                channel->pluginList.insertPlugin (synth, 0, nullptr);
+        setInstrument (edit, *channel, instrument);
 
         // Its mixer strip: same name and colour, linked by default, feeding master.
         auto strip = edit.insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (edit), nullptr);
@@ -149,6 +193,125 @@ namespace
                                                "notes", clip->getSequence().getNotes().size()));
     }
 
+    CommandResult renameTrack (Session& session, const juce::var& p)
+    {
+        auto ref = params::getString (p, "track");
+        auto name = params::getString (p, "name").trim();
+        auto track = session.findAnyTrack (ref);
+
+        if (track == nullptr)
+            return CommandResult::failure ("rename_track: no channel or mixer strip called '" + ref + "'");
+
+        if (name.isEmpty())
+            return CommandResult::failure ("rename_track: name can't be empty");
+
+        track->setName (name);
+
+        if (auto partner = session.getLinkedPartner (*track))
+            partner->setName (name);
+
+        return CommandResult::success (trackRef (session, *track));
+    }
+
+    CommandResult setTrackColour (Session& session, const juce::var& p)
+    {
+        auto ref = params::getString (p, "track");
+        auto track = session.findAnyTrack (ref);
+
+        if (track == nullptr)
+            return CommandResult::failure ("set_track_colour: no channel or mixer strip called '" + ref + "'");
+
+        auto colour = parseColour (params::getString (p, "colour"));
+
+        if (! colour)
+            return CommandResult::failure ("set_track_colour: '" + params::getString (p, "colour") + "' isn't a hex colour like #3c8ce0");
+
+        track->setColour (*colour);
+
+        if (auto partner = session.getLinkedPartner (*track))
+            partner->setColour (*colour);
+
+        return CommandResult::success (trackRef (session, *track));
+    }
+
+    CommandResult deleteTrack (Session& session, const juce::var& p)
+    {
+        auto& edit = session.getEdit();
+        auto ref = params::getString (p, "track");
+        auto track = session.findAnyTrack (ref);
+
+        if (track == nullptr)
+            return CommandResult::failure ("delete_track: no channel or mixer strip called '" + ref + "'");
+
+        juce::Array<te::AudioTrack*> toDelete { track };
+
+        // A channel takes its own strip with it, unless other channels still feed that strip.
+        if (Session::getRole (*track) == Session::Role::channel)
+        {
+            if (auto own = session.getOwnStrip (*track))
+            {
+                bool shared = false;
+
+                for (auto c : session.getChannels())
+                    if (c != track && session.getDestinationStrip (*c) == own)
+                        shared = true;
+
+                if (! shared)
+                    toDelete.add (own);
+            }
+        }
+
+        juce::Array<juce::var> deleted, rerouted;
+
+        for (auto t : toDelete)
+        {
+            // Anything that fed this track now goes straight to master, and channels
+            // whose own strip this was have nothing left to link to.
+            for (auto other : te::getAudioTracks (edit))
+            {
+                if (toDelete.contains (other))
+                    continue;
+
+                if (other->getOutput().getDestinationTrack() == t)
+                {
+                    other->getOutput().setOutputToDefaultDevice (false);
+                    rerouted.add (other->itemID.toString());
+                }
+
+                if (Session::getRole (*other) == Session::Role::channel && session.getOwnStrip (*other) == t)
+                    session.setOwnStrip (*other, nullptr);
+            }
+
+            deleted.add (t->itemID.toString());
+        }
+
+        for (auto t : toDelete)
+            edit.deleteTrack (t);
+
+        session.writeTrackOutputs();
+
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("deleted", deleted);
+        obj->setProperty ("rerouted_to_master", rerouted);
+        return CommandResult::success (juce::var (obj));
+    }
+
+    CommandResult setInstrumentCommand (Session& session, const juce::var& p)
+    {
+        auto ref = params::getString (p, "channel");
+        auto instrument = params::getString (p, "instrument");
+        auto channel = session.findTrack (ref, Session::Role::channel);
+
+        if (channel == nullptr)
+            return CommandResult::failure ("set_instrument: no channel called '" + ref + "'");
+
+        if (! builtInInstruments().contains (instrument))
+            return CommandResult::failure (instrumentError ("set_instrument", instrument));
+
+        setInstrument (session.getEdit(), *channel, instrument);
+        return CommandResult::success (idPair ("channel", channel->itemID.toString(), "instrument", instrument));
+    }
+
     CommandResult play (Session& session, const juce::var& p)
     {
         auto& edit = session.getEdit();
@@ -202,6 +365,33 @@ void registerProjectCommands (CommandRegistry& registry)
                               { "notes", prop ("array", "Notes as {pitch, start, length, velocity}") } },
                             { "channel" }),
                     true, addMidiClip });
+
+    registry.add ({ "rename_track",
+                    "Renames a channel or mixer strip. While a channel is linked to its strip, both get the new name.",
+                    schema ({ { "track", prop ("string", "Channel or mixer strip id or name") },
+                              { "name", prop ("string", "The new name") } },
+                            { "track", "name" }),
+                    true, renameTrack });
+
+    registry.add ({ "set_track_colour",
+                    "Recolours a channel or mixer strip. While a channel is linked to its strip, both change.",
+                    schema ({ { "track", prop ("string", "Channel or mixer strip id or name") },
+                              { "colour", prop ("string", "Hex colour such as #3c8ce0") } },
+                            { "track", "colour" }),
+                    true, setTrackColour });
+
+    registry.add ({ "delete_track",
+                    "Deletes a channel or mixer strip. A channel takes its own strip with it unless other channels "
+                    "still feed that strip; anything that fed a deleted strip is sent to master.",
+                    schema ({ { "track", prop ("string", "Channel or mixer strip id or name") } }, { "track" }),
+                    true, deleteTrack });
+
+    registry.add ({ "set_instrument",
+                    "Replaces a channel's instrument with a built-in one: \"4osc\" (synth) or \"none\".",
+                    schema ({ { "channel", prop ("string", "Channel id or name") },
+                              { "instrument", prop ("string", "\"4osc\" or \"none\"") } },
+                            { "channel", "instrument" }),
+                    true, setInstrumentCommand });
 
     registry.add ({ "play", "Starts playback, looping the whole project unless loop is false.",
                     schema ({ { "loop", prop ("boolean", "Loop the project (default true)") } }),

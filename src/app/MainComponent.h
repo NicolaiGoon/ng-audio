@@ -45,6 +45,7 @@ private:
     juce::TextEditor consoleInput, consoleOutput;
 
     juce::OwnedArray<juce::Component> channelRows, stripRows;
+    juce::TooltipWindow tooltips { this };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };
