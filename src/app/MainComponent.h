@@ -60,6 +60,7 @@ private:
     void updatePlayStep();
     void updatePositionDisplay();
     void showAudioSettings();
+    void showPluginList();
     void setUpTransportControls();
     void updateTransportControls (const juce::var& state);
     void openPianoRoll (const juce::String& clipId);
@@ -72,7 +73,7 @@ private:
 
     juce::TextButton newButton { "New" }, openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save as" },
                      addButton { "Add instrument" }, playButton { "Play" }, returnButton { "|<" }, recordButton { "Rec" },
-                     undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio" }, shortcutsButton { "?" },
+                     undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio" }, pluginsButton { "Plugins" }, shortcutsButton { "?" },
                      runButton { "Run" }, closePianoRollButton { "Close" },
                      quantizeButton { "Quantize" };
     juce::ToggleButton consoleButton { "Console" }, keysButton { "Keys" };

@@ -256,7 +256,79 @@ namespace
 
         static constexpr int margin = 16, columnWidth = 440, keyWidth = 170, rowHeight = 22, headingHeight = 36;
     };
+
+    //==============================================================================
+    /** The Plugins window: JUCE's plugin list (every scanned plugin, sortable, with
+        Options for removing entries) under a Scan button. The scan asks which folders
+        to look in and remembers them, for scan_plugins too; the engine saves the list. */
+    class PluginsPanel  : public juce::Component,
+                          private juce::ChangeListener
+    {
+    public:
+        explicit PluginsPanel (te::Engine& engine)
+            : plugins (engine.getPluginManager()),
+              list (plugins.pluginFormatManager, plugins.knownPluginList,
+                    engine.getTemporaryFileManager().getTempFile ("PluginScanDeadMansPedal"),
+                    &engine.getPropertyStorage().getPropertiesFile(), true)
+        {
+            scanButton.setTooltip ("Pick the folders your VST3 plugins are in, then scan them for new or updated plugins");
+            scanButton.onClick = [this]
+            {
+                for (auto* format : plugins.pluginFormatManager.getFormats())
+                    if (format->getName() == "VST3")
+                        list.scanFor (*format);
+            };
+
+            summary.setColour (juce::Label::textColourId, juce::Colours::grey);
+            plugins.knownPluginList.addChangeListener (this);
+            updateSummary();
+
+            for (auto* c : std::initializer_list<juce::Component*> { &scanButton, &summary, &list })
+                addAndMakeVisible (c);
+
+            setSize (760, 520);
+        }
+
+        ~PluginsPanel() override
+        {
+            plugins.knownPluginList.removeChangeListener (this);
+        }
+
+        void resized() override
+        {
+            auto r = getLocalBounds().reduced (8);
+            auto top = r.removeFromTop (30);
+            scanButton.setBounds (top.removeFromLeft (180));
+            top.removeFromLeft (12);
+            summary.setBounds (top);
+            r.removeFromTop (8);
+            list.setBounds (r);
+        }
+
+    private:
+        void changeListenerCallback (juce::ChangeBroadcaster*) override
+        {
+            updateSummary();
+        }
+
+        void updateSummary()
+        {
+            auto types = plugins.knownPluginList.getTypes();
+            auto instruments = (int) std::count_if (types.begin(), types.end(), [] (auto& d) { return d.isInstrument; });
+            auto count = [] (int n, const char* thing) { return juce::String (n) + " " + thing + (n == 1 ? "" : "s"); };
+            auto text = types.isEmpty() ? juce::String ("No plugins yet. Scan to find the ones installed on this computer.")
+                                        : count (instruments, "instrument") + " and " + count (types.size() - instruments, "effect")
+                                              + ". Right-click one to remove it or show its file.";
+            summary.setText (text, juce::dontSendNotification);
+        }
+
+        te::PluginManager& plugins;
+        juce::TextButton scanButton { "Scan for VST3 plugins..." };
+        juce::Label summary;
+        juce::PluginListComponent list;
+    };
 }
+
 
 //==============================================================================
 MainComponent::MainComponent (te::Engine& engine)
@@ -319,6 +391,8 @@ MainComponent::MainComponent (te::Engine& engine)
     shortcutsButton.onClick = [this] { showShortcuts(); };
     settingsButton.onClick = [this] { showAudioSettings(); };
     settingsButton.setTooltip ("Audio device settings");
+    pluginsButton.onClick = [this] { showPluginList(); };
+    pluginsButton.setTooltip ("Your VST3 plugins: scan folders for new ones, or remove ones you don't use");
     setUpTransportControls();
     runButton.onClick = [this] { runConsoleCommand(); };
 
@@ -367,7 +441,7 @@ MainComponent::MainComponent (te::Engine& engine)
                                                              &addButton, &playButton, &undoButton, &redoButton,
                                                              &returnButton, &recordButton, &keysButton, &tempo, &timeSignature, &positionDisplay,
                                                              &loopButton, &metronomeButton,
-                                                             &settingsButton, &shortcutsButton, &consoleButton, &timelineHeader, &timelineHint, &timeline,
+                                                             &settingsButton, &pluginsButton, &shortcutsButton, &consoleButton, &timelineHeader, &timelineHint, &timeline,
                                                              &channelsHeader, &mixerHeader, &mixer })
         addAndMakeVisible (c);
 
@@ -658,7 +732,7 @@ void MainComponent::setUpTransportControls()
 {
     tempo.setSliderStyle (juce::Slider::IncDecButtons);
     tempo.setIncDecButtonsMode (juce::Slider::incDecButtonsDraggable_Vertical);
-    tempo.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 80, 30);
+    tempo.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 70, 30);
     tempo.setRange (20.0, 300.0, 1.0);
     tempo.setTextValueSuffix (" BPM");
     tempo.setTooltip ("Tempo: type a value, click the arrows or drag up and down");
@@ -781,6 +855,19 @@ void MainComponent::showAudioSettings()
     options.launchAsync();
 }
 
+void MainComponent::showPluginList()
+{
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned (new PluginsPanel (session.getEngine()));
+    options.dialogTitle = "Plugins";
+    options.dialogBackgroundColour = getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId);
+    options.componentToCentreAround = this;
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+    options.escapeKeyTriggersCloseButton = true;
+    options.launchAsync();
+}
+
 //==============================================================================
 void MainComponent::handleAsyncUpdate()
 {
@@ -900,7 +987,7 @@ void MainComponent::resized()
 
     for (auto* b : { &newButton, &openButton, &saveButton, &saveAsButton })
     {
-        b->setBounds (toolbar.removeFromLeft (b == &saveAsButton ? 70 : 56));
+        b->setBounds (toolbar.removeFromLeft (b == &saveAsButton ? 64 : 50));
         toolbar.removeFromLeft (4);
     }
 
@@ -913,7 +1000,7 @@ void MainComponent::resized()
     }
 
     toolbar.removeFromLeft (8);
-    tempo.setBounds (toolbar.removeFromLeft (130));
+    tempo.setBounds (toolbar.removeFromLeft (118));
     toolbar.removeFromLeft (6);
     timeSignature.setBounds (toolbar.removeFromLeft (64));
     toolbar.removeFromLeft (8);
@@ -925,8 +1012,10 @@ void MainComponent::resized()
     shortcutsButton.setBounds (toolbar.removeFromRight (28));
     toolbar.removeFromRight (4);
     settingsButton.setBounds (toolbar.removeFromRight (58));
+    toolbar.removeFromRight (4);
+    pluginsButton.setBounds (toolbar.removeFromRight (58));
     toolbar.removeFromRight (8);
-    consoleButton.setBounds (toolbar.removeFromRight (82));
+    consoleButton.setBounds (toolbar.removeFromRight (78));
     keysButton.setBounds (toolbar.removeFromRight (58));
     r.removeFromTop (10);
 
