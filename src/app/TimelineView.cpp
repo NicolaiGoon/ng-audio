@@ -41,8 +41,8 @@ void TimelineView::update (const juce::var& state)
 
     for (auto& channel : *state["channels"].getArray())
     {
-        Lane lane { channel["id"].toString(), channel["name"].toString(), colourFrom (channel["colour"]), {},
-                    channel["kind"] == "audio" };
+        Lane lane { channel["id"].toString(), channel["name"].toString(), channel["output"].toString(),
+                    colourFrom (channel["colour"]), {}, channel["kind"] == "audio" };
 
         for (auto& c : *channel["clips"].getArray())
         {
@@ -66,6 +66,21 @@ void TimelineView::update (const juce::var& state)
         lanes.add (lane);
     }
 
+    // Automation lanes follow their channels, and forget the ones that are gone.
+    for (auto it = automationLanes.begin(); it != automationLanes.end();)
+    {
+        auto found = std::find_if (lanes.begin(), lanes.end(), [&] (const Lane& l) { return l.channelId == it->first; });
+
+        if (found == lanes.end())
+        {
+            it = automationLanes.erase (it);
+            continue;
+        }
+
+        refreshAutomation (*found, it->second);
+        ++it;
+    }
+
     // Let go of waveforms nothing shows any more.
     for (auto it = thumbnails.begin(); it != thumbnails.end();)
         it = files.contains (it->first) ? std::next (it) : thumbnails.erase (it);
@@ -81,6 +96,8 @@ void TimelineView::update (const juce::var& state)
 void TimelineView::clear()
 {
     lanes.clear();
+    automationLanes.clear();
+    automationDragLane = automationDragPoint = -1;
     thumbnails.clear();
     selectedClip = {};
     drag = {};
@@ -146,7 +163,7 @@ void TimelineView::updateScrollBars()
     horizontal.setRangeLimits (0.0, getTotalBeats(), juce::dontSendNotification);
     horizontal.setCurrentRange (scrollBeats, visibleBeats, juce::dontSendNotification);
 
-    auto contentHeight = lanes.size() * laneHeight;
+    auto contentHeight = getContentHeight();
     scrollY = juce::jlimit (0, std::max (0, contentHeight - lanesArea.getHeight()), scrollY);
     vertical.setRangeLimits (0.0, std::max (contentHeight, lanesArea.getHeight()), juce::dontSendNotification);
     vertical.setCurrentRange (scrollY, lanesArea.getHeight(), juce::dontSendNotification);
@@ -300,9 +317,8 @@ void TimelineView::paintLanes (juce::Graphics& g)
 
         for (int i = 0; i < lanes.size(); ++i)
         {
-            auto y = lanesArea.getY() + i * laneHeight - scrollY;
             g.setColour (i % 2 == 0 ? laneBackground : laneBackgroundAlt);
-            g.fillRect (lanesArea.getX(), y, lanesArea.getWidth(), laneHeight);
+            g.fillRect (lanesArea.getX(), getLaneTop (i), lanesArea.getWidth(), getLaneSpan (i));
         }
 
         auto& tempo = session.getEdit().tempoSequence;
@@ -331,12 +347,11 @@ void TimelineView::paintLanes (juce::Graphics& g)
 
         for (int i = 0; i < lanes.size(); ++i)
         {
-            auto y = lanesArea.getY() + i * laneHeight - scrollY;
+            paintAutomation (g, i);
 
             for (auto& clip : lanes[i].clips)
             {
-                auto area = juce::Rectangle<float> ((float) beatToX (clip.startBeat), (float) y + 3.0f,
-                                                    (float) (clip.lengthBeats * pixelsPerBeat), (float) laneHeight - 6.0f);
+                auto area = getClipArea (i, clip.startBeat, clip.lengthBeats);
 
                 if (area.getRight() < lanesArea.getX() || area.getX() > lanesArea.getRight())
                     continue;
@@ -364,9 +379,7 @@ void TimelineView::paintLanes (juce::Graphics& g)
 
         if (drag.moved && juce::isPositiveAndBelow (drag.targetLane, lanes.size()))
         {
-            auto y = lanesArea.getY() + drag.targetLane * laneHeight - scrollY;
-            auto area = juce::Rectangle<float> ((float) beatToX (drag.start), (float) y + 3.0f,
-                                                (float) ((drag.end - drag.start) * pixelsPerBeat), (float) laneHeight - 6.0f);
+            auto area = getClipArea (drag.targetLane, drag.start, drag.end - drag.start);
             auto preview = drag.clip;
             preview.startBeat = drag.start;
             preview.lengthBeats = drag.end - drag.start;
@@ -394,10 +407,10 @@ void TimelineView::paintLanes (juce::Graphics& g)
         juce::Rectangle<float> target;
 
         if (dropLane >= 0)
-            target = { (float) lanesArea.getX(), (float) (lanesArea.getY() + dropLane * laneHeight - scrollY),
+            target = { (float) lanesArea.getX(), (float) getLaneTop (dropLane),
                        (float) lanesArea.getWidth(), (float) laneHeight };
         else
-            target = juce::Rectangle<float> ((float) lanesArea.getX(), (float) (lanesArea.getY() + lanes.size() * laneHeight - scrollY),
+            target = juce::Rectangle<float> ((float) lanesArea.getX(), (float) (lanesArea.getY() + getContentHeight() - scrollY),
                                              (float) lanesArea.getWidth(), (float) laneHeight)
                          .getIntersection (lanesArea.toFloat());
 
@@ -421,11 +434,37 @@ void TimelineView::paintLanes (juce::Graphics& g)
 
     for (int i = 0; i < lanes.size(); ++i)
     {
-        auto row = juce::Rectangle<int> (0, lanesArea.getY() + i * laneHeight - scrollY, headerWidth, laneHeight);
+        auto row = juce::Rectangle<int> (0, getLaneTop (i), headerWidth, getLaneSpan (i));
+        auto shown = isShowingAutomation (lanes[i].channelId);
         g.setColour (lanes[i].colour);
         g.fillRect (row.getX(), row.getY() + 2, 4, row.getHeight() - 4);
+
+        // The A button shows or hides the lane's automation.
+        auto button = getAutomationButton (i).toFloat();
+        g.setColour (shown ? lanes[i].colour : juce::Colours::white.withAlpha (0.08f));
+        g.fillRoundedRectangle (button, 3.0f);
+        g.setColour (shown ? juce::Colours::black : juce::Colours::white.withAlpha (0.6f));
+        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.drawText ("A", button, juce::Justification::centred);
+
+        g.setFont (juce::FontOptions (13.0f));
         g.setColour (juce::Colours::white.withAlpha (0.9f));
-        g.drawText (lanes[i].name, row.withTrimmedLeft (12).withTrimmedRight (6), juce::Justification::centredLeft, true);
+        g.drawText (lanes[i].name, row.withHeight (laneHeight).withTrimmedLeft (12).withTrimmedRight (30),
+                    juce::Justification::centredLeft, true);
+
+        if (shown)
+        {
+            auto& automation = automationLanes.at (lanes[i].channelId);
+            auto label = row.withTrimmedTop (laneHeight).withTrimmedLeft (12).withTrimmedRight (6);
+            g.setColour (juce::Colours::white.withAlpha (0.65f));
+            g.setFont (juce::FontOptions (12.0f));
+            g.drawFittedText ((automation.valid ? automation.name : juce::String ("No parameter")) + juce::String::fromUTF8 (" \xe2\x96\xbe"),
+                              label.removeFromTop (20), juce::Justification::centredLeft, 1, 0.7f);
+            g.setColour (juce::Colours::grey);
+            g.setFont (juce::FontOptions (11.0f));
+            g.drawText (automation.strip == "master" ? "on master" : "on its strip", label.removeFromTop (16), juce::Justification::centredLeft);
+        }
+
         g.setColour (juce::Colours::black.withAlpha (0.3f));
         g.drawHorizontalLine (row.getBottom() - 1, 0.0f, (float) getWidth());
     }
@@ -617,8 +656,391 @@ juce::Rectangle<float> TimelineView::getFadeHandle (juce::Rectangle<float> clipA
 
 juce::Rectangle<float> TimelineView::getClipArea (int lane, double startBeat, double lengthBeats) const
 {
-    auto y = getLanesArea().getY() + lane * laneHeight - scrollY;
+    auto y = getLaneTop (lane);
     return { (float) beatToX (startBeat), (float) y + 3.0f, (float) (lengthBeats * pixelsPerBeat), (float) laneHeight - 6.0f };
+}
+
+//==============================================================================
+int TimelineView::getLaneSpan (int lane) const
+{
+    return laneHeight + (juce::isPositiveAndBelow (lane, lanes.size()) && isShowingAutomation (lanes[lane].channelId) ? automationHeight : 0);
+}
+
+int TimelineView::getLaneTop (int lane) const
+{
+    auto y = getLanesArea().getY() - scrollY;
+
+    for (int i = 0; i < lane; ++i)
+        y += getLaneSpan (i);
+
+    return y;
+}
+
+int TimelineView::getContentHeight() const
+{
+    auto height = 0;
+
+    for (int i = 0; i < lanes.size(); ++i)
+        height += getLaneSpan (i);
+
+    return height;
+}
+
+juce::Rectangle<int> TimelineView::getAutomationButton (int lane) const
+{
+    return { headerWidth - 26, getLaneTop (lane) + (laneHeight - 18) / 2, 20, 18 };
+}
+
+juce::Rectangle<float> TimelineView::getAutomationArea (int lane) const
+{
+    auto lanesArea = getLanesArea();
+    return { (float) lanesArea.getX(), (float) (getLaneTop (lane) + laneHeight), (float) lanesArea.getWidth(), (float) automationHeight };
+}
+
+int TimelineView::automationLaneAt (juce::Point<float> pos) const
+{
+    auto lane = laneAt (pos.y);
+
+    if (! juce::isPositiveAndBelow (lane, lanes.size()) || ! isShowingAutomation (lanes[lane].channelId)
+         || pos.x < (float) headerWidth || pos.y < (float) (getLaneTop (lane) + laneHeight) || ! getLanesArea().toFloat().contains (pos))
+        return -1;
+
+    return lane;
+}
+
+TimelineView::AutomationLane* TimelineView::getAutomation (int lane)
+{
+    if (! juce::isPositiveAndBelow (lane, lanes.size()))
+        return nullptr;
+
+    auto it = automationLanes.find (lanes[lane].channelId);
+    return it != automationLanes.end() ? &it->second : nullptr;
+}
+
+void TimelineView::showAutomation (const juce::String& channelId, bool shouldShow)
+{
+    if (! shouldShow)
+    {
+        automationLanes.erase (channelId);
+    }
+    else if (! isShowingAutomation (channelId))
+    {
+        for (auto& lane : lanes)
+            if (lane.channelId == channelId)
+                refreshAutomation (lane, automationLanes[channelId]);
+    }
+
+    updateScrollBars();
+    repaint();
+}
+
+void TimelineView::refreshAutomation (const Lane& lane, AutomationLane& automation)
+{
+    // The strip the channel plays into, or the master if it plays straight there.
+    if (automation.strip != lane.output)
+    {
+        automation.strip = lane.output.isNotEmpty() ? lane.output : juce::String ("master");
+        automation.effect = {};
+        automation.parameter = "volume";
+    }
+
+    auto params = makeObject ({ { "strip", automation.strip }, { "parameter", automation.parameter } });
+
+    if (automation.effect.isNotEmpty())
+        params.getDynamicObject()->setProperty ("effect", automation.effect);
+
+    auto target = findAutomationTarget (session, "automation", params);
+
+    // An effect that's gone falls back to the strip's volume.
+    if (target.param == nullptr && automation.effect.isNotEmpty())
+    {
+        automation.effect = {};
+        automation.parameter = "volume";
+        target = findAutomationTarget (session, "automation", makeObject ({ { "strip", automation.strip }, { "parameter", "volume" } }));
+    }
+
+    automation.valid = target.param != nullptr;
+    automation.points.clearQuick();
+
+    if (! automation.valid)
+        return;
+
+    auto described = describeAutomation (session, target);
+    automation.name = target.name;
+    automation.min = target.min;
+    automation.max = target.max;
+    automation.isVolume = target.isVolume;
+    automation.value = described["value"];
+
+    for (auto& point : *described["points"].getArray())
+        automation.points.add ({ static_cast<double> (point["beat"]), static_cast<double> (point["value"]) });
+}
+
+float TimelineView::automationValueToY (const AutomationLane& automation, double value, juce::Rectangle<float> area) const
+{
+    // Volume is drawn as the fader shows it, so 0 dB sits most of the way up.
+    auto proportion = automation.isVolume ? (double) te::decibelsToVolumeFaderPosition ((float) value)
+                                          : (value - automation.min) / std::max (1.0e-9, automation.max - automation.min);
+    auto inner = area.reduced (0.0f, 6.0f);
+    return inner.getBottom() - (float) juce::jlimit (0.0, 1.0, proportion) * inner.getHeight();
+}
+
+double TimelineView::yToAutomationValue (const AutomationLane& automation, float y, juce::Rectangle<float> area) const
+{
+    auto inner = area.reduced (0.0f, 6.0f);
+    auto proportion = juce::jlimit (0.0, 1.0, (double) ((inner.getBottom() - y) / inner.getHeight()));
+
+    if (automation.isVolume)
+        return juce::jlimit (automation.min, automation.max, (double) te::volumeFaderPositionToDB ((float) proportion));
+
+    return automation.min + proportion * (automation.max - automation.min);
+}
+
+int TimelineView::automationPointAt (int lane, juce::Point<float> pos) const
+{
+    auto it = automationLanes.find (lanes[lane].channelId);
+
+    if (it == automationLanes.end())
+        return -1;
+
+    auto area = getAutomationArea (lane);
+
+    for (int i = it->second.points.size(); --i >= 0;)
+    {
+        auto& point = it->second.points.getReference (i);
+        auto centre = juce::Point<float> ((float) beatToX (point.x), automationValueToY (it->second, point.y, area));
+
+        if (centre.getDistanceFrom (pos) <= 7.0f)
+            return i;
+    }
+
+    return -1;
+}
+
+void TimelineView::setAutomationPoints (int lane, const juce::Array<juce::Point<double>>& points)
+{
+    auto automation = getAutomation (lane);
+
+    if (automation == nullptr || ! automation->valid)
+        return;
+
+    juce::Array<juce::var> list;
+
+    for (auto& point : points)
+        list.add (makeObject ({ { "beat", std::max (0.0, point.x) },
+                                { "value", juce::jlimit (automation->min, automation->max, point.y) } }));
+
+    auto params = makeObject ({ { "strip", automation->strip }, { "parameter", automation->parameter }, { "points", list } });
+
+    if (automation->effect.isNotEmpty())
+        params.getDynamicObject()->setProperty ("effect", automation->effect);
+
+    dispatcher.execute ("set_automation", params);
+
+    // Shown straight away, rather than when the UI next refreshes.
+    refreshAutomation (lanes[lane], *automation);
+    repaint();
+}
+
+void TimelineView::showAutomationMenu (int lane)
+{
+    auto automation = getAutomation (lane);
+
+    if (automation == nullptr)
+        return;
+
+    auto channelId = lanes[lane].channelId;
+    auto choose = [this, channelId] (juce::String effect, juce::String parameter)
+    {
+        auto it = automationLanes.find (channelId);
+
+        if (it == automationLanes.end())
+            return;
+
+        it->second.effect = effect;
+        it->second.parameter = parameter;
+
+        for (auto& l : lanes)
+            if (l.channelId == channelId)
+                refreshAutomation (l, it->second);
+
+        repaint();
+    };
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader (automation->strip == "master" ? "Master" : "Its mixer strip");
+    menu.addItem ("Volume", true, automation->effect.isEmpty() && automation->parameter == "volume", [choose] { choose ({}, "volume"); });
+    menu.addItem ("Pan", true, automation->effect.isEmpty() && automation->parameter == "pan", [choose] { choose ({}, "pan"); });
+
+    if (auto list = session.findEffectList (automation->strip))
+    {
+        for (auto effect : Session::getEffects (*list))
+        {
+            juce::PopupMenu sub;
+            auto effectId = effect->itemID.toString();
+
+            for (auto param : effect->getAutomatableParameters())
+            {
+                auto paramId = param->paramID;
+                auto ticked = automation->effect == effectId && automation->parameter == paramId;
+                sub.addItem (param->getParameterName() + (param->hasAutomationPoints() ? " *" : ""), true, ticked,
+                             [choose, effectId, paramId] { choose (effectId, paramId); });
+            }
+
+            if (sub.getNumItems() > 0)
+                menu.addSubMenu (effect->getName(), sub);
+        }
+    }
+
+    menu.addSeparator();
+    menu.addItem ("Remove these points", automation->valid && ! automation->points.isEmpty(),
+                  false, [this, lane] { setAutomationPoints (lane, {}); });
+    menu.addItem ("Hide automation", [this, channelId] { showAutomation (channelId, false); });
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition());
+}
+
+bool TimelineView::automationMouseDown (const juce::MouseEvent& e)
+{
+    // In the lane names: the A buttons, and the automation lanes' parameter names.
+    if (e.position.x < (float) headerWidth && e.position.y >= (float) getLanesArea().getY())
+    {
+        auto lane = laneAt (e.position.y);
+
+        if (! juce::isPositiveAndBelow (lane, lanes.size()))
+            return false;
+
+        if (getAutomationButton (lane).expanded (2).contains (e.getPosition()))
+        {
+            showAutomation (lanes[lane].channelId, ! isShowingAutomation (lanes[lane].channelId));
+            return true;
+        }
+
+        if (isShowingAutomation (lanes[lane].channelId) && e.position.y >= (float) (getLaneTop (lane) + laneHeight))
+        {
+            showAutomationMenu (lane);
+            return true;
+        }
+
+        return false;
+    }
+
+    auto lane = automationLaneAt (e.position);
+
+    if (lane < 0)
+        return false;
+
+    selectedClip = {};
+    auto automation = getAutomation (lane);
+
+    if (automation == nullptr || ! automation->valid)
+        return true;
+
+    auto point = automationPointAt (lane, e.position);
+
+    if (e.mods.isPopupMenu())
+    {
+        if (point >= 0)
+        {
+            auto points = automation->points;
+            points.remove (point);
+            setAutomationPoints (lane, points);
+        }
+        else
+        {
+            showAutomationMenu (lane);
+        }
+
+        return true;
+    }
+
+    // A click adds a point there; dragging (one undo step) moves it, or one already there.
+    dispatcher.beginGesture ("Automation");
+
+    if (point < 0)
+    {
+        auto points = automation->points;
+        juce::Point<double> added { std::max (0.0, snap (xToBeat (e.position.x), e.mods)),
+                                    yToAutomationValue (*automation, e.position.y, getAutomationArea (lane)) };
+        point = 0;
+
+        while (point < points.size() && points[point].x <= added.x)
+            ++point;
+
+        points.insert (point, added);
+        setAutomationPoints (lane, points);
+    }
+
+    automationDragLane = lane;
+    automationDragPoint = point;
+    return true;
+}
+
+void TimelineView::paintAutomation (juce::Graphics& g, int lane)
+{
+    auto it = automationLanes.find (lanes[lane].channelId);
+
+    if (it == automationLanes.end())
+        return;
+
+    auto& automation = it->second;
+    auto area = getAutomationArea (lane);
+    auto colour = lanes[lane].colour;
+
+    g.setColour (juce::Colours::black.withAlpha (0.25f));
+    g.fillRect (area);
+    g.setColour (juce::Colours::black.withAlpha (0.4f));
+    g.drawHorizontalLine ((int) area.getY(), area.getX(), area.getRight());
+
+    if (! automation.valid)
+        return;
+
+    if (automation.points.isEmpty())
+    {
+        // Without points, the parameter stays where its control is.
+        auto y = automationValueToY (automation, automation.value, area);
+        g.setColour (colour.withAlpha (0.5f));
+        const float dashes[] = { 4.0f, 4.0f };
+        g.drawDashedLine ({ area.getX(), y, area.getRight(), y }, dashes, 2, 1.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.45f));
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText ("Click to add automation points", area.reduced (8.0f, 4.0f), juce::Justification::topLeft);
+        return;
+    }
+
+    juce::Path line;
+    auto first = automation.points.getFirst();
+    line.startNewSubPath (area.getX(), automationValueToY (automation, first.y, area));
+
+    for (auto& point : automation.points)
+        line.lineTo ((float) beatToX (point.x), automationValueToY (automation, point.y, area));
+
+    line.lineTo (area.getRight(), automationValueToY (automation, automation.points.getLast().y, area));
+
+    juce::Path fill (line);
+    fill.lineTo (area.getRight(), area.getBottom());
+    fill.lineTo (area.getX(), area.getBottom());
+    fill.closeSubPath();
+    g.setColour (colour.withAlpha (0.15f));
+    g.fillPath (fill);
+    g.setColour (colour);
+    g.strokePath (line, juce::PathStrokeType (1.5f));
+
+    for (int i = 0; i < automation.points.size(); ++i)
+    {
+        auto& point = automation.points.getReference (i);
+        auto centre = juce::Point<float> ((float) beatToX (point.x), automationValueToY (automation, point.y, area));
+        auto dragged = automationDragLane == lane && automationDragPoint == i;
+        g.setColour (dragged ? juce::Colours::white : colour.brighter (0.4f));
+        g.fillEllipse (juce::Rectangle<float> (dragged ? 9.0f : 7.0f, dragged ? 9.0f : 7.0f).withCentre (centre));
+
+        if (dragged)
+        {
+            auto text = automation.isVolume ? juce::String (point.y, 1) + " dB" : juce::String (point.y, 2);
+            g.setFont (juce::FontOptions (11.0f));
+            g.drawText (text, juce::Rectangle<float> (60.0f, 14.0f).withPosition (centre.x + 6.0f, centre.y - 16.0f),
+                        juce::Justification::centredLeft);
+        }
+    }
 }
 
 //==============================================================================
@@ -680,8 +1102,13 @@ void TimelineView::showRulerMenu (double beat)
 
 int TimelineView::laneAt (float y) const
 {
-    auto lanesArea = getLanesArea();
-    return (int) std::floor ((y - (float) lanesArea.getY() + (float) scrollY) / (float) laneHeight);
+    // A lane's automation counts as part of it; past the last lane, lanes are laneHeight tall.
+    for (int i = 0; i < lanes.size(); ++i)
+        if (y < (float) (getLaneTop (i) + getLaneSpan (i)))
+            return y < (float) getLaneTop (0) ? -1 : i;
+
+    auto end = (float) (getLanesArea().getY() + getContentHeight() - scrollY);
+    return lanes.size() + (int) std::floor ((y - end) / (float) laneHeight);
 }
 
 TimelineView::Hit TimelineView::hitTestLanes (juce::Point<float> pos) const
@@ -698,6 +1125,10 @@ TimelineView::Hit TimelineView::hitTestLanes (juce::Point<float> pos) const
         hit.lane = -1;
         return hit;
     }
+
+    // Clips are only in the top part of a lane, above its automation.
+    if (pos.y >= (float) (getLaneTop (hit.lane) + laneHeight))
+        return hit;
 
     auto& clips = lanes.getReference (hit.lane).clips;
 
@@ -792,6 +1223,9 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
+    if (automationMouseDown (e))
+        return;
+
     auto hit = hitTestLanes (e.position);
     drag = {};
 
@@ -838,6 +1272,24 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
         }
 
         repaint();
+        return;
+    }
+
+    if (automationDragPoint >= 0)
+    {
+        if (auto automation = getAutomation (automationDragLane); automation != nullptr && automation->valid
+             && juce::isPositiveAndBelow (automationDragPoint, automation->points.size()))
+        {
+            // A point moves between its neighbours, so the points keep their order.
+            auto points = automation->points;
+            auto lower = automationDragPoint > 0 ? points[automationDragPoint - 1].x : 0.0;
+            auto upper = automationDragPoint < points.size() - 1 ? points[automationDragPoint + 1].x : 1.0e9;
+            auto beat = juce::jlimit (lower, upper, snap (xToBeat (e.position.x), e.mods));
+            auto value = yToAutomationValue (*automation, e.position.y, getAutomationArea (automationDragLane));
+            points.set (automationDragPoint, { beat, value });
+            setAutomationPoints (automationDragLane, points);
+        }
+
         return;
     }
 
@@ -899,6 +1351,13 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
 
 void TimelineView::mouseUp (const juce::MouseEvent&)
 {
+    if (automationDragPoint >= 0)
+    {
+        automationDragLane = automationDragPoint = -1;
+        dispatcher.endGesture();
+        return;
+    }
+
     auto finishedRulerDrag = std::exchange (rulerDrag, RulerDrag::none);
 
     if (finishedRulerDrag == RulerDrag::loopStart || finishedRulerDrag == RulerDrag::loopEnd
@@ -981,6 +1440,19 @@ void TimelineView::mouseMove (const juce::MouseEvent& e)
 
 void TimelineView::mouseDoubleClick (const juce::MouseEvent& e)
 {
+    // In an automation lane, a double-click removes a point (the first click added or grabbed it).
+    if (auto lane = automationLaneAt (e.position); lane >= 0)
+    {
+        if (auto point = automationPointAt (lane, e.position); point >= 0)
+        {
+            auto points = getAutomation (lane)->points;
+            points.remove (point);
+            setAutomationPoints (lane, points);
+        }
+
+        return;
+    }
+
     auto hit = hitTestLanes (e.position);
 
     if (hit.clip >= 0)
