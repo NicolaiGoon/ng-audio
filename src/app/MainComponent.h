@@ -1,6 +1,8 @@
 #pragma once
 
 #include "BrowserPanel.h"
+#include "CommandLogPanel.h"
+#include "core/Bridge.h"
 #include "MixerView.h"
 #include "PianoRoll.h"
 #include "TimelineView.h"
@@ -10,7 +12,8 @@ namespace ng
 
 /**
     The main window: a transport, a browser down the left, the arrangement timeline, a
-    channel rack, a mixer and a command console (hidden until you tick Console). Opening a clip swaps the rack and
+    channel rack, a mixer and a command console with the AI command log (hidden until you tick
+    Console, or until an AI client first changes something). Opening a clip swaps the rack and
     mixer for the piano roll until it is closed.
     Every button here calls the command layer rather than touching the Edit directly,
     so the UI does exactly what an AI client or macro could do.
@@ -126,6 +129,11 @@ private:
     MixerView mixer { session, dispatcher };
     PianoRoll pianoRoll { session, dispatcher };
     BrowserPanel browserPanel { session, dispatcher };
+    CommandLogPanel commandLog { dispatcher };
+
+    /** Lets the MCP server (and so Claude) run commands here. */
+    BridgeServer bridge { dispatcher };
+    bool commandLogShown = false;
 
     /** Where the channel rack is (for drops), and whether something is being dragged over it. */
     juce::Rectangle<int> rackArea;

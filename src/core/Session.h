@@ -242,6 +242,22 @@ public:
         e.g. to refuse a send that would feed a bus back into itself. */
     bool feeds (const te::AudioTrack& from, const te::AudioTrack& to) const;
 
+    //==============================================================================
+    // Tags group channels by what they are ("drums", "bass", "vox"). Each tag has a bus of its
+    // own (a strip named like "Drums Bus") that its channels' strips play into; tag_channel
+    // creates and routes it.
+
+    /** A channel's tag, lower case, or "" if it has none. */
+    static juce::String getTag (const te::AudioTrack& channel);
+    void setTag (te::AudioTrack& channel, const juce::String& tag);
+
+    /** For a tag's bus, its tag; "" for other strips. */
+    static juce::String getTagOfBus (const te::AudioTrack& strip);
+    void setTagOfBus (te::AudioTrack& strip, const juce::String& tag);
+
+    /** The bus a tag's channels go to, or nullptr if there isn't one yet. */
+    te::AudioTrack* findTagBus (const juce::String& tag) const;
+
     /** True for the clip set_steps keeps in sync with a channel's step pattern. */
     static bool isPatternClip (const te::Clip&);
 
