@@ -79,7 +79,7 @@ void registerSamplerCommands (CommandRegistry&);
     load_preset (LibraryCommands.cpp). */
 void registerLibraryCommands (CommandRegistry&);
 
-/** Registers import_audio and set_audio_input (AudioCommands.cpp). */
+/** Registers import_audio, set_audio_clip and set_audio_input (AudioCommands.cpp). */
 void registerAudioCommands (CommandRegistry&);
 
 //==============================================================================

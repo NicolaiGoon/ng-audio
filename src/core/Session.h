@@ -128,8 +128,15 @@ public:
     void setAudioChannel (te::AudioTrack& channel);
 
     /** An audio clip as get_state lists it, added to the clip's object: its file, missing: true
-        if the file isn't there, and max_end_beat, the furthest its end can go before the file runs out. */
+        if the file isn't there, max_end_beat (the furthest its end can go before the file runs
+        out), gain_db, fade_in_beats, fade_out_beats, and follow_tempo with the file's source_bpm. */
     void describeAudioClip (te::WaveAudioClip&, juce::DynamicObject&) const;
+
+    /** Where an audio clip's file starts and ends in the song, in beats, wherever the clip has
+        been trimmed to. A clip that follows the tempo stretches its file over a fixed number of
+        beats; otherwise the file lasts as long as it does at the project tempo. */
+    double getSourceStartBeat (te::WaveAudioClip&) const;
+    double getSourceEndBeat (te::WaveAudioClip&) const;
 
     /** A channel's instrument (the built-in 4OSC synth or a plugin), or nullptr. With multiple
         outputs on, the plugin lives in a rack (see getMultiOutputRack), and this finds it there. */

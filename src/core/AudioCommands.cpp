@@ -90,6 +90,112 @@ namespace
         return CommandResult::success (value);
     }
 
+    bool isNumber (const juce::var& v)
+    {
+        return v.isDouble() || v.isInt() || v.isInt64();
+    }
+
+    /** Changes how an audio clip plays: its gain, fades, and whether it follows the tempo. */
+    CommandResult setAudioClip (Session& session, const juce::var& p)
+    {
+        auto id = params::getString (p, "clip");
+        auto wave = dynamic_cast<te::WaveAudioClip*> (session.findClip (id));
+
+        if (wave == nullptr)
+            return CommandResult::failure (session.findClip (id) != nullptr ? "set_audio_clip: that's a MIDI clip, not an audio clip"
+                                                                            : "set_audio_clip: no clip with id '" + id + "'");
+
+        for (auto key : { "gain_db", "fade_in_beats", "fade_out_beats", "source_bpm" })
+            if (p.hasProperty (key) && ! isNumber (p[key]))
+                return CommandResult::failure (juce::String ("set_audio_clip: ") + key + " must be a number");
+
+        // Values checked up front, so a bad one changes nothing.
+        if (p.hasProperty ("gain_db") && (static_cast<double> (p["gain_db"]) < -60.0 || static_cast<double> (p["gain_db"]) > 24.0))
+            return CommandResult::failure ("set_audio_clip: gain_db must be from -60 to 24");
+
+        if (static_cast<double> (p.getProperty ("fade_in_beats", 0.0)) < 0.0 || static_cast<double> (p.getProperty ("fade_out_beats", 0.0)) < 0.0)
+            return CommandResult::failure ("set_audio_clip: fades can't be negative");
+
+        auto& clip = *wave;
+        auto& tempo = session.getEdit().tempoSequence;
+
+        if (p.hasProperty ("follow_tempo"))
+        {
+            auto follow = static_cast<bool> (p["follow_tempo"]);
+
+            if (follow)
+            {
+                // The file's own tempo: given, or what it plays at now, so turning this on
+                // changes nothing until the project tempo does.
+                auto pos = clip.getPosition();
+                auto bpm = params::getDouble (p, "source_bpm", tempo.getBpmAt (pos.getStart()));
+
+                if (bpm < 20.0 || bpm > 400.0)
+                    return CommandResult::failure ("set_audio_clip: source_bpm must be from 20 to 400");
+
+                auto startBeat = tempo.toBeats (pos.getStart());
+                auto endBeat = tempo.toBeats (pos.getEnd());
+                auto offsetBeats = pos.getOffset().inSeconds() * bpm / 60.0;
+
+                clip.getLoopInfo().setBpm (bpm, clip.getAudioFile().getInfo());
+                clip.setTimeStretchMode (te::TimeStretcher::soundtouchBetter);
+                clip.setAutoTempo (true);
+
+                // The clip keeps its place and length in beats, playing the same part of the file.
+                clip.setPosition ({ { tempo.toTime (startBeat), tempo.toTime (endBeat) },
+                                    te::TimeDuration::fromSeconds (offsetBeats / tempo.getBeatsPerSecondAt (pos.getStart())) });
+            }
+            else if (clip.getAutoTempo())
+            {
+                // Back to the file's own speed: the same part of the file, so the length in time changes.
+                auto bpm = clip.getLoopInfo().getBpm (clip.getAudioFile().getInfo());
+                auto pos = clip.getPosition();
+                auto ratio = tempo.getBpmAt (pos.getStart()) / bpm;
+                clip.setAutoTempo (false);
+                clip.setPosition ({ { pos.getStart(), pos.getStart() + pos.getLength() * ratio }, pos.getOffset() * ratio });
+
+                if (clip.getPosition().getLength() > clip.getMaximumLength())
+                    clip.setLength (clip.getMaximumLength(), true);
+            }
+        }
+        else if (p.hasProperty ("source_bpm"))
+        {
+            return CommandResult::failure ("set_audio_clip: source_bpm goes with follow_tempo: true");
+        }
+
+        if (p.hasProperty ("gain_db"))
+            clip.setGainDB ((float) static_cast<double> (p["gain_db"]));
+
+        // Fades in beats from each end; together they can't be longer than the clip.
+        auto pos = clip.getPosition();
+        auto startBeat = tempo.toBeats (pos.getStart()).inBeats();
+        auto endBeat = tempo.toBeats (pos.getEnd()).inBeats();
+        auto fadeIn = p.hasProperty ("fade_in_beats") ? static_cast<double> (p["fade_in_beats"])
+                                                      : tempo.toBeats (pos.getStart() + clip.getFadeIn()).inBeats() - startBeat;
+        auto fadeOut = p.hasProperty ("fade_out_beats") ? static_cast<double> (p["fade_out_beats"])
+                                                        : endBeat - tempo.toBeats (pos.getEnd() - clip.getFadeOut()).inBeats();
+
+        if (fadeIn < 0.0 || fadeOut < 0.0)
+            return CommandResult::failure ("set_audio_clip: fades can't be negative");
+
+        if (fadeIn + fadeOut > endBeat - startBeat + 1.0e-6)
+            return CommandResult::failure ("set_audio_clip: the fades add up to more than the clip's "
+                                           + juce::String (endBeat - startBeat, 3) + " beats");
+
+        if (p.hasProperty ("fade_in_beats"))
+            clip.setFadeIn (tempo.toTime (te::BeatPosition::fromBeats (startBeat + fadeIn)) - pos.getStart());
+
+        if (p.hasProperty ("fade_out_beats"))
+            clip.setFadeOut (pos.getEnd() - tempo.toTime (te::BeatPosition::fromBeats (endBeat - fadeOut)));
+
+        auto result = new juce::DynamicObject();
+        result->setProperty ("clip", id);
+        result->setProperty ("start_beat", std::round (startBeat * 1.0e6) / 1.0e6);
+        result->setProperty ("length_beats", std::round ((endBeat - startBeat) * 1.0e6) / 1.0e6);
+        session.describeAudioClip (clip, *result);
+        return CommandResult::success (juce::var (result));
+    }
+
     CommandResult setAudioInput (Session& session, const juce::var& p)
     {
         auto ref = params::getString (p, "channel");
@@ -158,6 +264,20 @@ void registerAudioCommands (CommandRegistry& registry)
                               { "name", prop ("string", "Name for the new channel (default: the file's name)") } },
                             { "file" }),
                     true, [&registry] (Session& session, const juce::var& p) { return importAudio (registry, session, p); } });
+
+    registry.add ({ "set_audio_clip",
+                    "Changes how an audio clip plays: its gain, its fade in and fade out (in beats from each end), and "
+                    "whether it follows the tempo. A clip that follows the tempo is time-stretched to keep its length in "
+                    "beats when the tempo changes; source_bpm is the file's own tempo (default: the project tempo now, so "
+                    "nothing changes until the tempo does). Only the values given change.",
+                    schema ({ { "clip", prop ("string", "The audio clip's id (from get_state)") },
+                              { "gain_db", prop ("number", "Clip gain in dB, -60 to 24 (0 is as recorded)") },
+                              { "fade_in_beats", prop ("number", "Fade-in length in beats (0 for none)") },
+                              { "fade_out_beats", prop ("number", "Fade-out length in beats (0 for none)") },
+                              { "follow_tempo", prop ("boolean", "Time-stretch the clip to follow the project tempo") },
+                              { "source_bpm", prop ("number", "With follow_tempo: the file's own tempo") } },
+                            { "clip" }),
+                    true, setAudioClip });
 
     registry.add ({ "set_audio_input",
                     "Sets the audio input an audio channel records from, and how it's monitored: \"auto\" (default) "
