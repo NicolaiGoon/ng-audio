@@ -98,6 +98,12 @@ and every action available to AI tools through one command layer.
   Audio clips show their waveform and move, trim, split and copy like MIDI clips, but can't be
   trimmed past the end of their file. Audio and MIDI clips each stay on their own kind of channel.
   The project saves where each file is, and marks one that has gone missing.
+- **Recording audio.** Pick an audio channel's input in the channel rack (the inputs are the
+  ones the device in *Audio* settings has), arm it with its ● button (several audio channels can
+  be armed at once, alongside one instrument channel for MIDI) and press *Rec* (or R). *Stop* turns
+  each take into a clip on its channel, as one undo step. *Mon auto* plays the input through the
+  channel while it's armed; *Mon on* always and *Mon off* never. Takes are saved as WAV files in a
+  *Recordings* folder beside the project (or in Music/Ng DAW/Recordings before it's saved).
 - **Linked-by-default mixer strips.** Adding an instrument creates a channel *and* a mixer strip
   with the same name and colour, already routed. Pick a different strip in the channel rack to
   detach it; several channels can share one strip; pick its own strip again to re-link it.
@@ -122,7 +128,8 @@ and every action available to AI tools through one command layer.
   | `quantize_notes` | Moves a clip's notes (or some of them) onto a grid, optionally with their ends |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
   | `set_metronome` | Turns the metronome on or off |
-  | `arm_channel` / `record` | Arms a channel for MIDI input, and records into it until `stop` |
+  | `set_audio_input` | Sets the audio input an audio channel records from, and how it's monitored |
+  | `arm_channel` / `record` | Arms a channel for MIDI input (one at a time) or audio input (any number), and records into them until `stop` |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
   | `scan_plugins` / `list_plugins` | Scans folders for VST3 plugins, and lists the ones found with the ids used to load them |
   | `show_plugin_window` | Opens the editor window of a channel's plugin instrument or sampler |
@@ -162,7 +169,7 @@ src/core/BusCommands.cpp      buses and sends
 src/core/OutputCommands.cpp   multi-output instruments
 src/core/SamplerCommands.cpp  the sampler's samples and drum kits
 src/core/LibraryCommands.cpp  sample folders, finding samples, and presets
-src/core/AudioCommands.cpp    importing audio files onto audio channels
+src/core/AudioCommands.cpp    importing audio files onto audio channels, and their audio inputs
 src/app/                      the JUCE window (timeline, channel rack, mixer, transport, console)
 src/app/MixerView.*           mixer strips: fader, pan, effects, sends, mute/solo, meters, master
 src/app/PluginWindow.*        plugin editor windows, and sliders for built-in effects

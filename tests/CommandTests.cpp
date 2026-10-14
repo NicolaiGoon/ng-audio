@@ -4,6 +4,8 @@
 #include "core/CommandDispatcher.h"
 
 #include <iostream>
+#include <chrono>
+#include <thread>
 
 namespace
 {
@@ -2076,6 +2078,172 @@ namespace
         folder.deleteRecursively();
     }
 
+    /** Feeds a sine wave into a hosted audio device's inputs, a block at a time, as a sound card would. */
+    struct InputFeeder
+    {
+        InputFeeder (tracktion::HostedAudioDeviceInterface& io, int channels, int blockSize, double sampleRate)
+        {
+            thread = std::thread ([&io, channels, blockSize, sampleRate, this]
+            {
+                juce::AudioBuffer<float> buffer (channels, blockSize);
+                juce::MidiBuffer midi;
+                double phase = 0.0;
+                auto blockTime = std::chrono::microseconds ((int64_t) (blockSize / sampleRate * 1.0e6));
+
+                while (! shouldStop)
+                {
+                    auto next = std::chrono::steady_clock::now() + blockTime;
+
+                    for (int i = 0; i < blockSize; ++i)
+                    {
+                        auto v = 0.5f * (float) std::sin (phase);
+                        phase += juce::MathConstants<double>::twoPi * 440.0 / sampleRate;
+
+                        for (int c = 0; c < channels; ++c)
+                            buffer.setSample (c, i, v);
+                    }
+
+                    io.processBlock (buffer, midi);
+                    midi.clear();
+                    std::this_thread::sleep_until (next);
+                }
+            });
+        }
+
+        ~InputFeeder()
+        {
+            shouldStop = true;
+            thread.join();
+        }
+
+        std::thread thread;
+        std::atomic<bool> shouldStop { false };
+    };
+
+    void testRecordingAudio (tracktion::Engine& engine)
+    {
+        std::cout << "audio channels record from an audio input\n";
+        auto& deviceManager = engine.getDeviceManager();
+        auto& io = deviceManager.getHostedAudioDeviceInterface();
+
+        tracktion::HostedAudioDeviceInterface::Parameters hosted;
+        hosted.sampleRate = 44100.0;
+        hosted.blockSize = 512;
+        hosted.inputChannels = 2;
+        hosted.outputChannels = 2;
+        io.initialise (hosted);
+        io.prepareToPlay (hosted.sampleRate, hosted.blockSize);
+        deviceManager.dispatchPendingUpdates();
+
+        {
+            Fixture f (engine);
+            auto inputs = f.state()["audio_inputs"];
+            std::cout << "       audio inputs: " << juce::JSON::toString (inputs, true) << "\n";
+            CHECK (inputs.size() > 0);
+            auto input = inputs[0].toString();
+
+            auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NgDawRecordTest");
+            folder.deleteRecursively();
+            CHECK (folder.createDirectory());
+            auto project = folder.getChildFile ("Take test.ngdaw");
+
+            CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } })).ok);
+            CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Vox" }, { "instrument", "audio" } })).ok);
+            auto vox = [&] { return f.state()["channels"][1]; };
+            CHECK (vox()["input"] == "" && vox()["monitor"] == "auto" && ! static_cast<bool> (vox()["armed"]));
+
+            // An input, then arming; the input and monitoring are undoable, the arming isn't.
+            CHECK (! f.dispatcher.execute ("arm_channel", obj ({ { "channel", "Vox" } })).ok);   // no input yet
+            CHECK (! f.dispatcher.execute ("set_audio_input", obj ({ { "channel", "Vox" }, { "input", "Nope" } })).ok);
+            CHECK (! f.dispatcher.execute ("set_audio_input", obj ({ { "channel", "Lead" }, { "input", input } })).ok);
+            CHECK (! f.dispatcher.execute ("set_audio_input", obj ({ { "channel", "Vox" }, { "monitor", "loud" } })).ok);
+            CHECK (f.dispatcher.execute ("set_audio_input", obj ({ { "channel", "Vox" }, { "input", input } })).ok);
+            CHECK (vox()["input"] == input);
+            CHECK (f.dispatcher.execute ("set_audio_input", obj ({ { "channel", "Vox" }, { "monitor", "off" } })).ok);
+            CHECK (vox()["monitor"] == "off");
+            f.dispatcher.undo();
+            CHECK (vox()["monitor"] == "auto" && vox()["input"] == input);
+
+            auto r = f.dispatcher.execute ("arm_channel", obj ({ { "channel", "Vox" } }));
+            CHECK (r.ok && r.value["armed_audio"].size() == 1 && static_cast<bool> (vox()["armed"]));
+            CHECK (f.dispatcher.execute ("arm_channel", obj ({ { "channel", "Lead" } })).ok);
+            CHECK (static_cast<bool> (vox()["armed"]) && static_cast<bool> (f.state()["channels"][0]["armed"]));
+
+            // Taking the input away disarms; giving it back and arming again.
+            CHECK (f.dispatcher.execute ("set_audio_input", obj ({ { "channel", "Vox" }, { "input", "none" } })).ok);
+            CHECK (! static_cast<bool> (vox()["armed"]) && vox()["input"] == "");
+            f.dispatcher.undo();
+            CHECK (vox()["input"] == input);
+            CHECK (f.dispatcher.execute ("arm_channel", obj ({ { "channel", "Vox" } })).ok);
+
+            // Recordings go beside the project.
+            CHECK (f.dispatcher.execute ("save_project", obj ({ { "path", project.getFullPathName() } })).ok);
+            CHECK (f.session.getRecordingFolder() == folder.getChildFile ("Recordings"));
+            CHECK (f.dispatcher.execute ("set_loop", obj ({ { "enabled", false } })).ok);
+
+            {
+                InputFeeder feeder (io, hosted.inputChannels, hosted.blockSize, hosted.sampleRate);
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+                CHECK (f.dispatcher.execute ("record").ok);
+                auto& transport = f.session.getEdit().getTransport();
+                auto started = juce::Time::getMillisecondCounter();
+
+                while (transport.getPosition().inSeconds() < 1.5 && juce::Time::getMillisecondCounter() - started < 10000)
+                    juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+                CHECK (transport.isRecording());
+                CHECK (f.dispatcher.execute ("stop").ok);
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+            }
+
+            auto clips = vox()["clips"];
+            CHECK (clips.size() == 1);
+
+            if (clips.size() == 1)
+            {
+                auto clip = clips[0];
+                std::cout << "       recorded " << clip["length_beats"].toString() << " beats into " << clip["file"].toString() << "\n";
+                juce::File recorded (clip["file"].toString());
+                CHECK (clip["type"] == "audio" && recorded.existsAsFile());
+                CHECK (recorded.getParentDirectory() == folder.getChildFile ("Recordings"));
+                CHECK (static_cast<double> (clip["length_beats"]) > 2.0);   // 1.5 s at 120 bpm is 3 beats
+
+                juce::AudioFormatManager formats;
+                formats.registerBasicFormats();
+
+                if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (recorded)); reader != nullptr)
+                {
+                    juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) reader->lengthInSamples);
+                    reader->read (&buffer, 0, buffer.getNumSamples(), 0, true, true);
+                    auto rms = buffer.getRMSLevel (0, 0, buffer.getNumSamples());
+                    std::cout << "       recording RMS " << rms << "\n";
+                    CHECK (rms > 0.2f);
+                }
+                else
+                {
+                    CHECK (false);
+                }
+            }
+
+            // The take is one undo step.
+            f.dispatcher.undo();
+            CHECK (vox()["clips"].size() == 0);
+            f.dispatcher.redo();
+            CHECK (vox()["clips"].size() == 1);
+
+            // Disarming everything.
+            CHECK (f.dispatcher.execute ("arm_channel", obj ({ { "armed", false } })).ok);
+            CHECK (! static_cast<bool> (vox()["armed"]) && ! static_cast<bool> (f.state()["channels"][0]["armed"]));
+            CHECK (! f.dispatcher.execute ("record").ok);
+
+            f.dispatcher.execute ("new_project", obj ({ { "discard_changes", true } }));
+            folder.deleteRecursively();
+        }
+
+        deviceManager.closeDevices();
+        deviceManager.removeHostedAudioDeviceInterface();
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -2165,6 +2333,7 @@ int main()
         testLibrary (engine);
         testAudioTracks (engine);
         testRendersAudio (engine);
+        testRecordingAudio (engine);
     }
 
     std::cout << (failures == 0 ? "\nAll checks passed\n" : "\nSome checks failed\n");
