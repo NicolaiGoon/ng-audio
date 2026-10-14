@@ -13,7 +13,8 @@ public:
 
     void initialise (const juce::String&) override
     {
-        engine = std::make_unique<te::Engine> (getApplicationName(), std::make_unique<PluginWindowBehaviour>(), nullptr);
+        engine = std::make_unique<te::Engine> (getApplicationName(), std::make_unique<PluginWindowBehaviour>(),
+                                               std::make_unique<EngineBehaviour>());
         mainWindow = std::make_unique<MainWindow> (getApplicationName(), *engine);
     }
 

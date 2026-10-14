@@ -80,6 +80,7 @@ private:
     void updatePositionDisplay();
     void showAudioSettings();
     void showPluginList();
+    void showExport();
     void showBrowser (bool);
     juce::Array<juce::var> itemsForFiles (const juce::StringArray&) const;
     void setRackHighlight (bool);
@@ -93,7 +94,7 @@ private:
     CommandRegistry registry;
     CommandDispatcher dispatcher { session, registry };
 
-    juce::TextButton addBusButton { "Add bus" }, audioButton { "+ Audio" };
+    juce::TextButton addBusButton { "Add bus" }, audioButton { "+ Audio" }, exportButton { "Export" };
     juce::TextButton newButton { "New" }, openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save as" },
                      addButton { "Add instrument" }, playButton { "Play" }, returnButton { "|<" }, recordButton { "Rec" },
                      undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio" }, pluginsButton { "Plugins" }, shortcutsButton { "?" },

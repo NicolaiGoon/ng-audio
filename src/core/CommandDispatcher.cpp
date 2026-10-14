@@ -18,6 +18,10 @@ CommandResult CommandDispatcher::run (const juce::String& name, const juce::var&
     if (! (params.isVoid() || params.isObject()))
         return CommandResult::failure (name + ": params must be an object");
 
+    // An export handles messages while it renders; nothing may change the project under it.
+    if (session.isExporting() && name != "get_state")
+        return CommandResult::failure (name + ": wait until the export is finished");
+
     auto result = spec->run (session, params);
 
     if (result.ok && spec->undoable)

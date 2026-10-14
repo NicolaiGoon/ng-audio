@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include "ExportPanel.h"
 #include "Widgets.h"
 #include "PluginWindow.h"
 
@@ -442,6 +443,7 @@ namespace
                 { "Ctrl+Shift+S", "Save as" },
                 { "Ctrl+T", "Add an instrument" },
                 { "Ctrl+I", "Import audio files" },
+                { "Ctrl+E", "Export the song, the loop or stems" },
                 { "Ctrl+K", "Show or hide the keyboard" },
                 { "Ctrl+B", "Show or hide the browser" },
                 { "F1", "This list" },
@@ -632,6 +634,8 @@ MainComponent::MainComponent (te::Engine& engine)
 
     addButton.onClick = [this] { addInstrument(); };
     audioButton.onClick = [this] { showAudioMenu(); };
+    exportButton.onClick = [this] { showExport(); };
+    exportButton.setTooltip ("Export the song or the loop region as a WAV or MP3 file, or as stems (Ctrl+E)");
     audioButton.setTooltip ("Import audio files onto new audio channels at the playhead (Ctrl+I), or add an empty audio channel");
     addButton.setTooltip ("Add an instrument channel (Ctrl+T)");
     playButton.setTooltip ("Play or stop (Space)");
@@ -717,7 +721,7 @@ MainComponent::MainComponent (te::Engine& engine)
                                                              &addButton, &playButton, &undoButton, &redoButton,
                                                              &returnButton, &recordButton, &keysButton, &tempo, &timeSignature, &positionDisplay,
                                                              &loopButton, &metronomeButton,
-                                                             &settingsButton, &pluginsButton, &shortcutsButton, &consoleButton, &browserButton, &audioButton, &timelineHeader, &timelineHint, &timeline,
+                                                             &settingsButton, &pluginsButton, &shortcutsButton, &consoleButton, &browserButton, &audioButton, &exportButton, &timelineHeader, &timelineHint, &timeline,
                                                              &channelsHeader, &mixerHeader, &addBusButton, &mixer })
         addAndMakeVisible (c);
 
@@ -926,6 +930,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
          || key == juce::KeyPress ('z', command | shift, 0))        { dispatcher.redo(); return true; }
     if (key == juce::KeyPress ('t', command, 0))                    { addInstrument(); return true; }
     if (key == juce::KeyPress ('i', command, 0))                    { timeline.chooseAudioFiles ({}, timeline.getPlayheadBeatForImport()); return true; }
+    if (key == juce::KeyPress ('e', command, 0))                    { showExport(); return true; }
 
     if (key == juce::KeyPress (juce::KeyPress::spaceKey))           { playButton.onClick(); return true; }
     if (key == juce::KeyPress (juce::KeyPress::homeKey))            { returnButton.onClick(); return true; }
@@ -1245,6 +1250,22 @@ void MainComponent::showAudioSettings()
     options.launchAsync();
 }
 
+void MainComponent::showExport()
+{
+    if (session.getEdit().getTransport().isRecording())
+        return showError ("Can't export yet", "Stop recording first.");
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned (new ExportPanel (session, dispatcher));
+    options.dialogTitle = "Export";
+    options.dialogBackgroundColour = getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId);
+    options.componentToCentreAround = this;
+    options.useNativeTitleBar = true;
+    options.resizable = false;
+    options.escapeKeyTriggersCloseButton = true;
+    options.launchAsync();
+}
+
 void MainComponent::showPluginList()
 {
     juce::DialogWindow::LaunchOptions options;
@@ -1461,6 +1482,8 @@ void MainComponent::resized()
     browserButton.setBounds (timelineTop.removeFromLeft (80));
     timelineTop.removeFromLeft (6);
     audioButton.setBounds (timelineTop.removeFromRight (70).reduced (0, 1));
+    timelineTop.removeFromRight (6);
+    exportButton.setBounds (timelineTop.removeFromRight (64).reduced (0, 1));
     timelineTop.removeFromRight (6);
     timelineHeader.setBounds (timelineTop.removeFromLeft (120));
     timelineHint.setBounds (timelineTop);

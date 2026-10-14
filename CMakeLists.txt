@@ -48,7 +48,8 @@ add_library(ng_core STATIC
     src/core/OutputCommands.cpp
     src/core/SamplerCommands.cpp
     src/core/LibraryCommands.cpp
-    src/core/AudioCommands.cpp)
+    src/core/AudioCommands.cpp
+    src/core/ExportCommands.cpp)
 
 target_include_directories(ng_core PUBLIC src)
 
@@ -114,7 +115,8 @@ target_sources(NgDaw PRIVATE
     src/app/PianoRoll.cpp
     src/app/PluginWindow.cpp
     src/app/SamplerEditor.cpp
-    src/app/BrowserPanel.cpp)
+    src/app/BrowserPanel.cpp
+    src/app/ExportPanel.cpp)
 
 target_link_libraries(NgDaw PRIVATE ng_core juce::juce_recommended_warning_flags)
 

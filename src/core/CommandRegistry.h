@@ -56,7 +56,7 @@ private:
 /** Registers create_track, route, rename_track, set_track_colour, delete_track, set_instrument, show_plugin_window,
     set_mixer_strip, set_steps, set_tempo, set_time_signature, set_loop, add_midi_clip, move_clip, resize_clip, split_clip,
     duplicate_clip, delete_clip, get_notes, set_notes, quantize_notes, play, stop, record, arm_channel, set_metronome, set_position, new_project,
-    open_project, save_project and get_state, plus the plugin, effect, bus, output, sampler, library and audio commands below. */
+    open_project, save_project and get_state, plus the plugin, effect, bus, output, sampler, library, audio and export commands below. */
 void registerProjectCommands (CommandRegistry&);
 
 /** Registers list_plugins and scan_plugins (PluginCommands.cpp). */
@@ -81,6 +81,13 @@ void registerLibraryCommands (CommandRegistry&);
 
 /** Registers import_audio, set_audio_clip and set_audio_input (AudioCommands.cpp). */
 void registerAudioCommands (CommandRegistry&);
+
+/** Registers export_audio (ExportCommands.cpp). */
+void registerExportCommands (CommandRegistry&);
+
+/** The LAME or FFmpeg program MP3 export uses, or a non-existent file if neither is installed
+    (ExportCommands.cpp). */
+juce::File findMp3Encoder();
 
 //==============================================================================
 /** The strip and effect a command names with "strip" and "effect": the effect by its id,
