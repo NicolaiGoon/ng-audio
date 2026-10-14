@@ -48,15 +48,15 @@ namespace
         juce::var state()    { return dispatcher.execute ("get_state").value; }
     };
 
-    /** Renders the whole edit offline, as it would play (mute and solo apply), and returns
-        the RMS of the left channel. Renderer::renderToFile (Edit&, ...) isn't used
+    /** Renders the whole edit offline, as it would play (mute and solo apply), at 44.1 kHz.
+        Renderer::renderToFile (Edit&, ...) isn't used
         here because it unmutes and solo-isolates every track it renders. */
-    float renderRms (Fixture& f)
+    juce::AudioBuffer<float> renderBuffer (Fixture& f)
     {
         auto& edit = f.session.getEdit();
 
         if (edit.getLength() <= tracktion::TimeDuration())
-            return 0.0f;   // nothing to render
+            return {};   // nothing to render
 
         juce::TemporaryFile out (".wav");
 
@@ -75,18 +75,37 @@ namespace
 
         if (auto task = tracktion::render_utils::createRenderTask (r, "test render", nullptr, nullptr))
             while (task->runJob() == juce::ThreadPoolJob::jobNeedsRunningAgain)
-            {}
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (1);   // lets stretched or proxied sources get ready
 
         juce::AudioFormatManager formats;
         formats.registerBasicFormats();
         std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (out.getFile()));
 
         if (reader == nullptr || reader->lengthInSamples == 0)
-            return -1.0f;
+            return {};
 
         juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) reader->lengthInSamples);
         reader->read (&buffer, 0, buffer.getNumSamples(), 0, true, true);
-        return buffer.getRMSLevel (0, 0, buffer.getNumSamples());
+        return buffer;
+    }
+
+    /** Renders as renderBuffer does and returns the RMS of the left channel: 0 for an empty
+        project, -1 if the render failed. */
+    float renderRms (Fixture& f)
+    {
+        if (f.session.getEdit().getLength() <= tracktion::TimeDuration())
+            return 0.0f;
+
+        auto buffer = renderBuffer (f);
+        return buffer.getNumSamples() == 0 ? -1.0f : buffer.getRMSLevel (0, 0, buffer.getNumSamples());
+    }
+
+    /** The RMS of the left channel between two times, in seconds. */
+    float rmsBetween (const juce::AudioBuffer<float>& buffer, double from, double to)
+    {
+        auto start = juce::jlimit (0, buffer.getNumSamples(), (int) (from * 44100.0));
+        auto end = juce::jlimit (start, buffer.getNumSamples(), (int) (to * 44100.0));
+        return end > start ? buffer.getRMSLevel (0, start, end - start) : 0.0f;
     }
 
     juce::var note (int pitch, double start, double length)
@@ -2244,6 +2263,104 @@ namespace
         deviceManager.removeHostedAudioDeviceInterface();
     }
 
+    void testAudioClipEditing (tracktion::Engine& engine)
+    {
+        std::cout << "audio clips have gain and fades, and can follow the tempo\n";
+        Fixture f (engine);
+        auto settle = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil (300); };
+
+        auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NgDawClipTest");
+        folder.deleteRecursively();
+        CHECK (folder.createDirectory());
+
+        // A steady tone, so levels are easy to compare: 2 s, 4 beats at 120 bpm.
+        auto tone = folder.getChildFile ("Tone.wav");
+        {
+            std::unique_ptr<juce::FileOutputStream> stream (tone.createOutputStream());
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), 44100.0, 1, 16, {}, 0));
+            CHECK (writer != nullptr);
+            stream.release();
+            juce::AudioBuffer<float> buffer (1, 88200);
+
+            for (int i = 0; i < buffer.getNumSamples(); ++i)
+                buffer.setSample (0, i, 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * 440.0 * i / 44100.0));
+
+            writer->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples());
+        }
+
+        auto r = f.dispatcher.execute ("import_audio", obj ({ { "file", tone.getFullPathName() } }));
+        CHECK (r.ok);
+        auto clip = r.value["clip"].toString();
+        auto state = [&] { return f.state()["channels"][0]["clips"][0]; };
+        CHECK (near (state()["gain_db"], 0.0) && near (state()["fade_in_beats"], 0.0) && near (state()["fade_out_beats"], 0.0));
+        CHECK (! static_cast<bool> (state()["follow_tempo"]));
+
+        settle();
+        auto full = renderBuffer (f);
+        auto level = rmsBetween (full, 0.5, 1.5);
+        std::cout << "       level " << level << "\n";
+        CHECK (level > 0.2f);   // a 0.5 sine is 0.35 RMS, less the centre pan law
+
+        // Gain: -6 dB is half the level.
+        CHECK (f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "gain_db", -6.0 } })).ok);
+        CHECK (near (state()["gain_db"], -6.0));
+        auto quieter = rmsBetween (renderBuffer (f), 0.5, 1.5);
+        std::cout << "       at -6 dB " << quieter << "\n";
+        CHECK (std::abs (quieter / level - 0.501f) < 0.03f);
+        f.dispatcher.undo();
+        CHECK (near (state()["gain_db"], 0.0));
+
+        // Fades: silent at the very start and end, full level in the middle.
+        r = f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "fade_in_beats", 1.0 }, { "fade_out_beats", 1.0 } }));
+        CHECK (r.ok && near (r.value["fade_in_beats"], 1.0) && near (r.value["fade_out_beats"], 1.0));
+        auto faded = renderBuffer (f);
+        auto edges = rmsBetween (faded, 0.0, 0.05), middle = rmsBetween (faded, 0.8, 1.2), tail = rmsBetween (faded, 1.95, 2.0);
+        std::cout << "       faded: start " << edges << ", middle " << middle << ", end " << tail << "\n";
+        CHECK (edges < level * 0.2f && tail < level * 0.2f && std::abs (middle - level) < level * 0.05f);
+        CHECK (! f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "fade_in_beats", 3.5 } })).ok);   // 3.5 + 1 > 4
+        CHECK (! f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "fade_out_beats", -1 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "gain_db", 40 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "source_bpm", 90 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", "nope" } })).ok);
+        CHECK (f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "fade_in_beats", 0 }, { "fade_out_beats", 0 } })).ok);
+
+        // Following the tempo: at half the tempo the clip stays 4 beats, now 4 seconds, and plays throughout.
+        r = f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "follow_tempo", true } }));
+        CHECK (r.ok && static_cast<bool> (r.value["follow_tempo"]) && near (r.value["source_bpm"], 120.0));
+        CHECK (near (state()["length_beats"], 4.0) && near (state()["max_end_beat"], 4.0));
+        CHECK (f.dispatcher.execute ("set_tempo", obj ({ { "bpm", 60 } })).ok);
+        CHECK (near (state()["length_beats"], 4.0) && near (state()["max_end_beat"], 4.0));
+        settle();
+        auto stretched = renderBuffer (f);
+        std::cout << "       stretched to " << stretched.getNumSamples() / 44100.0 << " s, level at 3 s "
+                  << rmsBetween (stretched, 2.5, 3.5) << "\n";
+        CHECK (stretched.getNumSamples() >= (int) (3.9 * 44100.0));
+        CHECK (rmsBetween (stretched, 2.5, 3.5) > level * 0.7f);
+
+        // A clip that doesn't follow the tempo keeps its speed: at 60 bpm, 2 s is 2 beats.
+        CHECK (f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "follow_tempo", false } })).ok);
+        CHECK (! static_cast<bool> (state()["follow_tempo"]) && near (state()["length_beats"], 2.0) && near (state()["max_end_beat"], 2.0));
+        f.dispatcher.undo();
+        CHECK (static_cast<bool> (state()["follow_tempo"]) && near (state()["length_beats"], 4.0));
+
+        // Trimming a clip that follows the tempo stops at the end of its file too.
+        r = f.dispatcher.execute ("resize_clip", obj ({ { "clip", clip }, { "end_beat", 9 } }));
+        CHECK (r.ok && near (r.value["length_beats"], 4.0));
+
+        // All of it is saved.
+        CHECK (f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "gain_db", 3.0 }, { "fade_out_beats", 0.5 } })).ok);
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (f.dispatcher.execute ("save_project", obj ({ { "path", path } })).ok);
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (near (state()["gain_db"], 3.0) && near (state()["fade_out_beats"], 0.5));
+        CHECK (static_cast<bool> (state()["follow_tempo"]) && near (state()["source_bpm"], 120.0) && near (state()["length_beats"], 4.0));
+
+        f.dispatcher.execute ("new_project", obj ({ { "discard_changes", true } }));
+        folder.deleteRecursively();
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -2332,6 +2449,7 @@ int main()
         testSampler (engine);
         testLibrary (engine);
         testAudioTracks (engine);
+        testAudioClipEditing (engine);
         testRendersAudio (engine);
         testRecordingAudio (engine);
     }
