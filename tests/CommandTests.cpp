@@ -1,7 +1,11 @@
 // Headless checks for the command layer and audio rendering. Runs with no audio
 // device and no window, so it works in CI: `ctest` or `./NgDawTests`.
 
-#include "core/CommandDispatcher.h"
+#include "core/McpServer.h"
+
+#if ! JUCE_WINDOWS
+ #include <sys/stat.h>
+#endif
 
 #include <iostream>
 #include <chrono>
@@ -2516,6 +2520,325 @@ namespace
         folder.deleteRecursively();
     }
 
+    //==============================================================================
+    void testBatchReferences (tracktion::Engine& engine)
+    {
+        std::cout << "a batch can use earlier results\n";
+        Fixture f (engine);
+
+        auto commands = juce::Array<juce::var> {
+            obj ({ { "command", "create_track" }, { "params", obj ({ { "name", "Bass" } }) } }),
+            obj ({ { "command", "add_midi_clip" }, { "params", obj ({ { "channel", "$0.channel" }, { "length_beats", 4 },
+                                                                     { "notes", juce::Array<juce::var> { note (36, 0, 1), note (43, 2, 1) } } }) } }),
+            obj ({ { "command", "add_effect" }, { "params", obj ({ { "strip", "$0.strip" }, { "effect", "compressor" } }) } }),
+            obj ({ { "command", "rename_track" }, { "params", obj ({ { "track", "$0.channel" }, { "name", "$$5 bass" } }) } }),
+            obj ({ { "command", "get_notes" }, { "params", obj ({ { "clip", "$1.clip" } }) } }) };
+
+        auto result = f.dispatcher.executeBatch ("Add a bass line", commands);
+        CHECK (result.ok && result.value.size() == 5);
+        CHECK (result.value[4]["notes"].size() == 2);
+
+        auto state = f.state();
+        CHECK (state["channels"].size() == 1 && state["channels"][0]["name"] == "$5 bass");
+        CHECK (state["channels"][0]["clips"].size() == 1 && state["strips"][0]["effects"].size() == 1);
+
+        // It's all one undo step.
+        CHECK (f.session.getUndoManager().getUndoDescription() == "Add a bass line");
+        f.dispatcher.undo();
+        CHECK (f.state()["channels"].size() == 0 && f.state()["strips"].size() == 0);
+
+        // References that don't resolve fail the batch, which rolls back.
+        auto failing = [&] (const juce::String& reference)
+        {
+            auto bad = juce::Array<juce::var> {
+                obj ({ { "command", "create_track" }, { "params", obj ({ { "name", "Keys" } }) } }),
+                obj ({ { "command", "add_midi_clip" }, { "params", obj ({ { "channel", reference } }) } }) };
+            auto r = f.dispatcher.executeBatch ("Keys", bad);
+            std::cout << "       " << reference << ": " << r.error << "\n";
+            return ! r.ok && f.state()["channels"].size() == 0;
+        };
+
+        CHECK (failing ("$1.channel"));     // not run yet
+        CHECK (failing ("$0.nothing"));
+        CHECK (failing ("$x"));
+        CHECK (failing ("$0"));             // the whole result: an object, not a channel
+    }
+
+    void testStateViews (tracktion::Engine& engine)
+    {
+        std::cout << "get_state can return less\n";
+        Fixture f (engine);
+
+        auto created = f.dispatcher.execute ("create_track", obj ({ { "name", "Keys" } }));
+        auto clip = f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Keys" }, { "length_beats", 4 },
+                                                                  { "notes", juce::Array<juce::var> { note (60, 0, 1), note (64, 1, 1), note (67, 2, 1) } } }));
+        f.dispatcher.execute ("add_effect", obj ({ { "strip", "Keys" }, { "effect", "reverb" } }));
+        auto get = [&] (std::initializer_list<std::pair<const char*, juce::var>> p) { return f.dispatcher.execute ("get_state", obj (p)); };
+
+        auto channel = get ({ { "channel", "Keys" } });
+        CHECK (channel.ok && channel.value["id"] == created.value["channel"] && channel.value["strip"]["id"] == created.value["strip"]);
+        CHECK (channel.value["clips"].size() == 1 && ! channel.value.hasProperty ("channels"));
+
+        auto strip = get ({ { "strip", created.value["strip"] } });
+        CHECK (strip.ok && strip.value["name"] == "Keys" && strip.value["effects"].size() == 1);
+        CHECK (get ({ { "strip", "master" } }).value.hasProperty ("volume_db"));
+
+        auto clipView = get ({ { "clip", clip.value["clip"] } });
+        CHECK (clipView.ok && clipView.value["channel"] == created.value["channel"] && clipView.value["notes"].size() == 3);
+        CHECK (static_cast<int> (clipView.value["notes"][1]["pitch"]) == 64);
+
+        auto summary = get ({ { "view", "summary" } });
+        CHECK (summary.ok && summary.value["channels"][0]["clips"][0]["notes"] == juce::var (3));
+        CHECK (summary.value["strips"][0]["effects"][0] == "reverb" && ! summary.value["channels"][0].hasProperty ("pattern"));
+        CHECK (summary.value.hasProperty ("tempo_bpm") && summary.value["transport"].hasProperty ("playing"));
+        CHECK (juce::JSON::toString (summary.value, true).length() < juce::JSON::toString (f.state(), true).length());
+
+        auto mixer = get ({ { "view", "mixer" } });
+        CHECK (mixer.value.hasProperty ("strips") && mixer.value.hasProperty ("master") && ! mixer.value.hasProperty ("channels"));
+        CHECK (get ({ { "view", "transport" } }).value["transport"].hasProperty ("looping"));
+
+        CHECK (! get ({ { "channel", "Nope" } }).ok && ! get ({ { "clip", "123" } }).ok && ! get ({ { "view", "everything" } }).ok);
+    }
+
+    void testTagsAndStripRouting (tracktion::Engine& engine)
+    {
+        std::cout << "tags create buses and route to them\n";
+        Fixture f (engine);
+        auto run = [&] (const char* name, std::initializer_list<std::pair<const char*, juce::var>> p) { return f.dispatcher.execute (name, obj (p)); };
+        auto stripNamed = [&] (const juce::String& name)
+        {
+            auto strips = f.state()["strips"];
+
+            for (auto& s : *strips.getArray())
+                if (s["name"] == name)
+                    return s;
+
+            return juce::var();
+        };
+
+        auto kick = run ("create_track", { { "name", "Kick" }, { "tag", "Drums" } });
+        CHECK (kick.ok && kick.value.hasProperty ("bus"));
+        run ("add_midi_clip", { { "channel", "Kick" }, { "length_beats", 4 }, { "notes", juce::Array<juce::var> { note (36, 0, 4) } } });
+
+        auto bus = stripNamed ("Drums Bus");
+        CHECK (bus["id"] == kick.value["bus"] && static_cast<bool> (bus["bus"]) && bus["tag"] == "drums");
+        CHECK (f.state()["channels"][0]["tag"] == "drums");
+        CHECK (stripNamed ("Kick")["output"] == bus["id"] && bus["strip_inputs"].size() == 1);
+
+        // Creating the tagged track was one step, bus and all.
+        f.dispatcher.undo();
+        f.dispatcher.undo();
+        CHECK (f.state()["strips"].size() == 0);
+        f.dispatcher.redo();
+        f.dispatcher.redo();
+        CHECK (stripNamed ("Drums Bus")["strip_inputs"].size() == 1);
+
+        // A second drum joins the same bus.
+        run ("create_track", { { "name", "Snare" } });
+        auto tagged = run ("tag_channel", { { "channel", "Snare" }, { "tag", "drums" } });
+        CHECK (tagged.ok && tagged.value["bus"] == bus["id"] && ! static_cast<bool> (tagged.value["created_bus"]));
+        CHECK (f.state()["strips"].size() == 3 && stripNamed ("Drums Bus")["strip_inputs"].size() == 2);
+
+        // The sound goes through the bus: its fader silences the kick.
+        CHECK (renderRms (f) > 0.01f);
+        run ("set_mixer_strip", { { "strip", "Drums Bus" }, { "volume_db", -100 } });
+        CHECK (renderRms (f) < 0.0001f);
+        f.dispatcher.undo();
+
+        // Retagging moves it to the new tag's bus; no tag sends it back to master.
+        CHECK (run ("tag_channel", { { "channel", "Snare" }, { "tag", "perc" } }).ok);
+        CHECK (stripNamed ("Snare")["output"] == stripNamed ("Perc Bus")["id"] && stripNamed ("Drums Bus")["strip_inputs"].size() == 1);
+        CHECK (run ("tag_channel", { { "channel", "Snare" }, { "tag", "" } }).ok);
+        CHECK (stripNamed ("Snare")["output"] == "master" && ! f.state()["channels"][1].hasProperty ("tag"));
+
+        // A channel playing straight to master goes through its own strip into the bus.
+        CHECK (run ("route", { { "channel", "Snare" }, { "strip", "master" } }).ok);
+        CHECK (run ("tag_channel", { { "channel", "Snare" }, { "tag", "drums" } }).ok);
+        CHECK (f.state()["channels"][1]["output"] == stripNamed ("Snare")["id"] && stripNamed ("Snare")["output"] == bus["id"]);
+
+        CHECK (! run ("tag_channel", { { "channel", "Snare" }, { "tag", "drums!" } }).ok);
+        CHECK (! run ("tag_channel", { { "channel", "Nobody" }, { "tag", "drums" } }).ok);
+
+        // route_strip: strips into strips, but never in a loop.
+        CHECK (! run ("route_strip", { { "strip", "Drums Bus" }, { "output", "Kick" } }).ok);
+        CHECK (! run ("route_strip", { { "strip", "Kick" }, { "output", "Kick" } }).ok);
+        CHECK (run ("route_strip", { { "strip", "Kick" }, { "output", "master" } }).ok);
+        CHECK (stripNamed ("Kick")["output"] == "master");
+        CHECK (run ("route_strip", { { "strip", "Kick" }, { "output", "Perc Bus" } }).ok);
+        CHECK (stripNamed ("Kick")["output"] == stripNamed ("Perc Bus")["id"]);
+        CHECK (! run ("route_strip", { { "strip", "Nope" }, { "output", "master" } }).ok);
+
+        // Tags are saved with the project.
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (run ("save_project", { { "path", path } }).ok);
+        CHECK (run ("open_project", { { "path", path }, { "discard_changes", true } }).ok);
+        CHECK (f.state()["channels"][0]["tag"] == "drums" && stripNamed ("Drums Bus")["tag"] == "drums");
+        CHECK (stripNamed ("Kick")["output"] == stripNamed ("Perc Bus")["id"]);
+
+        // Deleting a bus sends what played into it to master.
+        CHECK (run ("delete_track", { { "track", "Perc Bus" } }).ok);
+        CHECK (stripNamed ("Kick")["output"] == "master");
+    }
+
+    void testCommandLog (tracktion::Engine& engine)
+    {
+        std::cout << "the command log\n";
+        Fixture f (engine);
+        std::vector<ng::CommandDispatcher::LogEntry> log;
+        f.dispatcher.onLog = [&] (const ng::CommandDispatcher::LogEntry& e) { log.push_back (e); };
+
+        // What the UI does isn't logged.
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Mine" } }));
+        CHECK (log.empty());
+
+        {
+            ng::CommandDispatcher::ScopedSource source (f.dispatcher, "Claude");
+            f.dispatcher.execute ("create_track", obj ({ { "name", "Keys" } }));
+            f.dispatcher.execute ("get_state");
+            f.dispatcher.execute ("rename_track", obj ({ { "track", "Nobody" }, { "name", "x" } }));
+            f.dispatcher.execute ("set_metronome", obj ({ { "enabled", true } }));
+        }
+
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Mine too" } }));
+        CHECK (log.size() == 3);   // get_state isn't
+        CHECK (log[0].source == "Claude" && log[0].label == "create_track" && log[0].ok && log[0].madeUndoStep);
+        CHECK (! log[1].ok && log[1].error.isNotEmpty() && ! log[1].madeUndoStep);
+        CHECK (log[2].ok && ! log[2].madeUndoStep);
+
+        // Claude's track is undoable from the log only once what came after it is undone.
+        CHECK (! f.dispatcher.isLatestUndoStep (log[0]));
+        f.dispatcher.undo();
+        CHECK (f.dispatcher.isLatestUndoStep (log[0]));
+        f.dispatcher.undo();
+        CHECK (f.state()["channels"].size() == 1 && ! f.dispatcher.isLatestUndoStep (log[0]));
+
+        {
+            ng::CommandDispatcher::ScopedSource source (f.dispatcher, "Claude");
+            f.dispatcher.executeBatch ("Two tracks", juce::Array<juce::var> {
+                obj ({ { "command", "create_track" } }), obj ({ { "command", "create_track" } }) });
+        }
+
+        CHECK (log.size() == 4 && log[3].label == "Two tracks" && log[3].commands.size() == 2 && f.dispatcher.isLatestUndoStep (log[3]));
+        f.dispatcher.undo();
+        CHECK (f.state()["channels"].size() == 1);
+    }
+
+    /** Runs fn on another thread while this one handles messages, as a client of the app would. */
+    template <typename Fn>
+    void runAsClient (Fn&& fn)
+    {
+        std::atomic<bool> done { false };
+        std::thread client ([&] { fn(); done = true; });
+
+        while (! done)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+
+        client.join();
+    }
+
+    void testBridgeAndMcpServer (tracktion::Engine& engine)
+    {
+        std::cout << "the bridge and the MCP server\n";
+        Fixture f (engine);
+        std::vector<ng::CommandDispatcher::LogEntry> log;
+        f.dispatcher.onLog = [&] (const ng::CommandDispatcher::LogEntry& e) { log.push_back (e); };
+
+        juce::TemporaryFile temp (".json");
+        auto file = temp.getFile();
+        ng::BridgeServer server (f.dispatcher);
+        CHECK (server.start (file).isEmpty() && server.isRunning());
+
+        auto info = ng::bridge::readConnectionFile (file);
+        CHECK (info && info->port == server.getPort() && info->token.length() == 64);
+
+       #if ! JUCE_WINDOWS
+        struct stat st;
+        CHECK (stat (file.getFullPathName().toRawUTF8(), &st) == 0 && (st.st_mode & 0777) == 0600);
+       #endif
+
+        // Without the token, nothing runs.
+        auto refused = juce::JSON::parse (server.handleRequest (R"({"token": "nope", "request": {"command": "create_track"}})"));
+        CHECK (! static_cast<bool> (refused["ok"]) && f.state()["channels"].size() == 0);
+
+        // A client in another thread.
+        juce::var described, created, batch, undone;
+        runAsClient ([&]
+        {
+            ng::BridgeClient client;
+            client.setConnectionFile (file);
+            described = client.send (obj ({ { "describe", true } }));
+            created = client.send (obj ({ { "source", "Claude" },
+                                          { "request", obj ({ { "command", "create_track" }, { "params", obj ({ { "name", "Bass" } }) } }) } }));
+            batch = client.send (obj ({ { "source", "Claude" },
+                                        { "request", obj ({ { "batch", "Line" }, { "commands", juce::Array<juce::var> {
+                                            obj ({ { "command", "add_midi_clip" }, { "params", obj ({ { "channel", "Bass" } }) } }),
+                                            obj ({ { "command", "get_state" }, { "params", obj ({ { "clip", "$0.clip" } }) } }) } } }) } }));
+            undone = client.send (obj ({ { "source", "Claude" }, { "undo", true } }));
+        });
+
+        CHECK (static_cast<bool> (described["ok"]) && described["result"].size() == f.registry.getAll().size());
+        CHECK (static_cast<bool> (created["ok"]) && created["result"].hasProperty ("channel"));
+        CHECK (static_cast<bool> (batch["ok"]) && batch["result"][1]["channel"] == created["result"]["channel"]);
+        CHECK (static_cast<bool> (undone["ok"]) && f.state()["channels"][0]["clips"].size() == 0);
+        CHECK (log.size() == 3 && log[0].source == "Claude" && log[1].label == "Line" && log[2].label == "Undo");
+
+        // The MCP server, end to end.
+        juce::StringArray replies;
+        runAsClient ([&]
+        {
+            ng::McpServer mcp;
+            mcp.setConnectionFile (file);
+
+            for (auto* line : { R"({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "clientInfo": {"name": "claude-ai"}}})",
+                                R"({"jsonrpc": "2.0", "method": "notifications/initialized"})",
+                                R"({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})",
+                                R"({"jsonrpc": "2.0", "id": "three", "method": "tools/call", "params": {"name": "batch", "arguments": {"label": "Add drums", "commands": [{"command": "create_track", "params": {"name": "Kick", "tag": "drums"}}, {"command": "add_effect", "params": {"strip": "$0.bus", "effect": "compressor"}}]}}})",
+                                R"({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "rename_track", "arguments": {"track": "Nobody", "name": "x"}}})",
+                                R"({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "undo"}})",
+                                R"({"jsonrpc": "2.0", "id": 6, "method": "nothing"})",
+                                "not json" })
+                replies.add (mcp.handleLine (line));
+        });
+
+        auto reply = [&] (int i) { return juce::JSON::parse (replies[i]); };
+        CHECK (replies.size() == 8 && replies[1].isEmpty() && ! replies[0].containsChar ('\n'));
+        CHECK (reply (0)["result"]["protocolVersion"] == "2025-06-18" && reply (0)["result"]["serverInfo"]["name"] == "ng-daw");
+
+        auto tools = reply (2)["result"]["tools"];
+        juce::StringArray names;
+
+        for (auto& t : *tools.getArray())
+            names.add (t["name"].toString());
+
+        std::cout << "       " << names.size() << " tools: " << names.joinIntoString (", ") << "\n";
+        CHECK (names.contains ("get_state") && names.contains ("tag_channel") && names.contains ("batch") && names.contains ("undo"));
+        CHECK (tools.size() == static_cast<int> (f.registry.getAll().size()) + 3);
+
+        auto call = reply (3)["result"];
+        CHECK (reply (3)["id"] == "three" && ! static_cast<bool> (call["isError"]) && call["content"][0]["type"] == "text");
+        CHECK (juce::JSON::parse (call["content"][0]["text"].toString())[1]["strip"].toString().isNotEmpty());
+        CHECK (static_cast<bool> (reply (4)["result"]["isError"]));
+        CHECK (! static_cast<bool> (reply (5)["result"]["isError"]));
+        CHECK (reply (6)["error"]["code"] == juce::var (-32601) && reply (7)["error"]["code"] == juce::var (-32700));
+        CHECK (log.back().source == "Claude" && log[log.size() - 3].label == "Add drums");
+
+        // The undo took back the whole batch.
+        CHECK (f.state()["channels"].size() == 1);
+
+        // Once the app stops, the file goes and clients are told it isn't running.
+        server.stop();
+        CHECK (! file.existsAsFile());
+        juce::var afterStop;
+        runAsClient ([&]
+        {
+            ng::BridgeClient client;
+            client.setConnectionFile (file);
+            afterStop = client.send (obj ({ { "describe", true } }));
+        });
+        CHECK (! static_cast<bool> (afterStop["ok"]) && afterStop["error"].toString().contains ("isn't running"));
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -2566,48 +2889,57 @@ namespace
     }
 }
 
-int main()
+int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
 
     {
         tracktion::Engine engine ("NgDawTests", nullptr, std::make_unique<HeadlessBehaviour>());
 
-        testCreateTrackLinksAStrip (engine);
-        testUndoAfterTracktionTidiesUp (engine);
-        testRouteDetachesAndShares (engine);
-        testUndoIsOneStepPerCommand (engine);
-        testFailuresRollBack (engine);
-        testJsonBridgeAndToolList (engine);
-        testRenameAndRecolourStayInSyncWhileLinked (engine);
-        testDeleteTrack (engine);
-        testSetInstrument (engine);
-        testMixerStripSettings (engine);
-        testGestureIsOneUndoStep (engine);
-        testMuteAndSoloSilence (engine);
-        testTempoAndTimeSignature (engine);
-        testLoopRegion (engine);
-        testStepSequencer (engine);
-        testPatternRenders (engine);
-        testSaveAndOpen (engine);
-        testClipsAndPlayheadInState (engine);
-        testClipEditing (engine);
-        testPatternCopiesFollowSteps (engine);
-        testEditingNotes (engine);
-        testQuantizeAndVelocity (engine);
-        testArmingForMidiInput (engine);
-        testPluginScanning (engine);
-        testPluginInstrument (engine);
-        testEffects (engine);
-        testBusesAndSends (engine);
-        testMultiOutputInstrument (engine);
-        testSampler (engine);
-        testLibrary (engine);
-        testAudioTracks (engine);
-        testAudioClipEditing (engine);
-        testExport (engine);
-        testRendersAudio (engine);
-        testRecordingAudio (engine);
+        // `NgDawTests Bridge` runs only the tests with "Bridge" in their names.
+        auto only = juce::String (argc > 1 ? argv[1] : "");
+        #define RUN(test) if (only.isEmpty() || juce::String (#test).containsIgnoreCase (only)) test (engine)
+
+        RUN (testCreateTrackLinksAStrip);
+        RUN (testUndoAfterTracktionTidiesUp);
+        RUN (testRouteDetachesAndShares);
+        RUN (testUndoIsOneStepPerCommand);
+        RUN (testFailuresRollBack);
+        RUN (testJsonBridgeAndToolList);
+        RUN (testRenameAndRecolourStayInSyncWhileLinked);
+        RUN (testDeleteTrack);
+        RUN (testSetInstrument);
+        RUN (testMixerStripSettings);
+        RUN (testGestureIsOneUndoStep);
+        RUN (testMuteAndSoloSilence);
+        RUN (testTempoAndTimeSignature);
+        RUN (testLoopRegion);
+        RUN (testStepSequencer);
+        RUN (testPatternRenders);
+        RUN (testSaveAndOpen);
+        RUN (testClipsAndPlayheadInState);
+        RUN (testClipEditing);
+        RUN (testPatternCopiesFollowSteps);
+        RUN (testEditingNotes);
+        RUN (testQuantizeAndVelocity);
+        RUN (testArmingForMidiInput);
+        RUN (testPluginScanning);
+        RUN (testPluginInstrument);
+        RUN (testEffects);
+        RUN (testBusesAndSends);
+        RUN (testMultiOutputInstrument);
+        RUN (testSampler);
+        RUN (testLibrary);
+        RUN (testAudioTracks);
+        RUN (testAudioClipEditing);
+        RUN (testExport);
+        RUN (testBatchReferences);
+        RUN (testStateViews);
+        RUN (testTagsAndStripRouting);
+        RUN (testCommandLog);
+        RUN (testBridgeAndMcpServer);
+        RUN (testRendersAudio);
+        RUN (testRecordingAudio);
     }
 
     std::cout << (failures == 0 ? "\nAll checks passed\n" : "\nSome checks failed\n");

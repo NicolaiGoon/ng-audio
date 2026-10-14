@@ -49,7 +49,9 @@ add_library(ng_core STATIC
     src/core/SamplerCommands.cpp
     src/core/LibraryCommands.cpp
     src/core/AudioCommands.cpp
-    src/core/ExportCommands.cpp)
+    src/core/ExportCommands.cpp
+    src/core/Bridge.cpp
+    src/core/McpServer.cpp)
 
 target_include_directories(ng_core PUBLIC src)
 
@@ -116,9 +118,17 @@ target_sources(NgDaw PRIVATE
     src/app/PluginWindow.cpp
     src/app/SamplerEditor.cpp
     src/app/BrowserPanel.cpp
-    src/app/ExportPanel.cpp)
+    src/app/ExportPanel.cpp
+    src/app/CommandLogPanel.cpp)
 
 target_link_libraries(NgDaw PRIVATE ng_core juce::juce_recommended_warning_flags)
+
+# ------------------------------------------------------------------------------
+# The MCP server: lets Claude and other AI clients drive the running app
+# ------------------------------------------------------------------------------
+juce_add_console_app(NgDawMcp PRODUCT_NAME "NgDawMcp")
+target_sources(NgDawMcp PRIVATE src/mcp/McpMain.cpp)
+target_link_libraries(NgDawMcp PRIVATE ng_core juce::juce_recommended_warning_flags)
 
 # ------------------------------------------------------------------------------
 # Headless tests for the command layer and audio rendering
