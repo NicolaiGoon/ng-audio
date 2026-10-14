@@ -56,7 +56,7 @@ private:
 /** Registers create_track, route, rename_track, set_track_colour, delete_track, set_instrument, show_plugin_window,
     set_mixer_strip, set_steps, set_tempo, set_time_signature, set_loop, add_midi_clip, move_clip, resize_clip, split_clip,
     duplicate_clip, delete_clip, get_notes, set_notes, quantize_notes, play, stop, record, arm_channel, set_metronome, set_position, new_project,
-    open_project, save_project and get_state, plus the plugin, effect, bus, output, sampler and library commands below. */
+    open_project, save_project and get_state, plus the plugin, effect, bus, output, sampler, library and audio commands below. */
 void registerProjectCommands (CommandRegistry&);
 
 /** Registers list_plugins and scan_plugins (PluginCommands.cpp). */
@@ -78,6 +78,9 @@ void registerSamplerCommands (CommandRegistry&);
 /** Registers get_library, set_library, find_samples, save_preset, list_presets and
     load_preset (LibraryCommands.cpp). */
 void registerLibraryCommands (CommandRegistry&);
+
+/** Registers import_audio (AudioCommands.cpp). */
+void registerAudioCommands (CommandRegistry&);
 
 //==============================================================================
 /** The strip and effect a command names with "strip" and "effect": the effect by its id,

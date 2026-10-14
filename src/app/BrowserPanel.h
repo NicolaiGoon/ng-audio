@@ -30,12 +30,18 @@ namespace browser
     bool canDropOnRack (const juce::var& item);
     bool canDropOnChannel (const juce::var& item, bool channelIsSampler);
     bool canDropOnStrip (const juce::var& item);
+    bool canDropOnTimeline (const juce::var& item);
 
     /** New channels from instruments, instrument presets, samples (several samples make one
         sampler channel) and kit folders. */
     juce::String dropOnRack (CommandDispatcher&, const juce::Array<juce::var>& items);
     juce::String dropOnChannel (CommandDispatcher&, const juce::String& channelId, const juce::Array<juce::var>& items);
     juce::String dropOnStrip (CommandDispatcher&, const juce::String& stripId, const juce::Array<juce::var>& items);
+
+    /** Samples (and the audio files in kit folders) as audio clips from the beat: one after another
+        on the audio channel, or with no channel, each on a new audio channel. */
+    juce::String dropOnTimeline (CommandDispatcher&, const juce::String& audioChannelId, double beat,
+                                 const juce::Array<juce::var>& items, const juce::String& audioWildcard);
 
     /** Asks for a preset name, then runs save_preset with it added to the params. */
     void savePresetWithName (CommandDispatcher&, juce::Component* parent, const juce::String& suggestedName,

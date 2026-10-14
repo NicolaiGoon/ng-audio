@@ -1,4 +1,5 @@
 #include "TimelineView.h"
+#include "BrowserPanel.h"
 #include "Widgets.h"
 
 namespace ng
@@ -36,18 +37,33 @@ TimelineView::~TimelineView()
 void TimelineView::update (const juce::var& state)
 {
     lanes.clearQuick();
+    juce::StringArray files;
 
     for (auto& channel : *state["channels"].getArray())
     {
-        Lane lane { channel["id"].toString(), channel["name"].toString(), colourFrom (channel["colour"]), {} };
+        Lane lane { channel["id"].toString(), channel["name"].toString(), colourFrom (channel["colour"]), {},
+                    channel["kind"] == "audio" };
 
         for (auto& c : *channel["clips"].getArray())
-            lane.clips.add ({ c["id"].toString(), c["name"].toString(),
-                              static_cast<double> (c["start_beat"]), static_cast<double> (c["length_beats"]),
-                              static_cast<bool> (c["pattern"]) });
+        {
+            Clip clip { c["id"].toString(), c["name"].toString(),
+                        static_cast<double> (c["start_beat"]), static_cast<double> (c["length_beats"]),
+                        static_cast<bool> (c["pattern"]) };
+            clip.audio = c["type"] == "audio";
+            clip.missing = c["missing"];
+            clip.maxEndBeat = c.hasProperty ("max_end_beat") ? static_cast<double> (c["max_end_beat"]) : -1.0;
+            lane.clips.add (clip);
+
+            if (clip.audio)
+                files.add (c["file"].toString());
+        }
 
         lanes.add (lane);
     }
+
+    // Let go of waveforms nothing shows any more.
+    for (auto it = thumbnails.begin(); it != thumbnails.end();)
+        it = files.contains (it->first) ? std::next (it) : thumbnails.erase (it);
 
     auto transport = state["transport"];
     looping = transport["looping"];
@@ -60,6 +76,7 @@ void TimelineView::update (const juce::var& state)
 void TimelineView::clear()
 {
     lanes.clear();
+    thumbnails.clear();
     selectedClip = {};
     drag = {};
     rulerDrag = RulerDrag::none;
@@ -268,7 +285,7 @@ void TimelineView::paintLanes (juce::Graphics& g)
     {
         g.setColour (juce::Colours::grey);
         g.setFont (juce::FontOptions (14.0f));
-        g.drawText ("Add an instrument to get a lane on the timeline", lanesArea, juce::Justification::centred);
+        g.drawText ("Add an instrument to get a lane on the timeline, or drop audio files here", lanesArea, juce::Justification::centred);
     }
 
     // Lane backgrounds and the beat and bar grid.
@@ -353,6 +370,34 @@ void TimelineView::paintLanes (juce::Graphics& g)
         }
     }
 
+    // Where dropped audio would go: the audio lane, or new channels below the last lane.
+    if (dropActive)
+    {
+        juce::Graphics::ScopedSaveState dropSave (g);
+        g.reduceClipRegion (lanesArea);
+        auto x = (float) beatToX (dropBeat);
+        auto blue = juce::Colour (0xff3c8ce0);
+        juce::Rectangle<float> target;
+
+        if (dropLane >= 0)
+            target = { (float) lanesArea.getX(), (float) (lanesArea.getY() + dropLane * laneHeight - scrollY),
+                       (float) lanesArea.getWidth(), (float) laneHeight };
+        else
+            target = juce::Rectangle<float> ((float) lanesArea.getX(), (float) (lanesArea.getY() + lanes.size() * laneHeight - scrollY),
+                                             (float) lanesArea.getWidth(), (float) laneHeight)
+                         .getIntersection (lanesArea.toFloat());
+
+        g.setColour (blue.withAlpha (0.15f));
+        g.fillRect (target);
+        g.setColour (blue);
+        g.drawRect (target, 2.0f);
+        g.fillRect (x - 1.0f, target.getY(), 2.0f, target.getHeight());
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (12.0f));
+        g.drawText (dropLane >= 0 ? "Drop to add here" : "Drop for a new audio channel",
+                    target.withTrimmedLeft (x - target.getX() + 6.0f).toNearestInt(), juce::Justification::centredLeft, false);
+    }
+
     // Lane names on the left.
     juce::Graphics::ScopedSaveState save (g);
     g.reduceClipRegion (0, lanesArea.getY(), headerWidth, lanesArea.getHeight());
@@ -387,6 +432,12 @@ void TimelineView::paintClip (juce::Graphics& g, const Lane& lane, const Clip& c
         g.setColour (juce::Colours::white.withAlpha (0.9f));
         g.setFont (juce::FontOptions (11.0f));
         g.drawText (clip.name, title.reduced (4.0f, 0.0f), juce::Justification::centredLeft, true);
+    }
+
+    if (clip.audio)
+    {
+        paintWaveform (g, lane, clip, area, extraOffsetBeats);
+        return;
     }
 
     // A small picture of the notes, scaled to the clip's pitch range.
@@ -437,6 +488,56 @@ void TimelineView::paintClip (juce::Graphics& g, const Lane& lane, const Clip& c
         }
 
         return;
+    }
+}
+
+te::SmartThumbnail* TimelineView::getThumbnail (const juce::String& file)
+{
+    auto& thumb = thumbnails[file];
+
+    if (thumb == nullptr)
+        thumb = std::make_unique<te::SmartThumbnail> (session.getEngine(), te::AudioFile (session.getEngine(), juce::File (file)),
+                                                      *this, nullptr);
+
+    return thumb.get();
+}
+
+void TimelineView::paintWaveform (juce::Graphics& g, const Lane& lane, const Clip& clip, juce::Rectangle<float> area,
+                                  double extraOffsetBeats)
+{
+    auto wave = dynamic_cast<te::WaveAudioClip*> (session.findClip (clip.id));
+
+    if (wave == nullptr)
+        return;
+
+    auto waveArea = area.reduced (1.0f, 2.0f);
+
+    if (clip.missing)
+    {
+        g.setColour (juce::Colour (0xffff8a80));
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText ("File missing", waveArea, juce::Justification::centredLeft, true);
+        return;
+    }
+
+    // Only the part on screen: a long clip zoomed in would otherwise draw thousands of pixels.
+    auto visible = waveArea.getIntersection (getLanesArea().toFloat());
+
+    if (visible.isEmpty())
+        return;
+
+    // Where the file starts in the song, in beats. Trimming the start leaves the audio in place.
+    auto& tempo = session.getEdit().tempoSequence;
+    auto pos = wave->getPosition();
+    auto offsetBeats = tempo.toBeats (pos.getStart()).inBeats() - tempo.toBeats (pos.getStartOfSource()).inBeats();
+    auto sourceStart = tempo.toTime (te::BeatPosition::fromBeats (clip.startBeat - offsetBeats - extraOffsetBeats));
+    auto timeAt = [&] (float x) { return tempo.toTime (te::BeatPosition::fromBeats (xToBeat (x))) - sourceStart; };
+
+    if (auto thumb = getThumbnail (wave->getOriginalFile().getFullPathName()))
+    {
+        g.setColour (lane.colour.brighter (0.5f).withAlpha (0.9f));
+        thumb->drawChannels (g, visible.toNearestInt(),
+                             { te::TimePosition() + timeAt (visible.getX()), te::TimePosition() + timeAt (visible.getRight()) }, 1.0f);
     }
 }
 
@@ -656,9 +757,14 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
             drag.start = std::max (0.0, snap (originalStart + delta, e.mods));
             drag.end = drag.start + drag.clip.lengthBeats;
 
-            // Step patterns stay on their own channel.
+            // Step patterns stay on their own channel, and audio and MIDI clips on their own kind.
             if (! drag.clip.pattern)
-                drag.targetLane = juce::jlimit (0, lanes.size() - 1, laneAt (e.position.y));
+            {
+                auto lane = juce::jlimit (0, lanes.size() - 1, laneAt (e.position.y));
+
+                if (lanes[lane].audio == drag.clip.audio)
+                    drag.targetLane = lane;
+            }
 
             break;
         }
@@ -669,6 +775,9 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
 
         case DragMode::trimEnd:
             drag.end = std::max (originalStart + minLength, snap (originalEnd + delta, e.mods));
+
+            if (drag.clip.maxEndBeat > 0.0)
+                drag.end = std::min (drag.end, drag.clip.maxEndBeat);
             break;
 
         case DragMode::none:
@@ -764,12 +873,19 @@ void TimelineView::mouseDoubleClick (const juce::MouseEvent& e)
     if (hit.lane < 0)
         return;
 
-    // A new empty clip, one bar long, at the start of the bar that was clicked.
+    // A new empty clip, one bar long, at the start of the bar that was clicked (or, on an
+    // audio lane, files from there).
     auto& tempo = session.getEdit().tempoSequence;
     auto clicked = std::max (0.0, xToBeat (e.position.x));
     auto bar = tempo.toBarsAndBeats (tempo.toTime (te::BeatPosition::fromBeats (clicked))).bars;
     auto barStart = tempo.toBeats (te::tempo::BarsAndBeats { bar, {} }).inBeats();
     auto barEnd = tempo.toBeats (te::tempo::BarsAndBeats { bar + 1, {} }).inBeats();
+
+    if (lanes[hit.lane].audio)
+    {
+        chooseAudioFiles (lanes[hit.lane].channelId, barStart);
+        return;
+    }
 
     auto result = dispatcher.execute ("add_midi_clip", makeObject ({ { "channel", lanes[hit.lane].channelId },
                                                                      { "start_beat", barStart },
@@ -855,7 +971,9 @@ void TimelineView::showClipMenu()
     auto canSplit = ! clip->pattern && playhead > clip->startBeat && playhead < clip->startBeat + clip->lengthBeats;
 
     juce::PopupMenu menu;
-    menu.addItem ("Edit notes (Enter)", ! clip->pattern, false, [this] { openSelected(); });
+    if (! clip->audio)
+        menu.addItem ("Edit notes (Enter)", ! clip->pattern, false, [this] { openSelected(); });
+
     menu.addItem ("Split at playhead (S)", canSplit, false, [this] { splitSelectedAtPlayhead(); });
     menu.addItem ("Duplicate (Ctrl+D)", [this] { duplicateSelected(); });
     menu.addItem ("Copy (Ctrl+C)", [this] { copiedClip = selectedClip; });
@@ -868,7 +986,7 @@ void TimelineView::openSelected()
 {
     auto clip = findSelectedClip();
 
-    if (clip != nullptr && ! clip->pattern && onOpenClip != nullptr)
+    if (clip != nullptr && ! clip->pattern && ! clip->audio && onOpenClip != nullptr)
         onOpenClip (clip->id);
 }
 
@@ -910,7 +1028,20 @@ void TimelineView::moveSelected (double beats, int lanesDown)
     int lane = -1;
     auto clip = findSelectedClip (&lane);
 
-    if (clip == nullptr || ! juce::isPositiveAndBelow (lane + lanesDown, lanes.size()))
+    if (clip == nullptr)
+        return;
+
+    // Up and down skip lanes of the other kind (audio or instrument).
+    auto target = lane;
+
+    if (lanesDown != 0)
+    {
+        do
+            target += lanesDown > 0 ? 1 : -1;
+        while (juce::isPositiveAndBelow (target, lanes.size()) && lanes[target].audio != clip->audio);
+    }
+
+    if (! juce::isPositiveAndBelow (target, lanes.size()))
         return;
 
     // Step to the next beat (or bar) line that way, so a clip that's off the grid lands on it.
@@ -923,7 +1054,7 @@ void TimelineView::moveSelected (double beats, int lanesDown)
 
     auto result = dispatcher.execute ("move_clip", makeObject ({ { "clip", selectedClip },
                                                                  { "start_beat", start },
-                                                                 { "channel", lanes[lane + lanesDown].channelId } }));
+                                                                 { "channel", lanes[target].channelId } }));
     if (result.ok)
         selectedClip = result.value["clip"].toString();
 }
@@ -945,6 +1076,91 @@ void TimelineView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseW
 
     updateScrollBars();
     repaint();
+}
+
+//==============================================================================
+bool TimelineView::isInterestedInDragSource (const SourceDetails& details)
+{
+    return browser::canDropOnTimeline (details.description);
+}
+
+void TimelineView::itemDragMove (const SourceDetails& details)    { showDropTarget (details.localPosition.toFloat()); }
+
+void TimelineView::itemDragExit (const SourceDetails&)
+{
+    dropActive = false;
+    repaint();
+}
+
+void TimelineView::itemDropped (const SourceDetails& details)
+{
+    dropItems ({ details.description }, details.localPosition.toFloat());
+}
+
+juce::Array<juce::var> TimelineView::itemsForFiles (const juce::StringArray& files) const
+{
+    juce::Array<juce::var> items;
+
+    for (auto& f : files)
+        if (auto item = browser::itemForFile (juce::File (f), session.getAudioFileWildcard()); item.isObject())
+            items.add (item);
+
+    return items;
+}
+
+bool TimelineView::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    return ! itemsForFiles (files).isEmpty();
+}
+
+void TimelineView::fileDragMove (const juce::StringArray&, int x, int y)    { showDropTarget ({ (float) x, (float) y }); }
+
+void TimelineView::fileDragExit (const juce::StringArray&)
+{
+    dropActive = false;
+    repaint();
+}
+
+void TimelineView::filesDropped (const juce::StringArray& files, int x, int y)
+{
+    dropItems (itemsForFiles (files), { (float) x, (float) y });
+}
+
+void TimelineView::showDropTarget (juce::Point<float> pos)
+{
+    auto lane = laneAt (pos.y);
+    dropActive = true;
+    dropLane = juce::isPositiveAndBelow (lane, lanes.size()) && lanes[lane].audio ? lane : -1;
+    dropBeat = std::max (0.0, snap (xToBeat (std::max ((float) headerWidth, pos.x)), juce::ModifierKeys::getCurrentModifiers()));
+    repaint();
+}
+
+void TimelineView::dropItems (const juce::Array<juce::var>& items, juce::Point<float> pos)
+{
+    showDropTarget (pos);
+    dropActive = false;
+    repaint();
+
+    auto channel = dropLane >= 0 ? lanes[dropLane].channelId : juce::String();
+    browser::showDropError (this, browser::dropOnTimeline (dispatcher, channel, dropBeat, items, session.getAudioFileWildcard()));
+}
+
+void TimelineView::chooseAudioFiles (const juce::String& channelId, double beat)
+{
+    chooser = std::make_unique<juce::FileChooser> ("Import audio", juce::File(), session.getAudioFileWildcard());
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                            | juce::FileBrowserComponent::canSelectMultipleItems,
+                          [this, channelId, beat] (const juce::FileChooser& fc)
+                          {
+                              juce::Array<juce::var> items;
+
+                              for (auto& file : fc.getResults())
+                                  items.add (browser::sampleItem (file));
+
+                              if (! items.isEmpty())
+                                  browser::showDropError (this, browser::dropOnTimeline (dispatcher, channelId, beat, items,
+                                                                                        session.getAudioFileWildcard()));
+                          });
 }
 
 } // namespace ng
