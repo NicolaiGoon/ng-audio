@@ -65,6 +65,7 @@ private:
     void restoreFocus();
 
     void addInstrument();
+    void showAudioMenu();
     void loadStarterProject();
     void newProject();
     void openProject();
@@ -92,7 +93,7 @@ private:
     CommandRegistry registry;
     CommandDispatcher dispatcher { session, registry };
 
-    juce::TextButton addBusButton { "Add bus" };
+    juce::TextButton addBusButton { "Add bus" }, audioButton { "+ Audio" };
     juce::TextButton newButton { "New" }, openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save as" },
                      addButton { "Add instrument" }, playButton { "Play" }, returnButton { "|<" }, recordButton { "Rec" },
                      undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio" }, pluginsButton { "Plugins" }, shortcutsButton { "?" },
@@ -108,7 +109,7 @@ private:
     juce::Label positionDisplay;
 
     juce::Label timelineHint { {}, "Drag clips to move them and their edges to trim. Double-click empty space for a new clip, "
-                                   "or a clip to edit its notes. Del deletes, Ctrl+D duplicates, S splits." },
+                                   "or a clip to edit its notes. Drop audio files to import them. Del deletes, Ctrl+D duplicates, S splits." },
                 pianoRollHint { {}, "Click to draw, drag to move, drag the right edge to resize. Right-click or Del deletes. "
                                     "Ctrl+drag selects. Drag in Velocity to set it." },
                 pianoRollHeader { {}, "Piano roll" }, snapLabel { {}, "Snap" },

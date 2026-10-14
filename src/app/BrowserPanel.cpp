@@ -114,6 +114,11 @@ namespace browser
         return typeOf (item) == "effect" || (typeOf (item) == "preset" && item["kind"] == "effect");
     }
 
+    bool canDropOnTimeline (const juce::var& item)
+    {
+        return typeOf (item) == "sample" || typeOf (item) == "folder";
+    }
+
     juce::String dropOnRack (CommandDispatcher& dispatcher, const juce::Array<juce::var>& items)
     {
         DropRun drop (dispatcher, "Add from browser");
@@ -188,6 +193,54 @@ namespace browser
                 drop.run ("add_effect", makeObject ({ { "strip", stripId }, { "effect", it["id"] } }));
             else if (typeOf (it) == "preset" && it["kind"] == "effect")
                 drop.run ("load_preset", makeObject ({ { "preset", it["path"] }, { "strip", stripId } }));
+        }
+
+        return drop.error;
+    }
+
+    juce::String dropOnTimeline (CommandDispatcher& dispatcher, const juce::String& audioChannelId, double beat,
+                                 const juce::Array<juce::var>& items, const juce::String& audioWildcard)
+    {
+        // The files, with each folder's audio files (not its subfolders) in name order.
+        constexpr int maxFiles = 32;
+        juce::Array<juce::File> files;
+
+        for (auto& it : items)
+        {
+            juce::File file (it["path"].toString());
+
+            if (typeOf (it) == "sample")
+            {
+                files.add (file);
+            }
+            else if (typeOf (it) == "folder")
+            {
+                auto inFolder = file.findChildFiles (juce::File::findFiles, false, audioWildcard);
+                inFolder.sort();
+                files.addArray (inFolder);
+            }
+        }
+
+        if (files.isEmpty())
+            return "There are no audio files there.";
+
+        if (files.size() > maxFiles)
+            return "That's " + juce::String (files.size()) + " audio files; drop up to " + juce::String (maxFiles) + " at a time.";
+
+        DropRun drop (dispatcher, "Import audio");
+        auto start = beat;
+
+        for (auto& file : files)
+        {
+            auto params = makeObject ({ { "file", file.getFullPathName() }, { "start_beat", start } });
+
+            if (audioChannelId.isNotEmpty())
+                params.getDynamicObject()->setProperty ("channel", audioChannelId);
+
+            auto clip = drop.run ("import_audio", params);
+
+            if (audioChannelId.isNotEmpty() && clip.isObject())
+                start = static_cast<double> (clip["start_beat"]) + static_cast<double> (clip["length_beats"]);
         }
 
         return drop.error;
