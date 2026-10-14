@@ -1,9 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(NgDaw VERSION 0.1.0 LANGUAGES C CXX)
+project(NgDaw VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Link the C++ runtime into the executables on Windows, so the installer runs on a clean PC
+# without the Visual C++ redistributable.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # ------------------------------------------------------------------------------
 # Tracktion Engine and the JUCE commit it pins (Tracktion's own submodule URL
@@ -50,8 +54,10 @@ add_library(ng_core STATIC
     src/core/LibraryCommands.cpp
     src/core/AudioCommands.cpp
     src/core/ExportCommands.cpp
+    src/core/AutomationCommands.cpp
     src/core/Bridge.cpp
-    src/core/McpServer.cpp)
+    src/core/McpServer.cpp
+    src/core/Autosave.cpp)
 
 target_include_directories(ng_core PUBLIC src)
 
@@ -64,7 +70,8 @@ target_compile_definitions(ng_core PUBLIC
     JUCE_STANDALONE_APPLICATION=1
     JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_USE_MP3AUDIOFORMAT=1
-    TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1)
+    TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1
+    NG_VERSION="${PROJECT_VERSION}")
 
 if (APPLE)
     target_compile_definitions(ng_core PUBLIC JUCE_PLUGINHOST_AU=1)
@@ -106,6 +113,7 @@ juce_add_gui_app(NgDaw
     PRODUCT_NAME "Ng DAW"
     BUNDLE_ID "audio.ng.daw"
     COMPANY_NAME "Ng Audio"
+    VERSION ${PROJECT_VERSION}
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "Audio recording")
 
@@ -119,7 +127,9 @@ target_sources(NgDaw PRIVATE
     src/app/SamplerEditor.cpp
     src/app/BrowserPanel.cpp
     src/app/ExportPanel.cpp
-    src/app/CommandLogPanel.cpp)
+    src/app/CommandLogPanel.cpp
+    src/app/PreferencesPanel.cpp
+    src/app/HistoryPanel.cpp)
 
 target_link_libraries(NgDaw PRIVATE ng_core juce::juce_recommended_warning_flags)
 
@@ -139,6 +149,7 @@ if (BUILD_TESTING)
     juce_add_plugin(NgTestSynth
         PRODUCT_NAME "Ng Test Synth"
         COMPANY_NAME "Ng Audio"
+    VERSION ${PROJECT_VERSION}
         BUNDLE_ID "audio.ng.testsynth"
         PLUGIN_MANUFACTURER_CODE NgAu
         PLUGIN_CODE NgTs
@@ -155,6 +166,7 @@ if (BUILD_TESTING)
     juce_add_plugin(NgTestGain
         PRODUCT_NAME "Ng Test Gain"
         COMPANY_NAME "Ng Audio"
+    VERSION ${PROJECT_VERSION}
         BUNDLE_ID "audio.ng.testgain"
         PLUGIN_MANUFACTURER_CODE NgAu
         PLUGIN_CODE NgTg
@@ -169,6 +181,7 @@ if (BUILD_TESTING)
     juce_add_plugin(NgTestDrums
         PRODUCT_NAME "Ng Test Drums"
         COMPANY_NAME "Ng Audio"
+    VERSION ${PROJECT_VERSION}
         BUNDLE_ID "audio.ng.testdrums"
         PLUGIN_MANUFACTURER_CODE NgAu
         PLUGIN_CODE NgTd

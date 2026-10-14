@@ -2,6 +2,7 @@
 // device and no window, so it works in CI: `ctest` or `./NgDawTests`.
 
 #include "core/McpServer.h"
+#include "core/Autosave.h"
 
 #if ! JUCE_WINDOWS
  #include <sys/stat.h>
@@ -2839,6 +2840,129 @@ namespace
         CHECK (! static_cast<bool> (afterStop["ok"]) && afterStop["error"].toString().contains ("isn't running"));
     }
 
+    void testAutomation (tracktion::Engine& engine)
+    {
+        std::cout << "automation\n";
+        Fixture f (engine);
+        auto run = [&] (const char* name, std::initializer_list<std::pair<const char*, juce::var>> p) { return f.dispatcher.execute (name, obj (p)); };
+        auto point = [] (double beat, double value) { return obj ({ { "beat", beat }, { "value", value } }); };
+
+        run ("create_track", { { "name", "Pad" } });
+        run ("add_midi_clip", { { "channel", "Pad" }, { "length_beats", 4 }, { "notes", juce::Array<juce::var> { note (60, 0, 4) } } });
+
+        // Full volume for two beats, then silence: the render follows it.
+        auto set = run ("set_automation", { { "strip", "Pad" }, { "parameter", "volume" },
+                                            { "points", juce::Array<juce::var> { point (2.1, -100), point (0, 0), point (2, 0) } } });
+        CHECK (set.ok && set.value["points"].size() == 3 && near (set.value["points"][1]["beat"], 2.0));
+        CHECK (near (set.value["points"][2]["value"], -100.0) && set.value["name"] == "Volume");
+
+        auto buffer = renderBuffer (f);
+        auto before = rmsBetween (buffer, 0.1, 0.9), after = rmsBetween (buffer, 1.2, 1.9);
+        std::cout << "       RMS before the fade " << before << ", after " << after << "\n";
+        CHECK (before > 0.01f && after < 0.001f);
+
+        auto automation = f.state()["strips"][0]["automation"];
+        CHECK (automation.size() == 1 && automation[0]["parameter"] == "volume" && static_cast<int> (automation[0]["points"]) == 3);
+
+        // One undo step; [] removes it.
+        f.dispatcher.undo();
+        CHECK (f.state()["strips"][0]["automation"].size() == 0);
+        f.dispatcher.redo();
+        CHECK (f.state()["strips"][0]["automation"].size() == 1);
+        CHECK (run ("set_automation", { { "strip", "Pad" }, { "parameter", "volume" }, { "points", juce::Array<juce::var>() } }).ok);
+        CHECK (f.state()["strips"][0]["automation"].size() == 0 && renderRms (f) > 0.01f);
+        f.dispatcher.undo();
+
+        // Pan, the master, and an effect's parameter.
+        CHECK (run ("set_automation", { { "strip", "Pad" }, { "parameter", "pan" }, { "points", juce::Array<juce::var> { point (0, -1), point (4, 1) } } }).ok);
+        CHECK (run ("set_automation", { { "strip", "master" }, { "parameter", "volume" }, { "points", juce::Array<juce::var> { point (0, -6) } } }).ok);
+        CHECK (f.state()["master"]["automation"].size() == 1);
+        CHECK (run ("add_effect", { { "strip", "Pad" }, { "effect", "compressor" } }).ok);
+        auto threshold = run ("get_effect", { { "strip", "Pad" }, { "effect", "compressor" } }).value["params"][0];
+        auto effectSet = run ("set_automation", { { "strip", "Pad" }, { "effect", "compressor" }, { "parameter", threshold["id"] },
+                                                  { "points", juce::Array<juce::var> { point (0, threshold["min"]), point (4, threshold["max"]) } } });
+        CHECK (effectSet.ok && effectSet.value.hasProperty ("effect"));
+        CHECK (f.state()["strips"][0]["automation"].size() == 3);
+
+        auto got = run ("get_automation", { { "strip", "Pad" }, { "parameter", "pan" } });
+        CHECK (got.ok && got.value["points"].size() == 2 && near (got.value["min"], -1.0) && near (got.value["max"], 1.0));
+
+        // Bad requests change nothing.
+        CHECK (! run ("set_automation", { { "strip", "Pad" }, { "parameter", "volume" }, { "points", juce::Array<juce::var> { point (0, 12) } } }).ok);
+        CHECK (! run ("set_automation", { { "strip", "Pad" }, { "parameter", "pan" }, { "points", juce::Array<juce::var> { point (-1, 0) } } }).ok);
+        CHECK (! run ("set_automation", { { "strip", "Pad" }, { "parameter", "width" }, { "points", juce::Array<juce::var>() } }).ok);
+        CHECK (! run ("set_automation", { { "strip", "Pad" }, { "effect", "compressor" }, { "parameter", "nope" }, { "points", juce::Array<juce::var>() } }).ok);
+        CHECK (! run ("set_automation", { { "strip", "Nobody" }, { "parameter", "volume" }, { "points", juce::Array<juce::var>() } }).ok);
+        CHECK (! run ("set_automation", { { "strip", "Pad" }, { "parameter", "volume" } }).ok);
+        CHECK (run ("get_automation", { { "strip", "Pad" }, { "parameter", "pan" } }).value["points"].size() == 2);
+
+        // Saved with the project.
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (run ("save_project", { { "path", path } }).ok);
+        CHECK (run ("open_project", { { "path", path }, { "discard_changes", true } }).ok);
+        CHECK (f.state()["strips"][0]["automation"].size() == 3 && f.state()["master"]["automation"].size() == 1);
+        CHECK (near (run ("get_automation", { { "strip", "Pad" }, { "parameter", "pan" } }).value["points"][1]["value"], 1.0));
+    }
+
+    void testAutosaveAndRecovery (tracktion::Engine& engine)
+    {
+        std::cout << "autosave and crash recovery\n";
+        auto folder = juce::File::createTempFile ("autosave");
+        folder.createDirectory();
+        juce::File original = folder.getSiblingFile ("Song.ngdaw");
+
+        {
+            Fixture f (engine);
+            ng::Autosave autosave (f.session, folder);
+
+            // Nothing to keep until something changes, and nothing again until it changes again.
+            CHECK (! autosave.saveIfNeeded() && ! autosave.getAutosaveFile().existsAsFile());
+            f.dispatcher.execute ("create_track", obj ({ { "name", "Keys" } }));
+            CHECK (autosave.saveIfNeeded() && autosave.getAutosaveFile().existsAsFile());
+            CHECK (! autosave.saveIfNeeded());
+            f.dispatcher.execute ("set_tempo", obj ({ { "bpm", 96 } }));
+            CHECK (autosave.saveIfNeeded());
+            CHECK (! f.session.getFile().exists() && f.session.hasUnsavedChanges());
+
+            // A running copy's autosave isn't offered for recovery.
+            CHECK (ng::Autosave::findRecoverable (folder).empty());
+
+            // One left by a copy that crashed is: its lock isn't held.
+            autosave.getAutosaveFile().copyFileTo (folder.getChildFile ("0123456789abcdef.ngdaw"));
+            folder.getChildFile ("0123456789abcdef.json")
+                .replaceWithText (juce::JSON::toString (obj ({ { "id", "0123456789abcdef" }, { "project", original.getFullPathName() },
+                                                               { "name", "Song" }, { "time", juce::Time::getCurrentTime().toISO8601 (true) } })));
+
+            // Saving removes the autosave; so does closing.
+            CHECK (f.dispatcher.execute ("save_project", obj ({ { "path", folder.getChildFile ("Saved.ngdaw").getFullPathName() } })).ok);
+            CHECK (! autosave.saveIfNeeded() && ! autosave.getAutosaveFile().existsAsFile());
+            f.dispatcher.execute ("create_track", obj ({ { "name", "More" } }));
+            CHECK (autosave.saveIfNeeded());
+        }
+
+        auto found = ng::Autosave::findRecoverable (folder);
+        CHECK (found.size() == 1 && found[0].projectName == "Song" && found[0].originalProject == original);
+
+        if (found.size() == 1)
+        {
+            Fixture f (engine);
+            CHECK (ng::Autosave::recover (f.session, found[0]).isEmpty());
+            auto state = f.state();
+            CHECK (state["channels"].size() == 1 && state["channels"][0]["name"] == "Keys" && near (state["tempo_bpm"], 96.0));
+            CHECK (f.session.getFile() == original && f.session.hasUnsavedChanges() && f.session.getProjectName() == "Song");
+            CHECK (! found[0].autosave.existsAsFile() && ng::Autosave::findRecoverable (folder).empty());
+
+            // It edits and undoes like any project.
+            CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Bass" } })).ok);
+            f.dispatcher.undo();
+            CHECK (f.state()["channels"].size() == 1);
+        }
+
+        CHECK (folder.findChildFiles (juce::File::findFiles, false, "*.json").isEmpty());
+        folder.deleteRecursively();
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -2933,6 +3057,8 @@ int main (int argc, char* argv[])
         RUN (testAudioTracks);
         RUN (testAudioClipEditing);
         RUN (testExport);
+        RUN (testAutomation);
+        RUN (testAutosaveAndRecovery);
         RUN (testBatchReferences);
         RUN (testStateViews);
         RUN (testTagsAndStripRouting);

@@ -446,6 +446,8 @@ namespace
                 { "Ctrl+E", "Export the song, the loop or stems" },
                 { "Ctrl+K", "Show or hide the keyboard" },
                 { "Ctrl+B", "Show or hide the browser" },
+                { "Ctrl+H", "The undo history" },
+                { "Ctrl+,", "Settings" },
                 { "F1", "This list" },
             };
             return rows;
@@ -595,6 +597,7 @@ MainComponent::MainComponent (te::Engine& engine)
     : session (engine)
 {
     registerProjectCommands (registry);
+    session.setDefaultFolder (settings::getProjectFolder (engine));
 
     // Built-in effects' windows change them through the dispatcher.
     if (auto windows = dynamic_cast<PluginWindowBehaviour*> (&engine.getUIBehaviour()))
@@ -609,6 +612,13 @@ MainComponent::MainComponent (te::Engine& engine)
         // browser runs commands itself while it refreshes).
         if (result.ok && (name == "save_preset" || name == "set_library"))
             browserNeedsRefresh = true;
+
+        // Once a project is saved or replaced, the autosave of its old changes goes.
+        if (result.ok && (name == "new_project" || name == "open_project" || name == "save_project"))
+        {
+            autosave.discard();
+            lastAutosave = juce::Time::getCurrentTime();
+        }
 
         commandLog.refresh();
         triggerAsyncUpdate();
@@ -682,8 +692,14 @@ MainComponent::MainComponent (te::Engine& engine)
     redoButton.setTooltip ("Redo (Ctrl+Y or Ctrl+Shift+Z)");
     shortcutsButton.setTooltip ("Keyboard shortcuts (F1)");
     shortcutsButton.onClick = [this] { showShortcuts(); };
-    settingsButton.onClick = [this] { showAudioSettings(); };
-    settingsButton.setTooltip ("Audio device settings");
+    settingsButton.onClick = [this] { showPreferences(); };
+    settingsButton.setTooltip ("Settings: audio and MIDI devices, buffer size, theme, project folder and autosave (Ctrl+,)");
+    historyButton.onClick = [this] { showHistory(); };
+    historyButton.setTooltip ("The undo history: click a step to go back to it (Ctrl+H)");
+
+    cpuMeter.setFont (juce::FontOptions (12.0f));
+    cpuMeter.setJustificationType (juce::Justification::centred);
+    cpuMeter.setColour (juce::Label::outlineColourId, juce::Colours::grey.withAlpha (0.4f));
     pluginsButton.onClick = [this] { showPluginList(); };
     addBusButton.setTooltip ("Add a bus: a strip other strips can send to, e.g. for a shared reverb");
     addBusButton.onClick = [this] { dispatcher.execute ("create_bus"); };
@@ -736,7 +752,7 @@ MainComponent::MainComponent (te::Engine& engine)
                                                              &addButton, &playButton, &undoButton, &redoButton,
                                                              &returnButton, &recordButton, &keysButton, &tempo, &timeSignature, &positionDisplay,
                                                              &loopButton, &metronomeButton,
-                                                             &settingsButton, &pluginsButton, &shortcutsButton, &consoleButton, &browserButton, &audioButton, &exportButton, &timelineHeader, &timelineHint, &timeline,
+                                                             &settingsButton, &historyButton, &cpuMeter, &pluginsButton, &shortcutsButton, &consoleButton, &browserButton, &audioButton, &exportButton, &timelineHeader, &timelineHint, &timeline,
                                                              &channelsHeader, &mixerHeader, &addBusButton, &mixer })
         addAndMakeVisible (c);
 
@@ -753,8 +769,15 @@ MainComponent::MainComponent (te::Engine& engine)
     setWantsKeyboardFocus (true);
     juce::Desktop::getInstance().addFocusChangeListener (this);
     session.getEngine().getPluginManager().knownPluginList.addChangeListener (this);   // a scan adds instruments to pick
-    setSize (1360, 860);
+    setSize (1440, 860);
     startTimerHz (30);
+
+    // After the window is up, offer back anything a crash left unsaved.
+    juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer (this)]
+    {
+        if (safeThis != nullptr)
+            safeThis->checkForRecovery();
+    });
 }
 
 MainComponent::~MainComponent()
@@ -849,10 +872,16 @@ void MainComponent::newProject()
 
 namespace
 {
-    juce::File defaultProjectFolder (const juce::File& current)
+    juce::File defaultProjectFolder (Session& session)
     {
-        return current.existsAsFile() ? current.getParentDirectory()
-                                      : juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+        auto current = session.getFile();
+
+        if (current.existsAsFile())
+            return current.getParentDirectory();
+
+        auto folder = session.getDefaultFolder();
+        folder.createDirectory();
+        return folder;
     }
 
     const juce::String projectWildcard = juce::String ("*") + projectFileExtension;
@@ -862,7 +891,7 @@ void MainComponent::openProject()
 {
     confirmDiscardChanges ([this]
     {
-        fileChooser = std::make_unique<juce::FileChooser> ("Open project", defaultProjectFolder (session.getFile()), projectWildcard);
+        fileChooser = std::make_unique<juce::FileChooser> ("Open project", defaultProjectFolder (session), projectWildcard);
         fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                                   [this] (const juce::FileChooser& chooser)
         {
@@ -876,6 +905,17 @@ void MainComponent::openProject()
             if (! result.ok)
                 showError ("Couldn't open the project", result.error);
         });
+    });
+}
+
+void MainComponent::openProjectFile (const juce::File& file)
+{
+    confirmDiscardChanges ([this, file]
+    {
+        auto result = dispatcher.execute ("open_project", makeObject ({ { "path", file.getFullPathName() },
+                                                                        { "discard_changes", true } }));
+        if (! result.ok)
+            showError ("Couldn't open the project", result.error);
     });
 }
 
@@ -897,7 +937,7 @@ void MainComponent::saveProject (std::function<void()> onSaved)
 
 void MainComponent::saveProjectAs (std::function<void()> onSaved)
 {
-    auto folder = defaultProjectFolder (session.getFile());
+    auto folder = defaultProjectFolder (session);
     auto suggestion = folder.getChildFile (session.getProjectName()).withFileExtension (projectFileExtension);
 
     fileChooser = std::make_unique<juce::FileChooser> ("Save project as", suggestion, projectWildcard);
@@ -951,6 +991,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('t', command, 0))                    { addInstrument(); return true; }
     if (key == juce::KeyPress ('i', command, 0))                    { timeline.chooseAudioFiles ({}, timeline.getPlayheadBeatForImport()); return true; }
     if (key == juce::KeyPress ('e', command, 0))                    { showExport(); return true; }
+    if (key == juce::KeyPress ('h', command, 0))                    { showHistory(); return true; }
+    if (key == juce::KeyPress (',', command, 0))                    { showPreferences(); return true; }
 
     if (key == juce::KeyPress (juce::KeyPress::spaceKey))           { playButton.onClick(); return true; }
     if (key == juce::KeyPress (juce::KeyPress::homeKey))            { returnButton.onClick(); return true; }
@@ -1257,18 +1299,129 @@ void MainComponent::updateTransportControls (const juce::var& state)
     updatePositionDisplay();
 }
 
-void MainComponent::showAudioSettings()
+void MainComponent::showPreferences()
 {
-    auto& dm = session.getEngine().getDeviceManager().deviceManager;
-    auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (dm, 0, 2, 0, 2, true, true, true, false);
-    selector->setSize (500, 400);
-
     juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned (selector.release());
-    options.dialogTitle = "Audio settings";
+    options.content.setOwned (new PreferencesPanel (session, [this] { lastAutosave = juce::Time::getCurrentTime(); }));
+    options.dialogTitle = "Settings";
+    options.dialogBackgroundColour = getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId);
+    options.componentToCentreAround = this;
     options.useNativeTitleBar = true;
     options.resizable = true;
+    options.escapeKeyTriggersCloseButton = true;
     options.launchAsync();
+}
+
+void MainComponent::showHistory()
+{
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned (new HistoryPanel (session, dispatcher));
+    options.dialogTitle = "History";
+    options.dialogBackgroundColour = getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId);
+    options.componentToCentreAround = this;
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+    options.escapeKeyTriggersCloseButton = true;
+    options.launchAsync();
+}
+
+void MainComponent::checkForRecovery()
+{
+    auto found = Autosave::findRecoverable();
+
+    if (found.empty())
+        return;
+
+    // The newest one is offered; any older ones are from crashes before it, and go.
+    auto recovery = found.front();
+
+    for (size_t i = 1; i < found.size(); ++i)
+        Autosave::remove (found[i]);
+
+    auto when = recovery.time.toString (true, true, false);
+    auto options = juce::MessageBoxOptions()
+                       .withIconType (juce::MessageBoxIconType::QuestionIcon)
+                       .withTitle ("Recover unsaved changes?")
+                       .withMessage ("Ng DAW didn't close properly last time. Recover the unsaved changes to '"
+                                     + recovery.projectName + "' from " + when + "?\n\n"
+                                     "Recovered changes open as an unsaved project, so you can look before you save.")
+                       .withButton ("Recover")
+                       .withButton ("Discard")
+                       .withButton ("Later")
+                       .withAssociatedComponent (this);
+
+    juce::AlertWindow::showAsync (options, [safeThis = juce::Component::SafePointer (this), recovery] (int button)
+    {
+        if (safeThis == nullptr)
+            return;
+
+        if (button == 1)
+        {
+            if (auto error = Autosave::recover (safeThis->session, recovery); error.isNotEmpty())
+                return safeThis->showError ("Couldn't recover the changes", error);
+
+            safeThis->session.getUndoManager().clearUndoHistory();
+            safeThis->dispatcher.execute ("get_state");
+            safeThis->triggerAsyncUpdate();
+        }
+        else if (button == 2)
+        {
+            Autosave::remove (recovery);
+        }
+    });
+}
+
+void MainComponent::autosaveIfDue()
+{
+    auto minutes = settings::getAutosaveMinutes (session.getEngine());
+    auto now = juce::Time::getCurrentTime();
+
+    if (minutes <= 0 || now - lastAutosave < juce::RelativeTime::minutes (minutes))
+        return;
+
+    lastAutosave = now;
+
+    // Writing a project mid-recording or mid-export could stall them; try again shortly.
+    if (session.getEdit().getTransport().isRecording() || session.isExporting())
+        return;
+
+    autosave.saveIfNeeded();
+}
+
+void MainComponent::updateCpuMeter()
+{
+    auto& engine = session.getEngine();
+    auto& dm = engine.getDeviceManager();
+    auto xruns = dm.deviceManager.getXRunCount();
+    auto dropouts = lastXRunCount < 0 ? 0 : std::max (0, xruns - lastXRunCount);
+    lastXRunCount = xruns;
+
+    auto cpu = juce::jlimit (0.0, 1.0, static_cast<double> (dm.getCpuUsage()));
+    auto colour = dropouts > 0 || cpu > 0.8 ? juce::Colour (0xffe0533f)
+                : cpu > 0.5                 ? juce::Colour (0xffe0b03f)
+                                            : juce::Colours::lightgrey;
+
+    cpuMeter.setText ("CPU " + juce::String (juce::roundToInt (cpu * 100.0)) + "%", juce::dontSendNotification);
+    cpuMeter.setColour (juce::Label::textColourId, colour);
+
+    juce::String tip = "How much of each audio buffer the engine needs to fill it.";
+
+    if (auto* device = dm.deviceManager.getCurrentAudioDevice())
+    {
+        auto rate = device->getCurrentSampleRate();
+        auto buffer = device->getCurrentBufferSizeSamples();
+        auto latency = rate > 0 ? 1000.0 * (buffer + device->getOutputLatencyInSamples()) / rate : 0.0;
+
+        tip << "\n" << device->getName() << ": " << juce::String (rate / 1000.0, 1) << " kHz, buffer " << buffer
+            << " samples, output latency " << juce::String (latency, 1) << " ms.";
+    }
+
+    if (auto advice = getBufferAdvice (engine, dropouts); advice.isNotEmpty())
+        tip << "\n" << advice;
+    else
+        tip << "\nA larger buffer gives the CPU more room; a smaller one makes playing live feel tighter.";
+
+    cpuMeter.setTooltip (tip);
 }
 
 void MainComponent::showExport()
@@ -1313,6 +1466,13 @@ void MainComponent::handleAsyncUpdate()
 
 void MainComponent::timerCallback()
 {
+    if (++cpuMeterTicks >= 15)
+    {
+        cpuMeterTicks = 0;
+        updateCpuMeter();
+        autosaveIfDue();
+    }
+
     updateButtons();
     updatePlayStep();
     updatePositionDisplay();
@@ -1462,7 +1622,9 @@ void MainComponent::resized()
 
     shortcutsButton.setBounds (toolbar.removeFromRight (28));
     toolbar.removeFromRight (4);
-    settingsButton.setBounds (toolbar.removeFromRight (58));
+    settingsButton.setBounds (toolbar.removeFromRight (64));
+    toolbar.removeFromRight (4);
+    historyButton.setBounds (toolbar.removeFromRight (60));
     toolbar.removeFromRight (4);
     pluginsButton.setBounds (toolbar.removeFromRight (58));
     toolbar.removeFromRight (8);
@@ -1507,6 +1669,8 @@ void MainComponent::resized()
     audioButton.setBounds (timelineTop.removeFromRight (70).reduced (0, 1));
     timelineTop.removeFromRight (6);
     exportButton.setBounds (timelineTop.removeFromRight (64).reduced (0, 1));
+    timelineTop.removeFromRight (6);
+    cpuMeter.setBounds (timelineTop.removeFromRight (70).reduced (0, 2));
     timelineTop.removeFromRight (6);
     timelineHeader.setBounds (timelineTop.removeFromLeft (120));
     timelineHint.setBounds (timelineTop);
