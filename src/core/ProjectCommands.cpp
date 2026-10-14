@@ -1700,6 +1700,7 @@ void registerProjectCommands (CommandRegistry& registry)
     registerPluginCommands (registry);
     registerEffectCommands (registry);
     registerBusCommands (registry);
+    registerAutomationCommands (registry);
     registerOutputCommands (registry);
     registerSamplerCommands (registry);
     registerLibraryCommands (registry);

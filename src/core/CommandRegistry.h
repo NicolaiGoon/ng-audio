@@ -56,7 +56,7 @@ private:
 /** Registers create_track, route, rename_track, set_track_colour, delete_track, set_instrument, show_plugin_window,
     set_mixer_strip, set_steps, set_tempo, set_time_signature, set_loop, add_midi_clip, move_clip, resize_clip, split_clip,
     duplicate_clip, delete_clip, get_notes, set_notes, quantize_notes, play, stop, record, arm_channel, set_metronome, set_position, new_project,
-    open_project, save_project and get_state, plus the plugin, effect, bus, output, sampler, library, audio and export commands below. */
+    open_project, save_project and get_state, plus the plugin, effect, bus, output, sampler, library, audio, automation and export commands below. */
 void registerProjectCommands (CommandRegistry&);
 
 /** Registers list_plugins and scan_plugins (PluginCommands.cpp). */
@@ -85,6 +85,27 @@ void registerLibraryCommands (CommandRegistry&);
 
 /** Registers import_audio, set_audio_clip and set_audio_input (AudioCommands.cpp). */
 void registerAudioCommands (CommandRegistry&);
+
+/** Registers set_automation and get_automation (AutomationCommands.cpp). */
+void registerAutomationCommands (CommandRegistry&);
+
+/** A parameter that can be automated: a strip's (or the master's) volume or pan, or one of an
+    effect's parameters, as a command names it with "strip", "parameter" and maybe "effect".
+    On failure, param is nullptr and error says why (AutomationCommands.cpp). */
+struct AutomationTarget
+{
+    te::AutomatableParameter* param = nullptr;
+    te::AudioTrack* strip = nullptr;        // nullptr for the master
+    te::Plugin* effect = nullptr;           // nullptr for volume and pan
+    juce::String parameterId, name, error;
+    bool isVolume = false;                  // values in dB, stored as fader positions
+    double min = 0.0, max = 1.0;
+};
+
+AutomationTarget findAutomationTarget (Session&, const juce::String& command, const juce::var& params);
+
+/** {strip, effect?, parameter, name, min, max, value, points: [{beat, value}]}, as get_automation returns it. */
+juce::var describeAutomation (Session&, const AutomationTarget&);
 
 /** Registers export_audio (ExportCommands.cpp). */
 void registerExportCommands (CommandRegistry&);

@@ -7,7 +7,15 @@ and every action available to AI tools through one command layer.
 
 ![First window](docs/first-window.png)
 
-## What's here (v0.1)
+## Installing
+
+Download `NgDaw-<version>-Windows-Setup.exe` from the
+[releases page](https://github.com/nicolaigoon/ng-audio/releases) and run it. It installs Ng DAW
+and the `NgDawMcp` server (for Claude) into Program Files, adds a Start menu entry, and can make
+`.ngdaw` projects open in Ng DAW when double-clicked. Nothing else needs installing. On macOS and
+Linux, build it from source (see *Building*).
+
+## What's here (v1.0)
 
 - **A window that plays audio.** It opens with one synth (Tracktion's built-in 4OSC) playing a
   four-on-the-floor pattern. *Add instrument*, *Play*, *Undo* and *Redo* all go through the command layer.
@@ -99,7 +107,7 @@ and every action available to AI tools through one command layer.
   trimmed past the end of their file. Audio and MIDI clips each stay on their own kind of channel.
   The project saves where each file is, and marks one that has gone missing.
 - **Recording audio.** Pick an audio channel's input in the channel rack (the inputs are the
-  ones the device in *Audio* settings has), arm it with its ● button (several audio channels can
+  ones the device in *Settings* has), arm it with its ● button (several audio channels can
   be armed at once, alongside one instrument channel for MIDI) and press *Rec* (or R). *Stop* turns
   each take into a clip on its channel, as one undo step. *Mon auto* plays the input through the
   channel while it's armed; *Mon on* always and *Mon off* never. Takes are saved as WAV files in a
@@ -115,6 +123,23 @@ and every action available to AI tools through one command layer.
   fader, and each bus with what is sent to it, so together they add up to the mix (before the
   master). MP3 needs LAME or FFmpeg installed (on the PATH, or next to Ng DAW); without one,
   the MP3 choice says so.
+- **Automation.** Click the **A** in a channel's header on the timeline to show an automation
+  lane under it, for its strip's volume to start with. Click in the lane to add a point, drag a
+  point to move it, and double-click or right-click it to remove it. Right-click the lane to
+  automate pan or any parameter of the strip's effects instead, to clear the points, or to hide
+  the lane. Automated parameters follow their points when the song plays and when it's exported.
+- **Autosave and crash recovery.** While a project has unsaved changes, a copy of them is saved
+  every minute (*Settings* > *General* sets how often, or turns it off). If Ng DAW closes
+  without saving (a crash, a power cut), the next start offers to recover them; the recovered
+  project opens unsaved, so you can look before you save over the original.
+- **Settings** (Ctrl+,): the audio and MIDI devices, sample rate and buffer size; the colour
+  theme; the project folder new projects, recordings and exports go to (Music/Ng DAW unless
+  you choose another); and how often to autosave.
+- **History** (Ctrl+H): every change since the project was opened, as a list. Click a step to
+  undo (or redo) back to just after it.
+- **CPU meter.** *CPU* above the timeline shows how hard the audio engine is working. It turns
+  amber, then red, when it's near the limit or the audio drops out, and its tooltip shows the
+  device, buffer size and latency, and which buffer size to try instead.
 - **Linked-by-default mixer strips.** Adding an instrument creates a channel *and* a mixer strip
   with the same name and colour, already routed. Pick a different strip in the channel rack to
   detach it; several channels can share one strip; pick its own strip again to re-link it.
@@ -155,6 +180,7 @@ and every action available to AI tools through one command layer.
   | `set_multi_output` | Gives each stereo output of a channel's plugin instrument its own strip, or goes back to one |
   | `add_sample` / `set_sample` / `remove_sample` | A sampler's samples: the file, its key (or range of keys), level, pan and one-shot |
   | `load_drum_kit` | Loads a folder of samples into a sampler as a drum kit, on General MIDI keys where the names say what they are |
+  | `set_automation` / `get_automation` | Automates a strip's volume (dB) or pan, or an effect parameter, with points in beats; `[]` removes it |
   | `get_library` / `set_library` | The browser's sample folders and preset folder (app settings, not part of the project) |
   | `find_samples` | Finds audio files in the sample folders by words in their names and folders |
   | `save_preset` / `list_presets` / `load_preset` | Saves an instrument's or effect's settings as a preset, lists presets, and loads one onto a channel or strip |
@@ -189,6 +215,8 @@ and every action available to AI tools through one command layer.
   claude mcp add ng-daw -- /path/to/build/NgDawMcp_artefacts/Debug/NgDawMcp
   ```
 
+  With the Windows installer, the server is `C:\Program Files\Ng DAW\NgDawMcp.exe`.
+
   Or to Claude Desktop, in its `claude_desktop_config.json`:
 
   ```json
@@ -210,6 +238,8 @@ src/core/SamplerCommands.cpp  the sampler's samples and drum kits
 src/core/LibraryCommands.cpp  sample folders, finding samples, and presets
 src/core/AudioCommands.cpp    importing audio files onto audio channels, editing audio clips, and audio inputs
 src/core/ExportCommands.cpp   exporting the song, the loop region and stems to WAV or MP3
+src/core/AutomationCommands.cpp  automating volume, pan and effect parameters
+src/core/Autosave.*           autosaving unsaved changes, and finding and recovering them after a crash
 src/core/Bridge.*             the local connection other programs (the MCP server) use to run commands in the app
 src/core/McpServer.*          the MCP protocol: tools/list and tools/call, passed to the app through the bridge
 src/mcp/McpMain.cpp           NgDawMcp, the MCP server program (stdio)
@@ -219,6 +249,9 @@ src/app/PluginWindow.*        plugin editor windows, and sliders for built-in ef
 src/app/SamplerEditor.*       the sampler's window: its samples, and dropping files and kits on it
 src/app/BrowserPanel.*        the browser, and what dropping its items on the rack, channels and strips does
 src/app/ExportPanel.*         the Export dialog
+src/app/PreferencesPanel.*    the Settings window, and the CPU meter's buffer-size advice
+src/app/HistoryPanel.*        the undo history
+src/app/AppSettings.h         the app's preferences: theme, project folder, autosave
 src/app/CommandLogPanel.*     the AI command log, with undo for each entry
 src/app/TimelineView.*        the arrangement timeline: lanes, clips and waveforms, ruler, playhead, zoom, audio drops
 src/app/PianoRoll.*           the piano roll: keyboard, note grid, drawing and editing notes
@@ -247,6 +280,20 @@ The app ends up in `build/NgDaw_artefacts/Debug/`, and the MCP server in `build/
 
 GitHub Actions runs the same build and tests on Windows (MSVC) and Linux (GCC) for every pull
 request and every push to `main` (`.github/workflows/ci.yml`).
+
+### Releases
+
+`.github/workflows/release.yml` builds a Release copy of the app and the MCP server on Windows
+and packs them into an installer with Inno Setup (`packaging/windows/NgDaw.iss`), then installs
+it silently, checks it runs and uninstalls it. Pull requests that change the packaging get the
+installer as a build artifact. To publish a release, set the version in `CMakeLists.txt`
+(`project(NgDaw VERSION ...)`) and push a matching tag:
+
+```sh
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+The workflow then creates the GitHub release with the installer attached.
 
 - **macOS:** Xcode command line tools. `-G Xcode` works too.
 - **Windows:** Visual Studio 2022 with the C++ workload. `-G "Visual Studio 17 2022"`.

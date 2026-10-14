@@ -160,6 +160,45 @@ juce::String Session::saveProject (const juce::File& projectFile)
     return {};
 }
 
+juce::String Session::writeCopy (const juce::File& target)
+{
+    if (! target.getParentDirectory().createDirectory())
+        return "Couldn't create the folder for " + target.getFullPathName();
+
+    edit->flushState();
+    auto xml = edit->state.createXml();
+    juce::TemporaryFile temp (target);
+
+    if (xml == nullptr || ! xml->writeTo (temp.getFile()) || ! temp.overwriteTargetFileWithTemporary())
+        return "Couldn't write " + target.getFullPathName();
+
+    return {};
+}
+
+juce::String Session::recoverProject (const juce::File& copy, const juce::File& originalFile)
+{
+    auto xml = juce::parseXML (copy);
+
+    if (xml == nullptr || ! xml->hasTagName (te::IDs::EDIT.toString()))
+        return "Not an Ng DAW project: " + copy.getFullPathName();
+
+    auto state = te::loadEditFromFile (engine, copy, te::ProjectItemID {});
+    auto id = te::ProjectItemID::fromProperty (state, te::IDs::projectID);
+
+    te::Edit::Options options { engine };
+    options.editState = state;
+    options.editProjectItemID = id.isValid() ? id : te::ProjectItemID::createNewID (0);
+    options.editFileRetriever = [originalFile] { return originalFile; };
+    auto recovered = te::Edit::createEdit (std::move (options));
+
+    if (recovered == nullptr)
+        return "Couldn't open " + copy.getFullPathName();
+
+    adoptEdit (std::move (recovered), originalFile);
+    savedState = {};   // so it counts as unsaved until it's saved again
+    return {};
+}
+
 juce::String Session::getProjectName() const
 {
     return file == juce::File() ? juce::String ("Untitled") : file.getFileNameWithoutExtension();
@@ -705,7 +744,20 @@ juce::File Session::getRecordingFolder() const
     if (file != juce::File())
         return file.getParentDirectory().getChildFile ("Recordings");
 
-    return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Ng DAW").getChildFile ("Recordings");
+    return getDefaultFolder().getChildFile ("Recordings");
+}
+
+juce::File Session::getDefaultFolder() const
+{
+    if (defaultFolder != juce::File())
+        return defaultFolder;
+
+    return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Ng DAW");
+}
+
+void Session::setDefaultFolder (const juce::File& folder)
+{
+    defaultFolder = folder;
 }
 
 void Session::routeAudioInputs()
@@ -1176,6 +1228,49 @@ namespace
     }
 }
 
+juce::var Session::describeAutomatedParameters (const te::PluginList& list, te::Plugin* masterFader)
+{
+    juce::Array<juce::var> result;
+    juce::Array<te::Plugin*> plugins;
+
+    for (auto plugin : list)
+        plugins.add (plugin);
+
+    if (masterFader != nullptr)
+        plugins.addIfNotAlreadyThere (masterFader);
+
+    for (auto plugin : plugins)
+    {
+        auto fader = dynamic_cast<te::VolumeAndPanPlugin*> (plugin);
+
+        for (auto param : plugin->getAutomatableParameters())
+        {
+            if (! param->hasAutomationPoints())
+                continue;
+
+            auto obj = new juce::DynamicObject();
+
+            if (fader != nullptr)
+            {
+                auto isVolume = param == fader->volParam.get();
+                obj->setProperty ("parameter", isVolume ? "volume" : "pan");
+                obj->setProperty ("name", isVolume ? "Volume" : "Pan");
+            }
+            else
+            {
+                obj->setProperty ("parameter", param->paramID);
+                obj->setProperty ("effect", plugin->itemID.toString());
+                obj->setProperty ("name", plugin->getName() + " " + param->getParameterName());
+            }
+
+            obj->setProperty ("points", param->getCurve().getNumPoints());
+            result.add (juce::var (obj));
+        }
+    }
+
+    return result;
+}
+
 juce::var Session::toVar() const
 {
     juce::Array<juce::var> channels, strips;
@@ -1306,6 +1401,7 @@ juce::var Session::toVar() const
         obj->setProperty ("mute", s->isMuted (false));
         obj->setProperty ("solo", s->isSolo (false));
         obj->setProperty ("effects", describeEffects (s->pluginList));
+        obj->setProperty ("automation", describeAutomatedParameters (s->pluginList));
 
         auto busNumber = getBusNumber (*s);
         obj->setProperty ("bus", busNumber >= 0);
@@ -1360,6 +1456,7 @@ juce::var Session::toVar() const
     }
 
     master->setProperty ("effects", describeEffects (edit->getMasterPluginList()));
+    master->setProperty ("automation", describeAutomatedParameters (edit->getMasterPluginList(), edit->getMasterVolumePlugin().get()));
 
     auto root = new juce::DynamicObject();
     auto& timeSig = edit->tempoSequence.getTimeSigAt (te::TimePosition());

@@ -8,14 +8,21 @@ class NgDawApplication  : public juce::JUCEApplication
 {
 public:
     const juce::String getApplicationName() override       { return "Ng DAW"; }
-    const juce::String getApplicationVersion() override    { return "0.1.0"; }
+    const juce::String getApplicationVersion() override    { return NG_VERSION; }
     bool moreThanOneInstanceAllowed() override             { return true; }
 
-    void initialise (const juce::String&) override
+    void initialise (const juce::String& commandLine) override
     {
         engine = std::make_unique<te::Engine> (getApplicationName(), std::make_unique<PluginWindowBehaviour>(),
                                                std::make_unique<EngineBehaviour>());
+        settings::applyTheme (settings::getTheme (*engine));
         mainWindow = std::make_unique<MainWindow> (getApplicationName(), *engine);
+        openFromCommandLine (commandLine);
+    }
+
+    void anotherInstanceStarted (const juce::String& commandLine) override
+    {
+        openFromCommandLine (commandLine);
     }
 
     void shutdown() override
@@ -32,6 +39,22 @@ public:
                 return content->confirmDiscardChanges ([] { quit(); });
 
         quit();
+    }
+
+private:
+    /** A project double-clicked in Explorer or Finder arrives as the command line. */
+    void openFromCommandLine (const juce::String& commandLine)
+    {
+        auto path = commandLine.trim().unquoted();
+
+        if (path.isEmpty() || ! juce::File::isAbsolutePath (path))
+            return;
+
+        juce::File file (path);
+
+        if (file.existsAsFile() && file.hasFileExtension (projectFileExtension) && mainWindow != nullptr)
+            if (auto* content = dynamic_cast<MainComponent*> (mainWindow->getContentComponent()))
+                content->openProjectFile (file);
     }
 
 private:

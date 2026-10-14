@@ -4,7 +4,7 @@ namespace ng
 {
 namespace
 {
-    const char* const serverVersion = "0.1.0";
+    const char* const serverVersion = NG_VERSION;
 
     const char* const instructions =
         "Ng DAW is a music production app (a DAW). These tools change the project open in it, which must be running. "
