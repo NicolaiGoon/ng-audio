@@ -107,8 +107,7 @@ juce::File ExportPanel::getDefaultFolder() const
 {
     auto project = session.getFile();
     return project.existsAsFile() ? project.getParentDirectory().getChildFile ("Exports")
-                                  : juce::File::getSpecialLocation (juce::File::userMusicDirectory)
-                                        .getChildFile ("Ng DAW").getChildFile ("Exports");
+                                  : session.getDefaultFolder().getChildFile ("Exports");
 }
 
 void ExportPanel::chooseDestination()

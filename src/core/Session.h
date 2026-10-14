@@ -68,12 +68,25 @@ public:
         has never been saved). Returns an error, or an empty string on success. */
     juce::String saveProject (const juce::File& = {});
 
+    /** Writes the project to a file without making it the project's file or counting as a save,
+        e.g. for autosave. Returns an error, or an empty string on success. */
+    juce::String writeCopy (const juce::File&);
+
+    /** Replaces the open project with a copy written by writeCopy (an autosave), as the project in
+        originalFile (or a new, unsaved one if that's empty). Audio files it refers to by relative
+        path are found from the original's folder. It opens with unsaved changes. */
+    juce::String recoverProject (const juce::File& copy, const juce::File& originalFile);
+
     /** The project's file, empty until it is first saved or when it was opened from nowhere. */
     juce::File getFile() const                      { return file; }
     juce::String getProjectName() const;
 
     /** True when the project differs from what was last saved, opened or created. */
     bool hasUnsavedChanges() const;
+
+    /** The project as text, leaving out what isn't a change the user made (like the playhead),
+        to tell whether it has changed. */
+    juce::String getComparableState() const;
 
     /** Treats the project as it is now as saved, e.g. a starter project nobody has touched yet. */
     void markAsSaved();
@@ -221,6 +234,11 @@ public:
         when a project opens. */
     static void storeEffectSettings (te::Plugin&);
 
+    /** The automated parameters on a strip's (or the master's) plugin list, as get_state lists
+        them: {parameter, effect (for an effect's), name, points (how many)}. The master's fader
+        isn't in its plugin list, so it's passed separately. */
+    static juce::var describeAutomatedParameters (const te::PluginList&, te::Plugin* masterFader = nullptr);
+
     /** Calls fn for every effect on every strip and the master. */
     void forEachEffect (const std::function<void (te::Plugin&)>&) const;
 
@@ -323,8 +341,13 @@ public:
     void routeAudioInputs();
 
     /** Where recordings are written: a Recordings folder beside the project file, or, before
-        the project is saved, in Music/Ng DAW/Recordings. */
+        the project is saved, in the default folder's Recordings. */
     juce::File getRecordingFolder() const;
+
+    /** Where projects go by default (a preference): Music/Ng DAW unless set. New projects are
+        saved there, and recordings and exports go there until the project is saved. */
+    juce::File getDefaultFolder() const;
+    void setDefaultFolder (const juce::File&);
 
     /** Where the playhead is, as bar.beat.sixteenth counting from 1 (e.g. "3.2.1"). */
     juce::String getPositionText() const;
@@ -346,13 +369,12 @@ public:
 private:
     std::unique_ptr<te::Edit> createNewEdit();
     void adoptEdit (std::unique_ptr<te::Edit>, const juce::File&);
-    juce::String getComparableState() const;
 
     te::Engine& engine;
     std::unique_ptr<te::Edit> edit;
     te::EditItemID armedChannel;
     juce::Array<te::EditItemID> armedAudio;
-    juce::File file;
+    juce::File file, defaultFolder;
     juce::String savedState;
     bool exporting = false;
 

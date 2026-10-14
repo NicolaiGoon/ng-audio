@@ -1,0 +1,94 @@
+name: Release
+
+# Builds the Windows installer. On a version tag (v1.0.0) it also publishes a GitHub release
+# with the installer attached; on pull requests that touch packaging it just checks the build.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    name: Windows installer
+    runs-on: windows-2022
+
+    env:
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Tracktion and JUCE sources
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Read the version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path CMakeLists.txt -Pattern 'project\(NgDaw VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tag = $env:GITHUB_REF_NAME.TrimStart('v')
+            if ($tag -ne $version) { throw "Tag v$tag doesn't match the version in CMakeLists.txt ($version)" }
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Configure
+        run: cmake -B build -G "Visual Studio 17 2022" -DFETCHCONTENT_BASE_DIR="${{ env.FETCHCONTENT_BASE_DIR }}"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel --target NgDaw NgDawMcp
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          & $iscc /DAppVersion=${{ steps.version.outputs.version }} `
+                  "/DAppExe=$PWD\build\NgDaw_artefacts\Release\Ng DAW.exe" `
+                  "/DMcpExe=$PWD\build\NgDawMcp_artefacts\Release\NgDawMcp.exe" `
+                  "/DOutputDir=$PWD\build\installer" `
+                  packaging\windows\NgDaw.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      - name: Check the installer installs and runs
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem build\installer\*.exe | Select-Object -First 1
+          $dir = "$env:RUNNER_TEMP\NgDawInstall"
+          Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$dir`"" -Wait
+          if (-not (Test-Path "$dir\Ng DAW.exe")) { throw "Ng DAW.exe wasn't installed" }
+          if (-not (Test-Path "$dir\NgDawMcp.exe")) { throw "NgDawMcp.exe wasn't installed" }
+          # The MCP server answers an initialize request and exits when its input closes.
+          $reply = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | & "$dir\NgDawMcp.exe"
+          if ("$reply" -notmatch '"serverInfo"') { throw "NgDawMcp.exe didn't answer: $reply" }
+          Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES" -Wait
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NgDaw-${{ steps.version.outputs.version }}-Windows-Setup
+          path: build/installer/*.exe
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Ng DAW ${{ steps.version.outputs.version }}
+          files: build/installer/*.exe
+          generate_release_notes: true

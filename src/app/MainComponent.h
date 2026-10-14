@@ -2,9 +2,12 @@
 
 #include "BrowserPanel.h"
 #include "CommandLogPanel.h"
+#include "core/Autosave.h"
 #include "core/Bridge.h"
+#include "HistoryPanel.h"
 #include "MixerView.h"
 #include "PianoRoll.h"
+#include "PreferencesPanel.h"
 #include "TimelineView.h"
 
 namespace ng
@@ -55,6 +58,9 @@ public:
         once they're saved or the user chose not to save; doesn't call it on Cancel. */
     void confirmDiscardChanges (std::function<void()> onContinue);
 
+    /** Opens a project file, e.g. one double-clicked in Explorer (asks about unsaved changes first). */
+    void openProjectFile (const juce::File&);
+
 private:
     void timerCallback() override;
     void handleAsyncUpdate() override;
@@ -81,7 +87,11 @@ private:
     void updateButtons();
     void updatePlayStep();
     void updatePositionDisplay();
-    void showAudioSettings();
+    void showPreferences();
+    void showHistory();
+    void checkForRecovery();
+    void updateCpuMeter();
+    void autosaveIfDue();
     void showPluginList();
     void showExport();
     void showBrowser (bool);
@@ -97,10 +107,14 @@ private:
     CommandRegistry registry;
     CommandDispatcher dispatcher { session, registry };
 
+    /** Keeps a copy of unsaved changes, for recovery after a crash. */
+    Autosave autosave { session };
+    juce::Time lastAutosave = juce::Time::getCurrentTime();
+
     juce::TextButton addBusButton { "Add bus" }, audioButton { "+ Audio" }, exportButton { "Export" };
     juce::TextButton newButton { "New" }, openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save as" },
                      addButton { "Add instrument" }, playButton { "Play" }, returnButton { "|<" }, recordButton { "Rec" },
-                     undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Audio" }, pluginsButton { "Plugins" }, shortcutsButton { "?" },
+                     undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Settings" }, historyButton { "History" }, pluginsButton { "Plugins" }, shortcutsButton { "?" },
                      runButton { "Run" }, closePianoRollButton { "Close" },
                      quantizeButton { "Quantize" };
     juce::ToggleButton consoleButton { "Console" }, keysButton { "Keys" }, browserButton { "Browser" };
@@ -111,6 +125,10 @@ private:
     juce::ComboBox timeSignature, snapBox;
     juce::ToggleButton loopButton { "Loop" }, metronomeButton { "Metronome" };
     juce::Label positionDisplay;
+
+    /** How hard the audio engine is working, with advice when it struggles. */
+    juce::Label cpuMeter;
+    int cpuMeterTicks = 0, lastXRunCount = -1;
 
     juce::Label timelineHint { {}, "Drag clips to move them and their edges to trim. Double-click empty space for a new clip, "
                                    "or a clip to edit its notes. Drop audio files to import them. Del deletes, Ctrl+D duplicates, S splits." },

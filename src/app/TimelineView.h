@@ -27,6 +27,11 @@ namespace ng
     empty spot on an audio lane to pick files for it. An audio clip can't be trimmed past the
     end of its file, and audio and MIDI clips each stay on their own kind of channel.
 
+    Automation: the A button on a lane's name shows an automation lane under it, for the
+    volume, pan or an effect parameter of the strip the channel plays into (click its name to
+    pick which). Click to add a point, drag one to move it, and double-click or right-click it
+    to remove it. Each click or drag is one undo step.
+
     Ctrl + mouse wheel zooms around the mouse, Shift + wheel (or a sideways scroll)
     scrolls through time, and the plain wheel scrolls the lanes. While playing, the view
     follows the playhead.
@@ -84,7 +89,11 @@ public:
     double getPixelsPerBeat() const noexcept    { return pixelsPerBeat; }
     void setPixelsPerBeat (double newPixelsPerBeat, float anchorX);
 
-    static constexpr int headerWidth = 130, rulerHeight = 24, laneHeight = 44, scrollBarSize = 12;
+    static constexpr int headerWidth = 130, rulerHeight = 24, laneHeight = 44, automationHeight = 64, scrollBarSize = 12;
+
+    /** Shows or hides a channel's automation lane. */
+    void showAutomation (const juce::String& channelId, bool shouldShow);
+    bool isShowingAutomation (const juce::String& channelId) const     { return automationLanes.count (channelId) > 0; }
 
 private:
     struct Clip
@@ -99,10 +108,19 @@ private:
 
     struct Lane
     {
-        juce::String channelId, name;
+        juce::String channelId, name, output;
         juce::Colour colour;
         juce::Array<Clip> clips;
         bool audio = false;
+    };
+
+    /** An automation lane: one parameter of the strip a channel plays into, and its points. */
+    struct AutomationLane
+    {
+        juce::String strip, effect, parameter { "volume" }, name;
+        double min = 0.0, max = 1.0, value = 0.0;
+        bool isVolume = true, valid = false;
+        juce::Array<juce::Point<double>> points;   // beat, value
     };
 
     enum class DragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut };
@@ -126,6 +144,23 @@ private:
     };
 
     Hit hitTestLanes (juce::Point<float>) const;
+
+    // Lanes are laneHeight tall, plus automationHeight when their automation shows.
+    int getLaneTop (int lane) const;
+    int getLaneSpan (int lane) const;
+    int getContentHeight() const;
+    juce::Rectangle<int> getAutomationButton (int lane) const;
+    juce::Rectangle<float> getAutomationArea (int lane) const;
+    int automationLaneAt (juce::Point<float>) const;
+    AutomationLane* getAutomation (int lane);
+    void refreshAutomation (const Lane&, AutomationLane&);
+    float automationValueToY (const AutomationLane&, double value, juce::Rectangle<float> area) const;
+    double yToAutomationValue (const AutomationLane&, float y, juce::Rectangle<float> area) const;
+    int automationPointAt (int lane, juce::Point<float>) const;
+    void setAutomationPoints (int lane, const juce::Array<juce::Point<double>>&);
+    void showAutomationMenu (int lane);
+    void paintAutomation (juce::Graphics&, int lane);
+    bool automationMouseDown (const juce::MouseEvent&);
     juce::Rectangle<float> getClipArea (int lane, double startBeat, double lengthBeats) const;
     static juce::Rectangle<float> getFadeHandle (juce::Rectangle<float> clipArea, double beatsFromEdge, bool fadeIn, double pixelsPerBeat);
     void setSelectedAudio (const juce::String& property, const juce::var& value);
@@ -192,6 +227,9 @@ private:
     double dropBeat = 0.0;
 
     std::map<juce::String, std::unique_ptr<te::SmartThumbnail>> thumbnails;   // by file path
+
+    std::map<juce::String, AutomationLane> automationLanes;   // by channel id, for the lanes showing one
+    int automationDragLane = -1, automationDragPoint = -1;
     std::unique_ptr<juce::FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TimelineView)
