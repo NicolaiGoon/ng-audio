@@ -108,6 +108,13 @@ and every action available to AI tools through one command layer.
   fade it in or out. Right-click it for its *Gain* (+6 to -12 dB; the waveform grows or shrinks
   with it), *Follow tempo*, which time-stretches the clip so it keeps its length in beats when the
   tempo changes, and *Remove fades*.
+- **Exporting.** *Export* above the timeline (or Ctrl+E) saves the whole song (to the end of the
+  last clip, plus two seconds for tails) or the loop region as a WAV (16-bit, 24-bit or 32-bit
+  float) or an MP3, at 44.1 to 96 kHz. Tick *stems* for one file per mixer strip instead, all the
+  same length so they line up in another app: each strip's channels through its own effects and
+  fader, and each bus with what is sent to it, so together they add up to the mix (before the
+  master). MP3 needs LAME or FFmpeg installed (on the PATH, or next to Ng DAW); without one,
+  the MP3 choice says so.
 - **Linked-by-default mixer strips.** Adding an instrument creates a channel *and* a mixer strip
   with the same name and colour, already routed. Pick a different strip in the channel rack to
   detach it; several channels can share one strip; pick its own strip again to re-link it.
@@ -133,6 +140,7 @@ and every action available to AI tools through one command layer.
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
   | `set_metronome` | Turns the metronome on or off |
   | `set_audio_clip` | Sets an audio clip's gain, fade in and out, and whether it follows the tempo (time-stretched from its source tempo) |
+  | `export_audio` | Exports the song or the loop region as a WAV or MP3 file, or as one file per mixer strip (stems) |
   | `set_audio_input` | Sets the audio input an audio channel records from, and how it's monitored |
   | `arm_channel` / `record` | Arms a channel for MIDI input (one at a time) or audio input (any number), and records into them until `stop` |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
@@ -175,11 +183,13 @@ src/core/OutputCommands.cpp   multi-output instruments
 src/core/SamplerCommands.cpp  the sampler's samples and drum kits
 src/core/LibraryCommands.cpp  sample folders, finding samples, and presets
 src/core/AudioCommands.cpp    importing audio files onto audio channels, editing audio clips, and audio inputs
+src/core/ExportCommands.cpp   exporting the song, the loop region and stems to WAV or MP3
 src/app/                      the JUCE window (timeline, channel rack, mixer, transport, console)
 src/app/MixerView.*           mixer strips: fader, pan, effects, sends, mute/solo, meters, master
 src/app/PluginWindow.*        plugin editor windows, and sliders for built-in effects
 src/app/SamplerEditor.*       the sampler's window: its samples, and dropping files and kits on it
 src/app/BrowserPanel.*        the browser, and what dropping its items on the rack, channels and strips does
+src/app/ExportPanel.*         the Export dialog
 src/app/TimelineView.*        the arrangement timeline: lanes, clips and waveforms, ruler, playhead, zoom, audio drops
 src/app/PianoRoll.*           the piano roll: keyboard, note grid, drawing and editing notes
 tests/CommandTests.cpp        headless tests, including an offline render that checks for sound

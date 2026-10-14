@@ -31,7 +31,7 @@ namespace
         return juce::var (o);
     }
 
-    struct HeadlessBehaviour  : public tracktion::EngineBehaviour
+    struct HeadlessBehaviour  : public ng::EngineBehaviour
     {
         bool autoInitialiseDeviceManager() override    { return false; }
     };
@@ -2263,6 +2263,161 @@ namespace
         deviceManager.removeHostedAudioDeviceInterface();
     }
 
+    void writeTone (const juce::File& file, double hz, float amplitude, double seconds)
+    {
+        std::unique_ptr<juce::FileOutputStream> stream (file.createOutputStream());
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), 44100.0, 1, 16, {}, 0));
+        CHECK (writer != nullptr);
+        stream.release();
+        juce::AudioBuffer<float> buffer (1, (int) (seconds * 44100.0));
+
+        for (int i = 0; i < buffer.getNumSamples(); ++i)
+            buffer.setSample (0, i, amplitude * (float) std::sin (juce::MathConstants<double>::twoPi * hz * i / 44100.0));
+
+        writer->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples());
+    }
+
+    /** An exported file's audio, with its sample rate and bit depth. */
+    struct Exported
+    {
+        juce::AudioBuffer<float> audio;
+        double sampleRate = 0.0;
+        int bits = 0;
+    };
+
+    Exported readExported (const juce::File& file)
+    {
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+        Exported e;
+
+        if (reader == nullptr)
+            return e;
+
+        e.sampleRate = reader->sampleRate;
+        e.bits = (int) reader->bitsPerSample;
+        e.audio.setSize ((int) reader->numChannels, (int) reader->lengthInSamples);
+        reader->read (&e.audio, 0, e.audio.getNumSamples(), 0, true, true);
+        return e;
+    }
+
+    void testExport (tracktion::Engine& engine)
+    {
+        std::cout << "export_audio writes the song, the loop, MP3s and stems\n";
+        Fixture f (engine);
+        auto settle = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil (300); };
+
+        auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NgDawExportTest");
+        folder.deleteRecursively();
+        CHECK (folder.createDirectory());
+
+        auto exportTo = [&] (const juce::String& name, std::initializer_list<std::pair<const char*, juce::var>> extra = {})
+        {
+            auto params = obj ({ { "path", folder.getChildFile (name).getFullPathName() } });
+
+            for (auto& [k, v] : extra)
+                params.getDynamicObject()->setProperty (k, v);
+
+            return f.dispatcher.execute ("export_audio", params);
+        };
+
+        // Nothing to export yet, and bad values.
+        CHECK (! exportTo ("Empty.wav").ok);
+        CHECK (! f.dispatcher.execute ("export_audio", obj ({ { "path", "relative.wav" } })).ok);
+
+        writeTone (folder.getChildFile ("Tone A.wav"), 440.0, 0.5f, 2.0);
+        writeTone (folder.getChildFile ("Tone B.wav"), 660.0, 0.3f, 2.0);
+        CHECK (f.dispatcher.execute ("import_audio", obj ({ { "file", folder.getChildFile ("Tone A.wav").getFullPathName() } })).ok);
+        CHECK (f.dispatcher.execute ("import_audio", obj ({ { "file", folder.getChildFile ("Tone B.wav").getFullPathName() } })).ok);
+        settle();
+
+        CHECK (! exportTo ("Bad.wav", { { "format", "ogg" } }).ok);
+        CHECK (! exportTo ("Bad.wav", { { "bit_depth", 20 } }).ok);
+        CHECK (! exportTo ("Bad.wav", { { "sample_rate", 22050 } }).ok);
+        CHECK (! exportTo ("Bad.wav", { { "range", "chorus" } }).ok);
+        CHECK (! folder.getChildFile ("Bad.wav").exists());
+
+        // The song: 2 s of clips (4 beats at 120) plus a 2 s tail, 24-bit stereo at 44.1 kHz.
+        auto r = exportTo ("Song.wav");
+        CHECK (r.ok && r.value["files"].size() == 1 && near (r.value["seconds"], 4.0));
+        auto song = readExported (folder.getChildFile ("Song.wav"));
+        std::cout << "       song: " << song.audio.getNumSamples() / song.sampleRate << " s, " << song.bits << "-bit, level "
+                  << rmsBetween (song.audio, 0.5, 1.5) << "\n";
+        CHECK (song.sampleRate == 44100.0 && song.bits == 24 && song.audio.getNumChannels() == 2);
+        CHECK (std::abs (song.audio.getNumSamples() - 4 * 44100) < 64);
+        CHECK (rmsBetween (song.audio, 0.5, 1.5) > 0.1f && rmsBetween (song.audio, 2.5, 3.9) < 0.001f);
+
+        // The loop region exactly: beats 0 to 2 are 1 s.
+        CHECK (f.dispatcher.execute ("set_loop", obj ({ { "start_beat", 0 }, { "end_beat", 2 } })).ok);
+        r = exportTo ("Loop", { { "range", "loop" }, { "sample_rate", 48000 }, { "bit_depth", 16 } });
+        CHECK (r.ok && r.value["files"][0].toString().endsWith ("Loop.wav"));
+        auto loop = readExported (folder.getChildFile ("Loop.wav"));
+        CHECK (loop.sampleRate == 48000.0 && loop.bits == 16 && loop.audio.getNumSamples() == 48000);
+
+        // MP3, when LAME or FFmpeg is installed; otherwise a clear error.
+        r = exportTo ("Song.mp3");
+
+        if (ng::findMp3Encoder().existsAsFile())
+        {
+            auto mp3 = readExported (folder.getChildFile ("Song.mp3"));
+            std::cout << "       mp3 with " << ng::findMp3Encoder().getFileName() << ": " << mp3.audio.getNumSamples() / std::max (1.0, mp3.sampleRate) << " s\n";
+            CHECK (r.ok && mp3.audio.getNumSamples() > 3.9 * 44100 && mp3.audio.getRMSLevel (0, 22050, 44100) > 0.1f);
+        }
+        else
+        {
+            std::cout << "       no MP3 encoder here: " << r.error << "\n";
+            CHECK (! r.ok && r.error.contains ("LAME"));
+        }
+
+        // Stems: Tone A sends to a bus, so there's a stem for each tone's strip and for the bus.
+        CHECK (f.dispatcher.execute ("create_bus", obj ({ { "name", "Verb" } })).ok);
+        CHECK (f.dispatcher.execute ("set_send", obj ({ { "strip", "Tone A" }, { "bus", "Verb" } })).ok);
+        auto stemsFolder = folder.getChildFile ("Stems");
+        r = exportTo ("Stems", { { "stems", true } });
+        CHECK (r.ok && r.value["files"].size() == 3);
+
+        auto stemA = readExported (stemsFolder.getChildFile ("Untitled - Tone A.wav"));
+        auto stemB = readExported (stemsFolder.getChildFile ("Untitled - Tone B.wav"));
+        auto stemBus = readExported (stemsFolder.getChildFile ("Untitled - Verb.wav"));
+        auto a = rmsBetween (stemA.audio, 0.5, 1.5), b = rmsBetween (stemB.audio, 0.5, 1.5), bus = rmsBetween (stemBus.audio, 0.5, 1.5);
+        std::cout << "       stems: Tone A " << a << ", Tone B " << b << ", Verb " << bus << "\n";
+        CHECK (stemA.audio.getNumSamples() == stemB.audio.getNumSamples() && stemA.audio.getNumSamples() == stemBus.audio.getNumSamples());
+        CHECK (a > 0.1f && b > 0.05f && std::abs (b / a - 0.6f) < 0.05f);   // each tone on its own
+        CHECK (std::abs (bus - a) < a * 0.05f);                              // the send at 0 dB, without Tone B
+
+        // Together the stems are the mix, less the master fader.
+        CHECK (exportTo ("Song.wav").ok);
+        auto mix = readExported (folder.getChildFile ("Song.wav"));
+        juce::AudioBuffer<float> sum (2, stemA.audio.getNumSamples());
+        sum.clear();
+
+        for (auto* stem : { &stemA, &stemB, &stemBus })
+            for (int ch = 0; ch < 2; ++ch)
+                sum.addFrom (ch, 0, stem->audio, ch, 0, sum.getNumSamples());
+
+        auto scale = rmsBetween (mix.audio, 0.5, 1.5) / rmsBetween (sum, 0.5, 1.5);
+        float residual = 0.0f;
+
+        for (int i = 22050; i < 66150; ++i)
+            residual = std::max (residual, std::abs (mix.audio.getSample (0, i) - scale * sum.getSample (0, i)));
+
+        std::cout << "       mix / stems " << scale << ", largest difference " << residual << "\n";
+        CHECK (scale > 0.5f && scale <= 1.01f && residual < 0.01f);
+
+        // Soloing for the bus stem left no trace.
+        CHECK (! f.session.isExporting());
+
+        for (auto track : tracktion::getAudioTracks (f.session.getEdit()))
+            CHECK (! track->isMuted (false) && ! track->isSolo (false) && ! track->isSoloIsolate (false));
+
+        CHECK (! exportTo ("Song.wav", { { "stems", true } }).ok);   // stems go in a folder, not a file
+
+        if (failures == 0)
+            folder.deleteRecursively();
+    }
+
     void testAudioClipEditing (tracktion::Engine& engine)
     {
         std::cout << "audio clips have gain and fades, and can follow the tempo\n";
@@ -2450,6 +2605,7 @@ int main()
         testLibrary (engine);
         testAudioTracks (engine);
         testAudioClipEditing (engine);
+        testExport (engine);
         testRendersAudio (engine);
         testRecordingAudio (engine);
     }

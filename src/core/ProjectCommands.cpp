@@ -1558,6 +1558,7 @@ void registerProjectCommands (CommandRegistry& registry)
     registerSamplerCommands (registry);
     registerLibraryCommands (registry);
     registerAudioCommands (registry);
+    registerExportCommands (registry);
 }
 
 } // namespace ng
