@@ -30,7 +30,8 @@ namespace
 
         for (auto& s : *strips.getArray())
             parts.add (s["id"].toString() + "|" + s["name"].toString() + "|" + s["colour"].toString()
-                         + "|" + juce::String (s["inputs"].size()) + "|" + getEffectsKey (s));
+                         + "|" + juce::String (s["inputs"].size()) + "|" + juce::String (s["strip_inputs"].size())
+                         + "|" + s["output"].toString() + "|" + getEffectsKey (s));
 
         parts.add ("master|" + getEffectsKey (state["master"]));
 
@@ -623,12 +624,36 @@ public:
             setUpNameLabel (name, dispatcher, id, strip["name"].toString());
             setUpDeleteButton (deleteButton, dispatcher, id, "mixer strip");
 
+            // Channels and other strips playing into this one (an instrument's own output strips
+            // are shown next to it instead).
             auto numInputs = strip["inputs"].size();
+
+            for (auto& other : *allStrips.getArray())
+                if (other["output"] == strip["id"] && ! other.hasProperty ("output_of"))
+                    ++numInputs;
+
             auto inputsText = strip.hasProperty ("output_of") ? "Out " + strip["output_pair"].toString()
                                                                : juce::String (numInputs) + (numInputs == 1 ? " input" : " inputs");
-            inputs.setText (static_cast<bool> (strip["bus"]) ? "Bus" + (numInputs > 0 ? ", " + inputsText : juce::String())
-                                                             : inputsText,
-                            juce::dontSendNotification);
+            auto text = static_cast<bool> (strip["bus"]) ? "Bus" + (numInputs > 0 ? ", " + inputsText : juce::String())
+                                                         : inputsText;
+
+            // A strip playing into another one says where, which matters more than its inputs.
+            if (! isOutput && strip["output"].toString() != "master")
+                for (auto& other : *allStrips.getArray())
+                    if (other["id"] == strip["output"])
+                        text = "> " + other["name"].toString();
+
+            inputs.setText (text, juce::dontSendNotification);
+            inputs.setMinimumHorizontalScale (0.5f);
+
+            if (! isOutput)
+            {
+                inputs.setTooltip ("Click to choose where this strip plays: master, or a bus or group strip");
+                inputs.setMouseCursor (juce::MouseCursor::PointingHandCursor);
+                inputs.addMouseListener (this, false);
+                outputChoices = allStrips;
+                outputNow = strip["output"].toString();
+            }
 
             sends = std::make_unique<SendSlots> (d, id, strip["sends"], allStrips);
             addAndMakeVisible (*sends);
@@ -780,7 +805,40 @@ public:
         fader.setBounds (r);
     }
 
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (e.eventComponent == &inputs && ! isOutput && inputs.getLocalBounds().contains (e.getPosition()))
+            showOutputMenu();
+    }
+
 private:
+    void showOutputMenu()
+    {
+        juce::PopupMenu menu;
+        menu.addSectionHeader ("Play into");
+        menu.addItem ("Master", true, outputNow == "master", [this] { routeTo ("master"); });
+
+        for (auto& other : *outputChoices.getArray())
+        {
+            auto otherId = other["id"].toString();
+
+            if (otherId != id && ! other.hasProperty ("output_of"))
+                menu.addItem (other["name"].toString(), true, outputNow == otherId, [this, otherId] { routeTo (otherId); });
+        }
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&inputs));
+    }
+
+    void routeTo (const juce::String& output)
+    {
+        auto result = dispatcher.execute ("route_strip", makeObject ({ { "strip", id }, { "output", output } }));
+
+        if (! result.ok)
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOk (juce::MessageBoxIconType::WarningIcon, "Couldn't route the strip",
+                                                                                 result.error.fromFirstOccurrenceOf ("route_strip: ", false, false)),
+                                          nullptr);
+    }
+
     void send (std::initializer_list<std::pair<const char*, juce::var>> values)
     {
         auto params = makeObject ({ { "strip", id } });
@@ -812,6 +870,8 @@ private:
     std::unique_ptr<SendSlots> sends;
     Meter meter;
     bool dropHighlight = false;
+    juce::var outputChoices;
+    juce::String outputNow;
 
     void setDropHighlight (bool on)
     {

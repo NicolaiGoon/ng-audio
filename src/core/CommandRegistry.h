@@ -66,8 +66,12 @@ void registerPluginCommands (CommandRegistry&);
     show_effect_window (EffectCommands.cpp). */
 void registerEffectCommands (CommandRegistry&);
 
-/** Registers create_bus, set_send and remove_send (BusCommands.cpp). */
+/** Registers create_bus, set_send, remove_send, route_strip and tag_channel (BusCommands.cpp). */
 void registerBusCommands (CommandRegistry&);
+
+/** Gives a channel a tag (or none, for ""), creating the tag's bus and routing the channel's
+    strip into it, as tag_channel does; command names the command in errors (BusCommands.cpp). */
+CommandResult tagChannel (Session&, te::AudioTrack& channel, const juce::String& tag, const juce::String& command);
 
 /** Registers set_multi_output (OutputCommands.cpp). */
 void registerOutputCommands (CommandRegistry&);

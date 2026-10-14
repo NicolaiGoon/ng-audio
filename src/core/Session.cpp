@@ -9,6 +9,7 @@ namespace
     const juce::Identifier ownStripProp ("ngOwnStrip");
     const juce::Identifier audioChannelProp ("ngAudio");
     const juce::Identifier audioInputProp ("ngInput"), monitorProp ("ngMonitor");
+    const juce::Identifier tagProp ("ngTag"), tagBusProp ("ngTagBus");
 
     juce::String colourToString (juce::Colour c)
     {
@@ -1013,6 +1014,38 @@ bool Session::isPreFader (const te::AuxSendPlugin& send)
     return false;
 }
 
+juce::String Session::getTag (const te::AudioTrack& channel)
+{
+    return channel.state[tagProp].toString();
+}
+
+void Session::setTag (te::AudioTrack& channel, const juce::String& tag)
+{
+    if (tag.isEmpty())
+        channel.state.removeProperty (tagProp, &getUndoManager());
+    else
+        channel.state.setProperty (tagProp, tag, &getUndoManager());
+}
+
+juce::String Session::getTagOfBus (const te::AudioTrack& strip)
+{
+    return strip.state[tagBusProp].toString();
+}
+
+void Session::setTagOfBus (te::AudioTrack& strip, const juce::String& tag)
+{
+    strip.state.setProperty (tagBusProp, tag, &getUndoManager());
+}
+
+te::AudioTrack* Session::findTagBus (const juce::String& tag) const
+{
+    for (auto s : getStrips())
+        if (tag.isNotEmpty() && getTagOfBus (*s) == tag)
+            return s;
+
+    return nullptr;
+}
+
 bool Session::feeds (const te::AudioTrack& from, const te::AudioTrack& to) const
 {
     juce::Array<const te::AudioTrack*> visited;
@@ -1161,6 +1194,9 @@ juce::var Session::toVar() const
 
         obj->setProperty ("linked", isLinked (*c));
 
+        if (auto tag = getTag (*c); tag.isNotEmpty())
+            obj->setProperty ("tag", tag);
+
         juce::Array<juce::var> plugins;
 
         for (auto p : c->pluginList)
@@ -1243,6 +1279,18 @@ juce::var Session::toVar() const
                 inputs.add (c->itemID.toString());
 
         obj->setProperty ("inputs", inputs);
+
+        // Other strips playing into this one (a tag's bus, or a multi-output instrument's sum).
+        juce::Array<juce::var> stripInputs;
+
+        for (auto other : getStrips())
+            if (other->getOutput().getDestinationTrack() == s)
+                stripInputs.add (other->itemID.toString());
+
+        obj->setProperty ("strip_inputs", stripInputs);
+
+        if (auto tag = getTagOfBus (*s); tag.isNotEmpty())
+            obj->setProperty ("tag", tag);
 
         if (auto dest = s->getOutput().getDestinationTrack())
             obj->setProperty ("output", dest->itemID.toString());

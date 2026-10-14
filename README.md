@@ -150,23 +150,49 @@ and every action available to AI tools through one command layer.
   | `set_effect` / `get_effect` | Bypass an effect and set its parameters; list them with their ranges |
   | `show_effect_window` | Opens an effect's window |
   | `create_bus` / `set_send` / `remove_send` | Adds a bus; sends a strip to it with a level, pre- or post-fader |
+  | `route_strip` | Plays a mixer strip into another strip (a group or bus) or into `master` |
+  | `tag_channel` | Tags a channel `drums`, `bass`, `vox` or anything else; the tag's bus ("Drums Bus") is created the first time, and the channel's strip plays into it. `create_track` takes a `tag` too |
   | `set_multi_output` | Gives each stereo output of a channel's plugin instrument its own strip, or goes back to one |
   | `add_sample` / `set_sample` / `remove_sample` | A sampler's samples: the file, its key (or range of keys), level, pan and one-shot |
   | `load_drum_kit` | Loads a folder of samples into a sampler as a drum kit, on General MIDI keys where the names say what they are |
   | `get_library` / `set_library` | The browser's sample folders and preset folder (app settings, not part of the project) |
   | `find_samples` | Finds audio files in the sample folders by words in their names and folders |
   | `save_preset` / `list_presets` / `load_preset` | Saves an instrument's or effect's settings as a preset, lists presets, and loads one onto a channel or strip |
-  | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session |
+  | `get_state` | The whole project as JSON (channels with their clips in beats, strips, transport), so an AI can "see" the session. Or less: one `channel`, `strip` or `clip` (with its notes), or a `view` (`summary`, `mixer`, `transport`) |
 
   Each editing command is one undo step, a batch of commands is one undo step, and a failing command
-  or batch is rolled back. The command console (tick *Console* in the toolbar) takes the same JSON
-  an MCP server will send, for example:
+  or batch is rolled back. In a batch, a param like `"$0.channel"` is that field of the first
+  command's result, so one batch can create a track and then fill it. The command console (tick
+  *Console* in the toolbar) takes the same JSON the MCP server sends, for example:
 
   ```json
   {"command": "route", "params": {"channel": "Synth 2", "strip": "Synth 1"}}
   {"batch": "Two synths", "commands": [
     {"command": "create_track", "params": {"name": "Bass"}},
     {"command": "create_track", "params": {"name": "Lead"}}]}
+  ```
+
+- **Claude in the app:** `NgDawMcp` is an MCP server, so Claude (Claude Code, Claude Desktop or
+  any MCP client) can use every command above on the project that's open in Ng DAW, plus `batch`,
+  `undo` and `redo`. Ask it, say, to "add a bass line following the chords and put it on a bass bus
+  with compression", and it happens in the open project as one undo step.
+  - What Claude did shows in the **AI command log** beside the console (it opens by itself the
+    first time). Each entry has **Undo**, which takes back that whole command or batch.
+  - The app only listens on 127.0.0.1. It writes the port and a secret token to `bridge.json` in
+    the user's app data folder (`~/.config/Ng DAW` on Linux, `~/Library/Application Support/Ng DAW`
+    on macOS, `%APPDATA%\Ng DAW` on Windows), readable only by you, and refuses requests without
+    the token. `NG_DAW_BRIDGE_FILE` sets another path for both ends.
+
+  To add it to Claude Code (with Ng DAW open):
+
+  ```sh
+  claude mcp add ng-daw -- /path/to/build/NgDawMcp_artefacts/Debug/NgDawMcp
+  ```
+
+  Or to Claude Desktop, in its `claude_desktop_config.json`:
+
+  ```json
+  {"mcpServers": {"ng-daw": {"command": "/path/to/build/NgDawMcp_artefacts/Debug/NgDawMcp"}}}
   ```
 
 ## Layout
@@ -184,12 +210,16 @@ src/core/SamplerCommands.cpp  the sampler's samples and drum kits
 src/core/LibraryCommands.cpp  sample folders, finding samples, and presets
 src/core/AudioCommands.cpp    importing audio files onto audio channels, editing audio clips, and audio inputs
 src/core/ExportCommands.cpp   exporting the song, the loop region and stems to WAV or MP3
+src/core/Bridge.*             the local connection other programs (the MCP server) use to run commands in the app
+src/core/McpServer.*          the MCP protocol: tools/list and tools/call, passed to the app through the bridge
+src/mcp/McpMain.cpp           NgDawMcp, the MCP server program (stdio)
 src/app/                      the JUCE window (timeline, channel rack, mixer, transport, console)
 src/app/MixerView.*           mixer strips: fader, pan, effects, sends, mute/solo, meters, master
 src/app/PluginWindow.*        plugin editor windows, and sliders for built-in effects
 src/app/SamplerEditor.*       the sampler's window: its samples, and dropping files and kits on it
 src/app/BrowserPanel.*        the browser, and what dropping its items on the rack, channels and strips does
 src/app/ExportPanel.*         the Export dialog
+src/app/CommandLogPanel.*     the AI command log, with undo for each entry
 src/app/TimelineView.*        the arrangement timeline: lanes, clips and waveforms, ruler, playhead, zoom, audio drops
 src/app/PianoRoll.*           the piano roll: keyboard, note grid, drawing and editing notes
 tests/CommandTests.cpp        headless tests, including an offline render that checks for sound
@@ -198,9 +228,9 @@ tests/TestSynth, TestGain,    tiny VST3 plugins the tests load: an instrument, a
 ```
 
 `ng_core` is a static library holding JUCE, Tracktion and the command layer, so the app, the
-tests and a future MCP server all share it. `CommandRegistry::describe()` already returns the
-commands in MCP `tools/list` shape (name, description, inputSchema), and
-`CommandDispatcher::executeJson()` is the call an MCP `tools/call` handler would make.
+tests and the MCP server all share it. `CommandRegistry::describe()` returns the commands in MCP
+`tools/list` shape (name, description, inputSchema). The MCP server sends each tool call to the
+running app over the bridge, where the app's own `CommandDispatcher` runs it.
 
 ## Building
 
@@ -213,7 +243,7 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-The app ends up in `build/NgDaw_artefacts/Debug/`.
+The app ends up in `build/NgDaw_artefacts/Debug/`, and the MCP server in `build/NgDawMcp_artefacts/Debug/`.
 
 GitHub Actions runs the same build and tests on Windows (MSVC) and Linux (GCC) for every pull
 request and every push to `main` (`.github/workflows/ci.yml`).
@@ -233,6 +263,4 @@ Releasing this app closed-source needs commercial licences for both.
 
 ## Next steps
 
-- An MCP server executable that wraps `CommandRegistry::describe()` and `executeJson()`
-- Tags (`drums`, `bass`, `vox`) that create and route buses automatically
 - CLAP support
