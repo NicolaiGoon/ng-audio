@@ -263,6 +263,34 @@ public:
         when the project or the MIDI devices change. */
     void routeMidiInputs();
 
+    //==============================================================================
+    // Recording audio. Each audio channel can take an audio input (saved with the project)
+    // and a monitoring mode: "auto" plays the input through the channel while it's armed,
+    // "on" always, "off" never. Any number of audio channels can be armed at once; like MIDI
+    // arming, that's setup, not part of the song.
+
+    /** The names of the audio inputs the audio device offers (e.g. "Input 1 + 2"). */
+    juce::StringArray getAudioInputNames() const;
+
+    /** An audio channel's input ("" for none) and monitoring mode ("auto", "on" or "off"). */
+    static juce::String getAudioInput (const te::AudioTrack& channel);
+    static juce::String getMonitorMode (const te::AudioTrack& channel);
+    void setAudioInput (te::AudioTrack& channel, const juce::String& input);
+    void setMonitorMode (te::AudioTrack& channel, const juce::String& mode);
+
+    bool isAudioArmed (const te::AudioTrack& channel) const;
+    void setAudioArmed (te::AudioTrack& channel, bool armed);
+    juce::Array<te::AudioTrack*> getArmedAudioChannels() const;
+
+    /** Points each audio input at the audio channels that use it, records on the armed ones and
+        sets how they're monitored. Called when arming, when an input or monitoring mode
+        changes, after undo and redo, and before recording. */
+    void routeAudioInputs();
+
+    /** Where recordings are written: a Recordings folder beside the project file, or, before
+        the project is saved, in Music/Ng DAW/Recordings. */
+    juce::File getRecordingFolder() const;
+
     /** Where the playhead is, as bar.beat.sixteenth counting from 1 (e.g. "3.2.1"). */
     juce::String getPositionText() const;
 
@@ -283,6 +311,7 @@ private:
     te::Engine& engine;
     std::unique_ptr<te::Edit> edit;
     te::EditItemID armedChannel;
+    juce::Array<te::EditItemID> armedAudio;
     juce::File file;
     juce::String savedState;
 
