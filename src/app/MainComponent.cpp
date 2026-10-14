@@ -76,7 +76,7 @@ namespace
         /** pluginInstruments: the scanned plugin instruments, as (id, name). */
         ChannelRow (CommandDispatcher& d, const juce::var& channel, const juce::var& strips,
                     const juce::Array<std::pair<juce::String, juce::String>>& pluginInstruments, const int& playStep,
-                    const juce::String& audioFileWildcard)
+                    const juce::String& audioFileWildcard, const juce::var& audioInputs)
             : dispatcher (d), id (channel["id"].toString()), swatch (d, id, colourFrom (channel["colour"])),
               grid (d, id, channel["pattern"]["steps"].toString(), colourFrom (channel["colour"]), playStep),
               audioWildcard (audioFileWildcard), channelName (channel["name"].toString()),
@@ -95,7 +95,22 @@ namespace
             armButton.setTooltip ("Arm for MIDI input: play this channel from a MIDI keyboard (or Keys) and record into it");
             armButton.onClick = [this]
             {
-                dispatcher.execute ("arm_channel", makeObject ({ { "channel", id }, { "armed", ! armButton.getToggleState() } }));
+                auto arming = ! armButton.getToggleState();
+
+                // An audio channel with no input yet gets the first one.
+                if (isAudio && arming && inputIds.isEmpty())
+                {
+                    showWarning ("Can't arm for audio", "The audio device has no inputs. Pick one that does in Audio settings.");
+                    return;
+                }
+
+                if (isAudio && arming && input.getSelectedId() <= 1)
+                    dispatcher.execute ("set_audio_input", makeObject ({ { "channel", id }, { "input", inputIds[0] } }));
+
+                auto result = dispatcher.execute ("arm_channel", makeObject ({ { "channel", id }, { "armed", arming } }));
+
+                if (! result.ok)
+                    showWarning ("Can't arm", result.error);
             };
 
             status.setText (channel["linked"] ? "linked" : "detached", juce::dontSendNotification);
@@ -206,18 +221,54 @@ namespace
             for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &status, &armButton, &instrument, &editButton, &output, &deleteButton, &grid })
                 addAndMakeVisible (c);
 
-            // An audio channel plays its clips: no instrument, no MIDI input, no steps.
+            // An audio channel plays its clips and records from an audio input: no instrument,
+            // no MIDI, no steps.
             if (isAudio)
             {
-                for (auto* c : std::initializer_list<juce::Component*> { &armButton, &instrument, &editButton, &outsButton, &grid })
+                for (auto* c : std::initializer_list<juce::Component*> { &instrument, &editButton, &outsButton, &grid })
                     c->setVisible (false);
 
-                audioLabel.setText ("Audio channel", juce::dontSendNotification);
-                audioLabel.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
-                audioHint.setText ("Drop audio files on its lane in the timeline", juce::dontSendNotification);
+                armButton.setTooltip ("Arm to record from the audio input (any number of audio channels can be armed)");
+
+                input.addItem ("No input", 1);
+                auto currentInput = channel["input"].toString();
+
+                for (auto& inputName : *audioInputs.getArray())
+                {
+                    inputIds.add (inputName.toString());
+                    input.addItem (inputName.toString(), inputIds.size() + 1);
+                }
+
+                if (currentInput.isNotEmpty() && ! inputIds.contains (currentInput))
+                {
+                    // Saved on a computer whose sound card had this input.
+                    inputIds.add (currentInput);
+                    input.addItem (currentInput + " (not here)", inputIds.size() + 1);
+                }
+
+                input.setSelectedId (currentInput.isEmpty() ? 1 : inputIds.indexOf (currentInput) + 2, juce::dontSendNotification);
+                input.setTooltip ("The audio input this channel records from");
+                input.onChange = [this]
+                {
+                    auto index = input.getSelectedId() - 2;
+                    dispatcher.execute ("set_audio_input", makeObject ({ { "channel", id },
+                                                                         { "input", index >= 0 ? inputIds[index] : juce::String ("none") } }));
+                };
+
+                monitorIds = { "auto", "on", "off" };
+                monitor.addItemList ({ "Mon auto", "Mon on", "Mon off" }, 1);
+                monitor.setSelectedId (monitorIds.indexOf (channel["monitor"].toString()) + 1, juce::dontSendNotification);
+                monitor.setTooltip ("Monitoring: hear the input through this channel while it's armed (auto), always (on) or never (off)");
+                monitor.onChange = [this]
+                {
+                    dispatcher.execute ("set_audio_input", makeObject ({ { "channel", id }, { "monitor", monitorIds[monitor.getSelectedId() - 1] } }));
+                };
+
+                addAndMakeVisible (input);
+                addAndMakeVisible (monitor);
+                audioHint.setText ("Drop audio files on its lane in the timeline, or arm it and record", juce::dontSendNotification);
                 audioHint.setColour (juce::Label::textColourId, juce::Colours::grey);
                 audioHint.setFont (juce::FontOptions (12.0f));
-                addAndMakeVisible (audioLabel);
                 addAndMakeVisible (audioHint);
             }
         }
@@ -244,7 +295,10 @@ namespace
             }
 
             instrument.setBounds (r.removeFromRight (outsButton.isVisible() ? 106 : 150));
-            audioLabel.setBounds (instrument.getBounds().getUnion (editButton.getBounds()));
+            auto audioArea = instrument.getBounds().getUnion (editButton.getBounds());
+            monitor.setBounds (audioArea.removeFromRight (94));
+            audioArea.removeFromRight (2);
+            input.setBounds (audioArea);
             r.removeFromRight (4);
             armButton.setBounds (r.removeFromRight (26));
             status.setBounds (r.removeFromRight (64));
@@ -303,6 +357,13 @@ namespace
         }
 
     private:
+        void showWarning (const juce::String& title, const juce::String& message)
+        {
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOk (juce::MessageBoxIconType::WarningIcon,
+                                                                                 title, message, {}, this),
+                                          nullptr);
+        }
+
         juce::Array<juce::var> itemsForFiles (const juce::StringArray& files) const
         {
             juce::Array<juce::var> items;
@@ -338,7 +399,9 @@ namespace
         bool hasOutputs = false;
         StepGrid grid;
         juce::String audioWildcard, channelName;
-        juce::Label audioLabel, audioHint;
+        juce::Label audioHint;
+        juce::ComboBox input, monitor;
+        juce::StringArray inputIds, monitorIds;
         bool isSampler = false, isAudio = false, hasInstrument = false, dropHighlight = false;
     };
 
@@ -578,7 +641,7 @@ MainComponent::MainComponent (te::Engine& engine)
     };
     returnButton.onClick = [this] { dispatcher.execute ("set_position", makeObject ({ { "beat", 0 } })); };
     recordButton.onClick = [this] { toggleRecording(); };
-    recordButton.setTooltip ("Record MIDI into the armed channel from the playhead; click again (or Stop) to finish (R)");
+    recordButton.setTooltip ("Record into the armed channels from the playhead (MIDI or audio); click again (or Stop) to finish (R)");
     recordButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd0402f));
 
     keysButton.setTooltip ("Show a keyboard to play the armed channel with the mouse or the computer keys (A W S E D ...) (Ctrl+K)");
@@ -1021,8 +1084,11 @@ void MainComponent::toggleRecording()
     auto result = dispatcher.execute ("record");
 
     if (! result.ok)
-        showError ("Can't record yet", "Arm a channel first: click its " + juce::String::fromUTF8 ("\xe2\x97\x8f")
-                                         + " button in the channel rack. Its MIDI input is what gets recorded.");
+        showError ("Can't record yet", result.error.startsWith ("record: arm")
+                                         ? "Arm a channel first: click its " + juce::String::fromUTF8 ("\xe2\x97\x8f")
+                                             + " button in the channel rack. An instrument channel records MIDI; an audio channel "
+                                               "records its audio input."
+                                         : result.error.fromFirstOccurrenceOf ("record: ", false, false));
 }
 
 void MainComponent::showBrowser (bool shouldShow)
@@ -1264,6 +1330,8 @@ void MainComponent::rebuildRows()
     for (auto& plugin : pluginInstruments)
         key << "|" << plugin.first;
 
+    key << "|" << juce::JSON::toString (state["audio_inputs"], true);
+
     if (key != channelRackKey)
     {
         channelRackKey = key;
@@ -1271,7 +1339,7 @@ void MainComponent::rebuildRows()
 
         for (auto& c : *state["channels"].getArray())
             addAndMakeVisible (channelRows.add (new ChannelRow (dispatcher, c, strips, pluginInstruments, playStep,
-                                                                session.getAudioFileWildcard())));
+                                                                session.getAudioFileWildcard(), state["audio_inputs"])));
     }
 
     mixer.update (state);

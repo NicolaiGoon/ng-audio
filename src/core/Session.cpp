@@ -8,6 +8,7 @@ namespace
     const juce::Identifier roleProp ("ngRole");
     const juce::Identifier ownStripProp ("ngOwnStrip");
     const juce::Identifier audioChannelProp ("ngAudio");
+    const juce::Identifier audioInputProp ("ngInput"), monitorProp ("ngMonitor");
 
     juce::String colourToString (juce::Colour c)
     {
@@ -101,6 +102,7 @@ void Session::adoptEdit (std::unique_ptr<te::Edit> newEdit, const juce::File& ne
     }
 
     armedChannel = {};
+    armedAudio.clear();
     updateLoopRange();
     edit->getUndoManager().clearUndoHistory();
     markAsSaved();
@@ -611,6 +613,163 @@ void Session::sendLiveMidi (const juce::MidiMessage& message)
     }
 }
 
+//==============================================================================
+juce::StringArray Session::getAudioInputNames() const
+{
+    juce::StringArray names;
+
+    for (auto d : engine.getDeviceManager().getWaveInputDevices())
+        names.add (d->getName());
+
+    return names;
+}
+
+juce::String Session::getAudioInput (const te::AudioTrack& channel)
+{
+    return channel.state[audioInputProp].toString();
+}
+
+juce::String Session::getMonitorMode (const te::AudioTrack& channel)
+{
+    auto mode = channel.state[monitorProp].toString();
+    return mode.isEmpty() ? juce::String ("auto") : mode;
+}
+
+void Session::setAudioInput (te::AudioTrack& channel, const juce::String& input)
+{
+    channel.state.setProperty (audioInputProp, input, &getUndoManager());
+}
+
+void Session::setMonitorMode (te::AudioTrack& channel, const juce::String& mode)
+{
+    channel.state.setProperty (monitorProp, mode, &getUndoManager());
+}
+
+bool Session::isAudioArmed (const te::AudioTrack& channel) const
+{
+    return armedAudio.contains (channel.itemID);
+}
+
+void Session::setAudioArmed (te::AudioTrack& channel, bool armed)
+{
+    if (armed)
+        armedAudio.addIfNotAlreadyThere (channel.itemID);
+    else
+        armedAudio.removeFirstMatchingValue (channel.itemID);
+
+    routeAudioInputs();
+}
+
+juce::Array<te::AudioTrack*> Session::getArmedAudioChannels() const
+{
+    juce::Array<te::AudioTrack*> armed;
+
+    for (auto c : getChannels())
+        if (isAudioChannel (*c) && isAudioArmed (*c))
+            armed.add (c);
+
+    return armed;
+}
+
+juce::File Session::getRecordingFolder() const
+{
+    if (file != juce::File())
+        return file.getParentDirectory().getChildFile ("Recordings");
+
+    return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Ng DAW").getChildFile ("Recordings");
+}
+
+void Session::routeAudioInputs()
+{
+    auto& deviceManager = engine.getDeviceManager();
+    auto devices = deviceManager.getWaveInputDevices();
+
+    // Which audio channels each input feeds.
+    std::map<te::WaveInputDevice*, juce::Array<te::AudioTrack*>> users;
+
+    for (auto c : getChannels())
+        if (isAudioChannel (*c))
+            for (auto d : devices)
+                if (d->getName() == getAudioInput (*c))
+                    users[d].add (c);
+
+    if (users.empty() && armedAudio.isEmpty())
+    {
+        bool anyTargets = false;
+
+        for (auto instance : edit->getAllInputDevices())
+            if (! instance->getInputDevice().isMidi() && ! instance->getTargets().isEmpty())
+                anyTargets = true;
+
+        if (! anyTargets)
+            return;
+    }
+
+    // Named for the project and channel, e.g. "Beat_Vox_Take_2.wav".
+    auto mask = getRecordingFolder().getChildFile (juce::File::createLegalFileName (getProjectName()) + "_%track%_Take_%take%")
+                                    .getFullPathName();
+    bool enabledAny = false;
+
+    for (auto& [device, channels] : users)
+    {
+        if (! device->isEnabled())
+        {
+            device->setEnabled (true);
+            enabledAny = true;
+        }
+
+        if (device->getFilenameMask() != mask)
+            device->setFilenameMask (mask);
+
+        // An input is heard through its channels if any of them asks for it: always, or while armed.
+        auto mode = te::InputDevice::MonitorMode::off;
+
+        for (auto c : channels)
+        {
+            auto wanted = getMonitorMode (*c);
+
+            if (wanted == "on")
+                mode = te::InputDevice::MonitorMode::on;
+            else if (wanted == "auto" && mode == te::InputDevice::MonitorMode::off)
+                mode = te::InputDevice::MonitorMode::automatic;
+        }
+
+        if (device->getMonitorMode() != mode)
+            device->setMonitorMode (mode);
+    }
+
+    if (enabledAny)
+        deviceManager.dispatchPendingUpdates();
+
+    edit->getTransport().ensureContextAllocated();
+
+    for (auto instance : edit->getAllInputDevices())
+    {
+        if (instance->getInputDevice().isMidi())
+            continue;
+
+        auto wave = dynamic_cast<te::WaveInputDevice*> (&instance->getInputDevice());
+        auto found = wave != nullptr ? users.find (wave) : users.end();
+        juce::Array<te::EditItemID> wanted;
+
+        if (found != users.end())
+            for (auto c : found->second)
+                wanted.add (c->itemID);
+
+        for (auto target : instance->getTargets())
+            if (! wanted.contains (target))
+                (void) instance->removeTarget (target, nullptr);
+
+        for (auto id : wanted)
+        {
+            if (! instance->getTargets().contains (id))
+                (void) instance->setTarget (id, false, nullptr, 0);
+
+            instance->setRecordingEnabled (id, armedAudio.contains (id));
+        }
+    }
+}
+
 juce::String Session::getPositionText() const
 {
     auto& tempo = edit->tempoSequence;
@@ -733,6 +892,8 @@ void Session::refreshAfterHistoryChange()
     // An undone delete brings an armed channel back; point the MIDI inputs at it again.
     if (getArmedChannel() != nullptr)
         routeMidiInputs();
+
+    routeAudioInputs();
 
     // Only touch parameters that are out of step: updating one writes its value back to the
     // edit, and an edit change after an undo would clear the redo history.
@@ -1030,7 +1191,13 @@ juce::var Session::toVar() const
         }
 
         obj->setProperty ("clips", clips);
-        obj->setProperty ("armed", c->itemID == armedChannel);
+        obj->setProperty ("armed", c->itemID == armedChannel || armedAudio.contains (c->itemID));
+
+        if (audio)
+        {
+            obj->setProperty ("input", getAudioInput (*c));
+            obj->setProperty ("monitor", getMonitorMode (*c));
+        }
         channels.add (juce::var (obj));
     }
 
@@ -1126,6 +1293,7 @@ juce::var Session::toVar() const
 
     root->setProperty ("tempo_bpm", edit->tempoSequence.getBpmAt (te::TimePosition()));
     root->setProperty ("midi_inputs", getMidiInputNames());
+    root->setProperty ("audio_inputs", getAudioInputNames());
     root->setProperty ("time_signature", juce::var (timeSigObj));
     root->setProperty ("channels", channels);
     root->setProperty ("strips", strips);

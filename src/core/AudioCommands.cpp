@@ -89,6 +89,61 @@ namespace
         result->setProperty ("file", file.getFullPathName());
         return CommandResult::success (value);
     }
+
+    CommandResult setAudioInput (Session& session, const juce::var& p)
+    {
+        auto ref = params::getString (p, "channel");
+        auto channel = session.findTrack (ref, Session::Role::channel);
+
+        if (channel == nullptr)
+            return CommandResult::failure ("set_audio_input: no channel called '" + ref + "'");
+
+        if (! Session::isAudioChannel (*channel))
+            return CommandResult::failure ("set_audio_input: '" + channel->getName() + "' is an instrument channel; "
+                                           "audio inputs go to audio channels");
+
+        if (! p.hasProperty ("input") && ! p.hasProperty ("monitor"))
+            return CommandResult::failure ("set_audio_input: give an input, a monitor mode, or both");
+
+        if (p.hasProperty ("input"))
+        {
+            auto input = params::getString (p, "input");
+            auto inputs = session.getAudioInputNames();
+
+            if (input == "none")
+                input = {};
+
+            if (input.isNotEmpty() && ! inputs.contains (input))
+                return CommandResult::failure ("set_audio_input: no audio input called '" + input + "' ("
+                                                 + (inputs.isEmpty() ? juce::String ("the audio device has none")
+                                                                     : "there's " + inputs.joinIntoString (", ")) + ")");
+
+            // With no input there's nothing to record.
+            if (input.isEmpty())
+                session.setAudioArmed (*channel, false);
+
+            session.setAudioInput (*channel, input);
+        }
+
+        if (p.hasProperty ("monitor"))
+        {
+            auto mode = params::getString (p, "monitor");
+
+            if (mode != "auto" && mode != "on" && mode != "off")
+                return CommandResult::failure ("set_audio_input: monitor is \"auto\", \"on\" or \"off\"");
+
+            session.setMonitorMode (*channel, mode);
+        }
+
+        session.routeAudioInputs();
+
+        auto result = new juce::DynamicObject();
+        result->setProperty ("channel", channel->itemID.toString());
+        result->setProperty ("input", Session::getAudioInput (*channel));
+        result->setProperty ("monitor", Session::getMonitorMode (*channel));
+        result->setProperty ("armed", session.isAudioArmed (*channel));
+        return CommandResult::success (juce::var (result));
+    }
 }
 
 void registerAudioCommands (CommandRegistry& registry)
@@ -103,6 +158,16 @@ void registerAudioCommands (CommandRegistry& registry)
                               { "name", prop ("string", "Name for the new channel (default: the file's name)") } },
                             { "file" }),
                     true, [&registry] (Session& session, const juce::var& p) { return importAudio (registry, session, p); } });
+
+    registry.add ({ "set_audio_input",
+                    "Sets the audio input an audio channel records from, and how it's monitored: \"auto\" (default) "
+                    "plays the input through the channel while it's armed, \"on\" always, \"off\" never. get_state "
+                    "lists the inputs as audio_inputs. Arm the channel with arm_channel and record with record.",
+                    schema ({ { "channel", prop ("string", "Audio channel id or name") },
+                              { "input", prop ("string", "An input from audio_inputs in get_state, such as \"Input 1 + 2\", or \"none\"") },
+                              { "monitor", prop ("string", "\"auto\", \"on\" or \"off\"") } },
+                            { "channel" }),
+                    true, setAudioInput });
 }
 
 } // namespace ng
