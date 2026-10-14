@@ -2,6 +2,7 @@
 
 #include <tracktion_engine/tracktion_engine.h>
 
+#include <atomic>
 #include <optional>
 
 namespace ng
@@ -32,6 +33,17 @@ struct ClipNote
     int pitch = 60;
     double start = 0.0, length = 1.0;
     int velocity = 100;
+};
+
+/** Ng's engine behaviour: Tracktion's own, except that while stems are exported, muted
+    strips still feed their sends, so a bus's stem can hold what is sent to it without the
+    senders' own sound (see export_audio). Pass one when creating the te::Engine. */
+class EngineBehaviour  : public te::EngineBehaviour
+{
+public:
+    bool shouldProcessMutedTracks() override    { return processMutedTracks; }
+
+    static inline std::atomic<bool> processMutedTracks { false };
 };
 
 class Session
@@ -310,6 +322,11 @@ public:
     /** The whole project as plain data, for the UI, tests and AI tools. */
     juce::var toVar() const;
 
+    /** True while export_audio renders. It keeps handling messages meanwhile, and the
+        dispatcher refuses other commands until it's done. */
+    bool isExporting() const noexcept               { return exporting; }
+    void setExporting (bool isNowExporting)         { exporting = isNowExporting; }
+
 private:
     std::unique_ptr<te::Edit> createNewEdit();
     void adoptEdit (std::unique_ptr<te::Edit>, const juce::File&);
@@ -321,6 +338,7 @@ private:
     juce::Array<te::EditItemID> armedAudio;
     juce::File file;
     juce::String savedState;
+    bool exporting = false;
 
     JUCE_DECLARE_NON_COPYABLE (Session)
 };
