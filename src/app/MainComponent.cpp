@@ -610,7 +610,22 @@ MainComponent::MainComponent (te::Engine& engine)
         if (result.ok && (name == "save_preset" || name == "set_library"))
             browserNeedsRefresh = true;
 
+        commandLog.refresh();
         triggerAsyncUpdate();
+    };
+
+    // The first change an AI client makes opens the console, so its log is in view.
+    dispatcher.onLog = [this] (const CommandDispatcher::LogEntry& entry)
+    {
+        commandLog.add (entry);
+
+        if (! commandLogShown && entry.source != "Console" && ! consoleButton.getToggleState())
+        {
+            consoleButton.setToggleState (true, juce::dontSendNotification);
+            consoleButton.onClick();
+        }
+
+        commandLogShown = true;
     };
 
     // Before a project is replaced, let go of everything that points into it.
@@ -689,10 +704,10 @@ MainComponent::MainComponent (te::Engine& engine)
     snapBox.onChange = [this] { pianoRoll.setGrid (1.0 / std::pow (2.0, snapBox.getSelectedId() - 1)); };
     snapLabel.setJustificationType (juce::Justification::centredRight);
 
-    consoleButton.setTooltip ("Show the JSON command console");
+    consoleButton.setTooltip ("Show the JSON command console and the log of what AI clients did");
     consoleButton.onClick = [this]
     {
-        for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton })
+        for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton, &commandLog })
             c->setVisible (consoleButton.getToggleState());
 
         resized();
@@ -725,12 +740,15 @@ MainComponent::MainComponent (te::Engine& engine)
                                                              &channelsHeader, &mixerHeader, &addBusButton, &mixer })
         addAndMakeVisible (c);
 
-    for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton, &keyboard,
+    for (auto* c : std::initializer_list<juce::Component*> { &consoleHeader, &consoleInput, &consoleOutput, &runButton, &commandLog, &keyboard,
                                                              &pianoRollHeader, &pianoRollHint, &snapLabel, &snapBox,
                                                              &closePianoRollButton, &quantizeButton, &pianoRoll })
         addChildComponent (c);
 
     loadStarterProject();
+
+    if (auto error = bridge.start(); error.isNotEmpty())
+        DBG ("AI bridge: " << error);
 
     setWantsKeyboardFocus (true);
     juce::Desktop::getInstance().addFocusChangeListener (this);
@@ -749,6 +767,8 @@ MainComponent::~MainComponent()
     juce::Desktop::getInstance().removeFocusChangeListener (this);
     session.getEngine().getPluginManager().knownPluginList.removeChangeListener (this);
     keyboardState.removeListener (this);
+    bridge.stop();
+    dispatcher.onLog = nullptr;
     dispatcher.onCommandExecuted = nullptr;
     session.onEditAboutToChange = nullptr;
 }
@@ -1025,6 +1045,7 @@ void MainComponent::restoreFocus()
 
 void MainComponent::runConsoleCommand()
 {
+    CommandDispatcher::ScopedSource source (dispatcher, "Console");
     consoleOutput.setText (dispatcher.executeJson (consoleInput.getText()));
 }
 
@@ -1461,6 +1482,8 @@ void MainComponent::resized()
     if (consoleButton.getToggleState())
     {
         auto console = r.removeFromBottom (170);
+        commandLog.setBounds (console.removeFromRight (juce::jlimit (300, 520, console.getWidth() / 3)));
+        console.removeFromRight (10);
         consoleHeader.setBounds (console.removeFromTop (24));
         auto consoleTop = console.removeFromTop (60);
         runButton.setBounds (consoleTop.removeFromRight (70).reduced (4, 14));

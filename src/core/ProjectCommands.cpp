@@ -162,8 +162,20 @@ namespace
         channel->getOutput().setOutputToTrack (strip.get());
         session.setOwnStrip (*channel, strip.get());
 
-        return CommandResult::success (idPair ("channel", channel->itemID.toString(),
-                                               "strip", strip->itemID.toString()));
+        auto result = idPair ("channel", channel->itemID.toString(), "strip", strip->itemID.toString());
+
+        if (p.hasProperty ("tag"))
+        {
+            auto tagged = tagChannel (session, *channel, p["tag"].toString(), "create_track");
+
+            if (! tagged.ok)
+                return tagged;
+
+            if (tagged.value.hasProperty ("bus"))
+                result.getDynamicObject()->setProperty ("bus", tagged.value["bus"]);
+        }
+
+        return CommandResult::success (result);
     }
 
     CommandResult route (Session& session, const juce::var& p)
@@ -1263,9 +1275,134 @@ namespace
         return CommandResult::success (result);
     }
 
-    CommandResult getState (Session& session, const juce::var&)
+    juce::var findById (const juce::var& list, const juce::String& id)
     {
-        return CommandResult::success (session.toVar());
+        if (auto* array = list.getArray())
+            for (auto& item : *array)
+                if (item["id"].toString() == id)
+                    return item;
+
+        return {};
+    }
+
+    juce::var pick (const juce::var& from, juce::StringArray keys)
+    {
+        auto obj = new juce::DynamicObject();
+
+        for (auto& key : keys)
+            if (from.hasProperty (juce::Identifier (key)))
+                obj->setProperty (key, from[juce::Identifier (key)]);
+
+        return juce::var (obj);
+    }
+
+    juce::var summarise (const juce::var& state)
+    {
+        auto root = pick (state, { "project", "tempo_bpm", "time_signature" });
+        root.getDynamicObject()->setProperty ("transport", pick (state["transport"], { "playing", "position", "position_beats", "looping",
+                                                                                     "loop_start_beat", "loop_end_beat", "recording" }));
+        juce::Array<juce::var> channels, strips;
+
+        for (auto& c : *state["channels"].getArray())
+        {
+            auto obj = pick (c, { "id", "name", "kind", "instrument", "output", "tag", "armed" });
+            juce::Array<juce::var> clips;
+
+            for (auto& clip : *c["clips"].getArray())
+                clips.add (pick (clip, { "id", "type", "start_beat", "length_beats", "notes" }));
+
+            obj.getDynamicObject()->setProperty ("clips", clips);
+            channels.add (obj);
+        }
+
+        for (auto& s : *state["strips"].getArray())
+        {
+            auto obj = pick (s, { "id", "name", "output", "bus", "tag", "volume_db", "mute", "solo" });
+            juce::Array<juce::var> effects;
+
+            for (auto& e : *s["effects"].getArray())
+                effects.add (e["type"]);
+
+            obj.getDynamicObject()->setProperty ("effects", effects);
+            strips.add (obj);
+        }
+
+        root.getDynamicObject()->setProperty ("channels", channels);
+        root.getDynamicObject()->setProperty ("strips", strips);
+        return root;
+    }
+
+    CommandResult getState (Session& session, const juce::var& p)
+    {
+        auto state = session.toVar();
+        auto channelRef = params::getString (p, "channel");
+        auto stripRef = params::getString (p, "strip");
+        auto clipRef = params::getString (p, "clip");
+        auto view = params::getString (p, "view", "full");
+
+        if (channelRef.isNotEmpty())
+        {
+            auto channel = session.findTrack (channelRef, Session::Role::channel);
+
+            if (channel == nullptr)
+                return CommandResult::failure ("get_state: no channel called '" + channelRef + "'");
+
+            auto result = findById (state["channels"], channel->itemID.toString()).clone();
+
+            if (auto dest = session.getDestinationStrip (*channel))
+                result.getDynamicObject()->setProperty ("strip", findById (state["strips"], dest->itemID.toString()));
+
+            return CommandResult::success (result);
+        }
+
+        if (stripRef.isNotEmpty())
+        {
+            if (stripRef == "master")
+                return CommandResult::success (state["master"]);
+
+            auto strip = session.findTrack (stripRef, Session::Role::strip);
+
+            if (strip == nullptr)
+                return CommandResult::failure ("get_state: no mixer strip called '" + stripRef + "'");
+
+            return CommandResult::success (findById (state["strips"], strip->itemID.toString()));
+        }
+
+        if (clipRef.isNotEmpty())
+        {
+            auto clip = session.findClip (clipRef);
+
+            if (clip == nullptr)
+                return CommandResult::failure ("get_state: no clip with id '" + clipRef + "'");
+
+            auto channel = dynamic_cast<te::AudioTrack*> (clip->getTrack());
+            auto result = findById (findById (state["channels"], channel != nullptr ? channel->itemID.toString() : juce::String())["clips"],
+                                    clip->itemID.toString()).clone();
+
+            if (! result.isObject())
+                return CommandResult::failure ("get_state: no clip with id '" + clipRef + "'");
+
+            result.getDynamicObject()->setProperty ("channel", channel->itemID.toString());
+
+            if (auto midi = dynamic_cast<te::MidiClip*> (clip))
+                result.getDynamicObject()->setProperty ("notes", notesToVar (Session::getNotes (*midi)));
+
+            return CommandResult::success (result);
+        }
+
+        if (view == "full")
+            return CommandResult::success (state);
+
+        if (view == "summary")
+            return CommandResult::success (summarise (state));
+
+        if (view == "mixer")
+            return CommandResult::success (pick (state, { "strips", "master" }));
+
+        if (view == "transport")
+            return CommandResult::success (pick (state, { "transport", "tempo_bpm", "time_signature", "project" }));
+
+        return CommandResult::failure ("get_state: view is \"full\", \"summary\", \"mixer\" or \"transport\"");
     }
 
     //==============================================================================
@@ -1338,7 +1475,9 @@ void registerProjectCommands (CommandRegistry& registry)
                     schema ({ { "name", prop ("string", "Name for the channel and its strip") },
                               { "colour", prop ("string", "Hex colour such as #3c8ce0; picked automatically if omitted") },
                               { "instrument", prop ("string", "\"4osc\" (built-in synth, default), \"sampler\" (plays samples: load them with add_sample or load_drum_kit), \"none\", "
-                                                              "\"audio\" (an audio channel, for audio clips: add them with import_audio), or a plugin's id or name from list_plugins") } }),
+                                                              "\"audio\" (an audio channel, for audio clips: add them with import_audio), or a plugin's id or name from list_plugins") },
+                              { "tag", prop ("string", "What it is, like \"drums\", \"bass\" or \"vox\": its strip then plays into that tag's bus, "
+                                                       "which is created if needed (see tag_channel). The result's bus is the bus's id") } }),
                     true, createTrack });
 
     registry.add ({ "route",
@@ -1548,8 +1687,15 @@ void registerProjectCommands (CommandRegistry& registry)
                     schema ({ { "path", prop ("string", "Where to save, e.g. ~/Music/beat" + juce::String (projectFileExtension)) } }),
                     false, saveProject });
 
-    registry.add ({ "get_state", "Returns the project's channels, mixer strips, routing and transport as data.",
-                    schema ({}), false, getState });
+    registry.add ({ "get_state",
+                    "Returns the project's channels, mixer strips, routing and transport as data. That can be long, so it can "
+                    "return less: one channel (with the strip it plays into), one mixer strip, one clip (with its notes), or a "
+                    "view: \"summary\" (names, ids, routing and clips without the detail), \"mixer\" or \"transport\".",
+                    schema ({ { "channel", prop ("string", "Just this channel (id or name)") },
+                              { "strip", prop ("string", "Just this mixer strip (id or name), or \"master\"") },
+                              { "clip", prop ("string", "Just this clip (id), with its notes if it's a MIDI clip") },
+                              { "view", prop ("string", "\"full\" (default), \"summary\", \"mixer\" or \"transport\"") } }),
+                    false, getState });
 
     registerPluginCommands (registry);
     registerEffectCommands (registry);
