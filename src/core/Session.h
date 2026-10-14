@@ -121,6 +121,16 @@ public:
     static juce::String getSteps (const te::AudioTrack& channel);
     static int getStepPitch (const te::AudioTrack& channel);
 
+    /** An audio channel plays audio clips (imported or, later, recorded files) instead of an
+        instrument. It has no instrument, steps or MIDI clips, and its clips stay on audio
+        channels. Set when the channel is created (create_track with instrument "audio"). */
+    static bool isAudioChannel (const te::AudioTrack& channel);
+    void setAudioChannel (te::AudioTrack& channel);
+
+    /** An audio clip as get_state lists it, added to the clip's object: its file, missing: true
+        if the file isn't there, and max_end_beat, the furthest its end can go before the file runs out. */
+    void describeAudioClip (te::WaveAudioClip&, juce::DynamicObject&) const;
+
     /** A channel's instrument (the built-in 4OSC synth or a plugin), or nullptr. With multiple
         outputs on, the plugin lives in a rack (see getMultiOutputRack), and this finds it there. */
     static te::Plugin* getInstrument (const te::AudioTrack& channel);
@@ -162,7 +172,7 @@ public:
     juce::String getAudioFileWildcard() const;
 
     /** How get_state and set_instrument name an instrument: "4osc", "sampler", "none", or a plugin's
-        id as list_plugins gives it. */
+        id as list_plugins gives it. get_state names an audio channel's "audio". */
     static juce::String getInstrumentId (const te::Plugin*);
 
     /** The effects Ng DAW has built in, as add_effect names them (e.g. "eq"), with their

@@ -47,7 +47,8 @@ add_library(ng_core STATIC
     src/core/BusCommands.cpp
     src/core/OutputCommands.cpp
     src/core/SamplerCommands.cpp
-    src/core/LibraryCommands.cpp)
+    src/core/LibraryCommands.cpp
+    src/core/AudioCommands.cpp)
 
 target_include_directories(ng_core PUBLIC src)
 
@@ -59,6 +60,7 @@ target_compile_definitions(ng_core PUBLIC
     JUCE_STRICT_REFCOUNTEDPOINTER=1
     JUCE_STANDALONE_APPLICATION=1
     JUCE_DISPLAY_SPLASH_SCREEN=0
+    JUCE_USE_MP3AUDIOFORMAT=1
     TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1)
 
 if (APPLE)

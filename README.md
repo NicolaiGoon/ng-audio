@@ -90,6 +90,14 @@ and every action available to AI tools through one command layer.
   and samples or a folder on a sampler channel to add them. Drag an effect or effect preset onto a
   mixer strip. Audio files and folders can also be dropped in from the desktop. Right-click an
   effect, or a channel's name, to save it as a preset; presets work in every project.
+- **Audio channels.** Drop WAV, AIFF, FLAC, Ogg or MP3 files on the timeline (from the browser
+  or the desktop) and each gets an audio channel of its own, named after the file, with a mixer
+  strip like any channel; drop them on an audio channel's lane to add them there, one after
+  another. *+ Audio* above the timeline (or Ctrl+I) imports files at the playhead or adds an
+  empty audio channel, and double-clicking an empty spot on an audio lane picks files for it.
+  Audio clips show their waveform and move, trim, split and copy like MIDI clips, but can't be
+  trimmed past the end of their file. Audio and MIDI clips each stay on their own kind of channel.
+  The project saves where each file is, and marks one that has gone missing.
 - **Linked-by-default mixer strips.** Adding an instrument creates a channel *and* a mixer strip
   with the same name and colour, already routed. Pick a different strip in the channel rack to
   detach it; several channels can share one strip; pick its own strip again to re-link it.
@@ -97,7 +105,8 @@ and every action available to AI tools through one command layer.
 
   | Command | What it does |
   | --- | --- |
-  | `create_track` | Adds an instrument channel plus its linked mixer strip |
+  | `create_track` | Adds an instrument channel (or, with instrument `audio`, an audio channel) plus its linked mixer strip |
+  | `import_audio` | Puts an audio file on an audio channel as a clip, or on a new audio channel named after it |
   | `route` | Sends a channel to a strip (or `master`); detaches it if it isn't its own strip |
   | `rename_track` | Renames a channel or strip; a linked pair is renamed together |
   | `set_track_colour` | Recolours a channel or strip; a linked pair changes together |
@@ -153,12 +162,13 @@ src/core/BusCommands.cpp      buses and sends
 src/core/OutputCommands.cpp   multi-output instruments
 src/core/SamplerCommands.cpp  the sampler's samples and drum kits
 src/core/LibraryCommands.cpp  sample folders, finding samples, and presets
+src/core/AudioCommands.cpp    importing audio files onto audio channels
 src/app/                      the JUCE window (timeline, channel rack, mixer, transport, console)
 src/app/MixerView.*           mixer strips: fader, pan, effects, sends, mute/solo, meters, master
 src/app/PluginWindow.*        plugin editor windows, and sliders for built-in effects
 src/app/SamplerEditor.*       the sampler's window: its samples, and dropping files and kits on it
 src/app/BrowserPanel.*        the browser, and what dropping its items on the rack, channels and strips does
-src/app/TimelineView.*        the arrangement timeline: lanes, clips, ruler, playhead, zoom
+src/app/TimelineView.*        the arrangement timeline: lanes, clips and waveforms, ruler, playhead, zoom, audio drops
 src/app/PianoRoll.*           the piano roll: keyboard, note grid, drawing and editing notes
 tests/CommandTests.cpp        headless tests, including an offline render that checks for sound
 tests/TestSynth, TestGain,    tiny VST3 plugins the tests load: an instrument, an effect

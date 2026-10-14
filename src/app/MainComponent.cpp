@@ -80,8 +80,8 @@ namespace
             : dispatcher (d), id (channel["id"].toString()), swatch (d, id, colourFrom (channel["colour"])),
               grid (d, id, channel["pattern"]["steps"].toString(), colourFrom (channel["colour"]), playStep),
               audioWildcard (audioFileWildcard), channelName (channel["name"].toString()),
-              isSampler (channel["instrument"] == "sampler"),
-              hasInstrument (channel["instrument"] != "none" && ! static_cast<bool> (channel["instrument_missing"]))
+              isSampler (channel["instrument"] == "sampler"), isAudio (channel["kind"] == "audio"),
+              hasInstrument (! isAudio && channel["instrument"] != "none" && ! static_cast<bool> (channel["instrument_missing"]))
         {
             name.addMouseListener (this, false);
             status.addMouseListener (this, false);
@@ -205,12 +205,28 @@ namespace
 
             for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &status, &armButton, &instrument, &editButton, &output, &deleteButton, &grid })
                 addAndMakeVisible (c);
+
+            // An audio channel plays its clips: no instrument, no MIDI input, no steps.
+            if (isAudio)
+            {
+                for (auto* c : std::initializer_list<juce::Component*> { &armButton, &instrument, &editButton, &outsButton, &grid })
+                    c->setVisible (false);
+
+                audioLabel.setText ("Audio channel", juce::dontSendNotification);
+                audioLabel.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+                audioHint.setText ("Drop audio files on its lane in the timeline", juce::dontSendNotification);
+                audioHint.setColour (juce::Label::textColourId, juce::Colours::grey);
+                audioHint.setFont (juce::FontOptions (12.0f));
+                addAndMakeVisible (audioLabel);
+                addAndMakeVisible (audioHint);
+            }
         }
 
         void resized() override
         {
             auto r = getLocalBounds().reduced (0, 4);
             grid.setBounds (r.removeFromBottom (22).withTrimmedLeft (20));
+            audioHint.setBounds (grid.getBounds());
             r.removeFromBottom (4);
             swatch.setBounds (r.removeFromLeft (14));
             r.removeFromLeft (6);
@@ -228,6 +244,7 @@ namespace
             }
 
             instrument.setBounds (r.removeFromRight (outsButton.isVisible() ? 106 : 150));
+            audioLabel.setBounds (instrument.getBounds().getUnion (editButton.getBounds()));
             r.removeFromRight (4);
             armButton.setBounds (r.removeFromRight (26));
             status.setBounds (r.removeFromRight (64));
@@ -259,7 +276,7 @@ namespace
 
         bool isInterestedInDragSource (const SourceDetails& details) override
         {
-            return browser::canDropOnChannel (details.description, isSampler);
+            return ! isAudio && browser::canDropOnChannel (details.description, isSampler);
         }
 
         void itemDragEnter (const SourceDetails&) override     { setDropHighlight (true); }
@@ -321,7 +338,8 @@ namespace
         bool hasOutputs = false;
         StepGrid grid;
         juce::String audioWildcard, channelName;
-        bool isSampler = false, hasInstrument = false, dropHighlight = false;
+        juce::Label audioLabel, audioHint;
+        bool isSampler = false, isAudio = false, hasInstrument = false, dropHighlight = false;
     };
 
     //==============================================================================
@@ -360,6 +378,7 @@ namespace
                 { "Ctrl+S", "Save" },
                 { "Ctrl+Shift+S", "Save as" },
                 { "Ctrl+T", "Add an instrument" },
+                { "Ctrl+I", "Import audio files" },
                 { "Ctrl+K", "Show or hide the keyboard" },
                 { "Ctrl+B", "Show or hide the browser" },
                 { "F1", "This list" },
@@ -549,6 +568,8 @@ MainComponent::MainComponent (te::Engine& engine)
     saveAsButton.setTooltip ("Save under a new name (Ctrl+Shift+S)");
 
     addButton.onClick = [this] { addInstrument(); };
+    audioButton.onClick = [this] { showAudioMenu(); };
+    audioButton.setTooltip ("Import audio files onto new audio channels at the playhead (Ctrl+I), or add an empty audio channel");
     addButton.setTooltip ("Add an instrument channel (Ctrl+T)");
     playButton.setTooltip ("Play or stop (Space)");
     playButton.onClick = [this]
@@ -633,7 +654,7 @@ MainComponent::MainComponent (te::Engine& engine)
                                                              &addButton, &playButton, &undoButton, &redoButton,
                                                              &returnButton, &recordButton, &keysButton, &tempo, &timeSignature, &positionDisplay,
                                                              &loopButton, &metronomeButton,
-                                                             &settingsButton, &pluginsButton, &shortcutsButton, &consoleButton, &browserButton, &timelineHeader, &timelineHint, &timeline,
+                                                             &settingsButton, &pluginsButton, &shortcutsButton, &consoleButton, &browserButton, &audioButton, &timelineHeader, &timelineHint, &timeline,
                                                              &channelsHeader, &mixerHeader, &addBusButton, &mixer })
         addAndMakeVisible (c);
 
@@ -671,6 +692,17 @@ void MainComponent::addInstrument()
     // A new channel with its linked strip and an empty pattern, ready to fill in.
     auto name = "Synth " + juce::String (session.getChannels().size() + 1);
     dispatcher.execute ("create_track", makeObject ({ { "name", name } }));
+}
+
+void MainComponent::showAudioMenu()
+{
+    juce::PopupMenu menu;
+    menu.addItem ("Import audio files... (Ctrl+I)", [this]
+    {
+        timeline.chooseAudioFiles ({}, timeline.getPlayheadBeatForImport());
+    });
+    menu.addItem ("Empty audio channel", [this] { dispatcher.execute ("create_track", makeObject ({ { "instrument", "audio" } })); });
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&audioButton));
 }
 
 void MainComponent::loadStarterProject()
@@ -830,6 +862,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('y', command, 0)
          || key == juce::KeyPress ('z', command | shift, 0))        { dispatcher.redo(); return true; }
     if (key == juce::KeyPress ('t', command, 0))                    { addInstrument(); return true; }
+    if (key == juce::KeyPress ('i', command, 0))                    { timeline.chooseAudioFiles ({}, timeline.getPlayheadBeatForImport()); return true; }
 
     if (key == juce::KeyPress (juce::KeyPress::spaceKey))           { playButton.onClick(); return true; }
     if (key == juce::KeyPress (juce::KeyPress::homeKey))            { returnButton.onClick(); return true; }
@@ -1359,6 +1392,8 @@ void MainComponent::resized()
     auto timelineTop = r.removeFromTop (24);
     browserButton.setBounds (timelineTop.removeFromLeft (80));
     timelineTop.removeFromLeft (6);
+    audioButton.setBounds (timelineTop.removeFromRight (70).reduced (0, 1));
+    timelineTop.removeFromRight (6);
     timelineHeader.setBounds (timelineTop.removeFromLeft (120));
     timelineHint.setBounds (timelineTop);
     timeline.setBounds (r.removeFromTop (juce::jmax (140, (r.getHeight() - 10) * 9 / 20)));

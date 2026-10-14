@@ -1950,6 +1950,132 @@ namespace
         root.deleteRecursively();
     }
 
+    void testAudioTracks (tracktion::Engine& engine)
+    {
+        std::cout << "audio channels play imported files\n";
+        Fixture f (engine);
+        auto settle = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil (200); };
+
+        auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NgDawAudioTest");
+        folder.deleteRecursively();
+        CHECK (folder.createDirectory());
+        auto vocal = writeSample (folder, "Vocal.wav", 440.0, 2.0);   // 4 beats at 120 bpm
+        folder.getChildFile ("notes.txt").replaceWithText ("not audio");
+
+        // A FLAC copy, written with JUCE's FLAC writer.
+        auto flac = folder.getChildFile ("Vocal.flac");
+        {
+            juce::AudioFormatManager formats;
+            formats.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (vocal));
+            std::unique_ptr<juce::FileOutputStream> stream (flac.createOutputStream());
+            juce::FlacAudioFormat flacFormat;
+            std::unique_ptr<juce::AudioFormatWriter> writer (flacFormat.createWriterFor (stream.get(), 44100.0, 1, 16, {}, 0));
+            CHECK (reader != nullptr && writer != nullptr);
+
+            if (reader != nullptr && writer != nullptr)
+            {
+                stream.release();
+                writer->writeFromAudioReader (*reader, 0, reader->lengthInSamples);
+            }
+        }
+
+        auto wildcard = f.session.getAudioFileWildcard();
+        CHECK (wildcard.contains ("*.wav") && wildcard.contains ("*.flac") && wildcard.contains ("*.mp3"));
+
+        // Importing with no channel makes an audio channel named after the file.
+        CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } })).ok);
+        auto r = f.dispatcher.execute ("import_audio", obj ({ { "file", vocal.getFullPathName() } }));
+        CHECK (r.ok && near (r.value["length_beats"], 4.0) && near (r.value["start_beat"], 0.0));
+        auto channel = [&] { return f.state()["channels"][1]; };
+        CHECK (channel()["name"] == "Vocal" && channel()["kind"] == "audio" && channel()["instrument"] == "audio");
+        CHECK (f.state()["channels"][0]["kind"] == "instrument");
+        CHECK (f.state()["strips"].size() == 2);
+        auto clip = r.value["clip"].toString();
+        auto clipState = [&] { return channel()["clips"][0]; };
+        CHECK (clipState()["type"] == "audio" && clipState()["file"] == vocal.getFullPathName());
+        CHECK (! clipState().hasProperty ("missing") && near (clipState()["max_end_beat"], 4.0));
+        CHECK (f.state()["channels"][0]["clips"].size() == 0);
+
+        // One undo takes the import back, channel and all.
+        f.dispatcher.undo();
+        CHECK (f.state()["channels"].size() == 1 && f.state()["strips"].size() == 1);
+        f.dispatcher.redo();
+        CHECK (f.state()["channels"].size() == 2 && channel()["clips"].size() == 1);
+
+        // A second file onto the same channel, later in the song.
+        r = f.dispatcher.execute ("import_audio", obj ({ { "file", flac.getFullPathName() }, { "channel", "Vocal" }, { "start_beat", 8 } }));
+        CHECK (r.ok && near (r.value["start_beat"], 8.0) && near (r.value["length_beats"], 4.0));
+        CHECK (channel()["clips"].size() == 2 && f.state()["channels"].size() == 2);
+        CHECK (f.dispatcher.execute ("delete_clip", obj ({ { "clip", r.value["clip"] } })).ok);
+
+        // What doesn't work: the wrong files, and mixing audio with instruments.
+        CHECK (! f.dispatcher.execute ("import_audio", obj ({ { "file", folder.getChildFile ("notes.txt").getFullPathName() } })).ok);
+        CHECK (! f.dispatcher.execute ("import_audio", obj ({ { "file", folder.getChildFile ("Nope.wav").getFullPathName() } })).ok);
+        CHECK (! f.dispatcher.execute ("import_audio", obj ({ { "file", vocal.getFullPathName() }, { "channel", "Lead" } })).ok);
+        CHECK (! f.dispatcher.execute ("import_audio", obj ({ { "file", vocal.getFullPathName() }, { "start_beat", -1 } })).ok);
+        CHECK (f.state()["channels"].size() == 2);
+        CHECK (! f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Vocal" } })).ok);
+        CHECK (! f.dispatcher.execute ("set_steps", obj ({ { "channel", "Vocal" }, { "steps", "x..." } })).ok);
+        CHECK (! f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Vocal" }, { "instrument", "4osc" } })).ok);
+        CHECK (! f.dispatcher.execute ("set_instrument", obj ({ { "channel", "Lead" }, { "instrument", "audio" } })).ok);
+        CHECK (! f.dispatcher.execute ("arm_channel", obj ({ { "channel", "Vocal" } })).ok);
+        CHECK (! f.dispatcher.execute ("save_preset", obj ({ { "channel", "Vocal" }, { "name", "x" } })).ok);
+        CHECK (! f.dispatcher.execute ("move_clip", obj ({ { "clip", clip }, { "channel", "Lead" } })).ok);
+        auto midi = f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" } })).value["clip"];
+        CHECK (! f.dispatcher.execute ("move_clip", obj ({ { "clip", midi }, { "channel", "Vocal" } })).ok);
+        CHECK (f.dispatcher.execute ("delete_clip", obj ({ { "clip", midi } })).ok);
+
+        // An empty audio channel, to drop clips onto.
+        r = f.dispatcher.execute ("create_track", obj ({ { "instrument", "audio" } }));
+        CHECK (r.ok && f.state()["channels"][2]["name"] == "Audio 3" && f.state()["channels"][2]["kind"] == "audio");
+        CHECK (f.dispatcher.execute ("move_clip", obj ({ { "clip", clip }, { "channel", "Audio 3" }, { "start_beat", 2 } })).ok);
+        CHECK (f.state()["channels"][2]["clips"].size() == 1 && channel()["clips"].size() == 0);
+        f.dispatcher.undo();
+        f.dispatcher.undo();
+        CHECK (channel()["clips"].size() == 1 && f.state()["channels"].size() == 2);
+
+        // Trimming: the end stops where the file does; the start keeps the audio in place.
+        r = f.dispatcher.execute ("resize_clip", obj ({ { "clip", clip }, { "end_beat", 10 } }));
+        CHECK (r.ok && near (r.value["length_beats"], 4.0));
+        r = f.dispatcher.execute ("resize_clip", obj ({ { "clip", clip }, { "start_beat", 1 }, { "end_beat", 3 } }));
+        CHECK (r.ok && near (r.value["start_beat"], 1.0) && near (r.value["length_beats"], 2.0));
+        CHECK (near (clipState()["max_end_beat"], 4.0));
+        CHECK (f.dispatcher.execute ("move_clip", obj ({ { "clip", clip }, { "start_beat", 5 } })).ok);
+        CHECK (near (clipState()["max_end_beat"], 8.0));
+        r = f.dispatcher.execute ("resize_clip", obj ({ { "clip", clip }, { "start_beat", 0 }, { "end_beat", 20 } }));
+        CHECK (r.ok && near (r.value["start_beat"], 4.0) && near (r.value["length_beats"], 4.0));
+
+        // It plays, through the channel's strip.
+        CHECK (f.dispatcher.execute ("set_loop", obj ({ { "whole_project", true } })).ok);
+        settle();
+        auto rms = renderRms (f);
+        std::cout << "       imported audio RMS " << rms << "\n";
+        CHECK (rms > 0.01f);
+        CHECK (f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Vocal" }, { "mute", true } })).ok);
+        CHECK (renderRms (f) < 0.0001f);
+        CHECK (f.dispatcher.execute ("set_mixer_strip", obj ({ { "strip", "Vocal" }, { "mute", false } })).ok);
+
+        // Saved and reopened; a file that has gone shows as missing.
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (f.dispatcher.execute ("save_project", obj ({ { "path", path } })).ok);
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (channel()["kind"] == "audio" && clipState()["type"] == "audio" && ! clipState().hasProperty ("missing"));
+        CHECK (near (clipState()["start_beat"], 4.0) && near (clipState()["length_beats"], 4.0));
+        settle();
+        CHECK (std::abs (renderRms (f) - rms) < rms * 0.05f);
+
+        auto saved = temp.getFile().loadFileAsString();
+        CHECK (saved.contains ("Vocal.wav"));
+        temp.getFile().replaceWithText (saved.replace ("Vocal.wav", "Gone.wav"));
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (static_cast<bool> (clipState()["missing"]));
+
+        f.dispatcher.execute ("new_project", obj ({ { "discard_changes", true } }));
+        folder.deleteRecursively();
+    }
+
     void testRendersAudio (tracktion::Engine& engine)
     {
         std::cout << "a synth channel renders sound through its strip\n";
@@ -2037,6 +2163,7 @@ int main()
         testMultiOutputInstrument (engine);
         testSampler (engine);
         testLibrary (engine);
+        testAudioTracks (engine);
         testRendersAudio (engine);
     }
 

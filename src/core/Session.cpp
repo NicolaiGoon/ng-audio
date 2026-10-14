@@ -7,6 +7,7 @@ namespace
     const juce::Identifier loopStartProp ("ngLoopStartBeat"), loopEndProp ("ngLoopEndBeat");
     const juce::Identifier roleProp ("ngRole");
     const juce::Identifier ownStripProp ("ngOwnStrip");
+    const juce::Identifier audioChannelProp ("ngAudio");
 
     juce::String colourToString (juce::Colour c)
     {
@@ -269,6 +270,33 @@ bool Session::isLinked (const te::AudioTrack& channel) const
 {
     auto own = getOwnStrip (channel);
     return own != nullptr && getDestinationStrip (channel) == own;
+}
+
+bool Session::isAudioChannel (const te::AudioTrack& channel)
+{
+    return channel.state[audioChannelProp];
+}
+
+void Session::setAudioChannel (te::AudioTrack& channel)
+{
+    channel.state.setProperty (audioChannelProp, true, &getUndoManager());
+}
+
+void Session::describeAudioClip (te::WaveAudioClip& clip, juce::DynamicObject& obj) const
+{
+    auto file = clip.getOriginalFile();
+    obj.setProperty ("file", file.getFullPathName());
+
+    if (! file.existsAsFile())
+        obj.setProperty ("missing", true);
+
+    // Unless it loops, a clip ends where its file does.
+    if (! clip.isLooping())
+    {
+        auto pos = clip.getPosition();
+        auto end = pos.getStart() - pos.getOffset() + clip.getMaximumLength();
+        obj.setProperty ("max_end_beat", std::round (edit->tempoSequence.toBeats (end).inBeats() * 1.0e6) / 1.0e6);
+    }
 }
 
 juce::String Session::getSteps (const te::AudioTrack& channel)
@@ -953,8 +981,11 @@ juce::var Session::toVar() const
         obj->setProperty ("plugins", plugins);
 
         auto instrument = getInstrument (*c);
-        obj->setProperty ("instrument", getInstrumentId (instrument));
-        obj->setProperty ("instrument_name", instrument != nullptr ? instrument->getName() : juce::String ("No instrument"));
+        auto audio = isAudioChannel (*c);
+        obj->setProperty ("kind", audio ? "audio" : "instrument");
+        obj->setProperty ("instrument", audio ? juce::String ("audio") : getInstrumentId (instrument));
+        obj->setProperty ("instrument_name", audio ? juce::String ("Audio")
+                                                   : instrument != nullptr ? instrument->getName() : juce::String ("No instrument"));
 
         // A plugin the project uses that isn't installed (or failed to load) on this computer.
         if (instrument != nullptr && instrument->isMissing())
@@ -987,8 +1018,13 @@ juce::var Session::toVar() const
             clipObj->setProperty ("length_beats", std::round ((endBeat - startBeat) * 1.0e6) / 1.0e6);
             clipObj->setProperty ("pattern", isPatternClip (*clip));
 
+            clipObj->setProperty ("type", dynamic_cast<te::WaveAudioClip*> (clip) != nullptr ? "audio" : "midi");
+
             if (auto midi = dynamic_cast<te::MidiClip*> (clip))
                 clipObj->setProperty ("notes", midi->getSequence().getNumNotes());
+
+            if (auto wave = dynamic_cast<te::WaveAudioClip*> (clip))
+                describeAudioClip (*wave, *clipObj);
 
             clips.add (juce::var (clipObj));
         }

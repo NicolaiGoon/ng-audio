@@ -14,7 +14,8 @@ namespace
     }
 
     /** An instrument a channel can hold: built in ("4osc", "sampler", or "none" for nothing), or a
-        scanned plugin, named by its list_plugins id or by its name. */
+        scanned plugin, named by its list_plugins id or by its name. "audio" makes an audio channel,
+        which plays audio clips instead (create_track only). */
     struct InstrumentChoice
     {
         juce::String builtIn;
@@ -24,7 +25,7 @@ namespace
     std::variant<InstrumentChoice, juce::String> findInstrument (Session& session, const juce::String& command,
                                                                  const juce::String& name)
     {
-        if (name == "4osc" || name == "sampler" || name == "none")
+        if (name == "4osc" || name == "sampler" || name == "none" || name == "audio")
             return InstrumentChoice { name, {} };
 
         auto& known = session.getEdit().engine.getPluginManager().knownPluginList;
@@ -71,7 +72,7 @@ namespace
             instrument = edit.getPluginCache().createNewPlugin (te::SamplerPlugin::xmlTypeName, {});
 
         if (instrument == nullptr)
-            return choice.builtIn == "none" ? juce::String() : "couldn't create the instrument";
+            return choice.builtIn == "none" || choice.builtIn == "audio" ? juce::String() : "couldn't create the instrument";
 
         if (instrument->isMissing())
         {
@@ -111,8 +112,9 @@ namespace
     CommandResult createTrack (Session& session, const juce::var& p)
     {
         auto& edit = session.getEdit();
-        auto name = params::getString (p, "name", "Instrument " + juce::String (session.getChannels().size() + 1));
         auto instrument = params::getString (p, "instrument", "4osc");
+        auto name = params::getString (p, "name", (instrument == "audio" ? "Audio " : "Instrument ")
+                                                    + juce::String (session.getChannels().size() + 1));
         auto colour = pickColour (session);
 
         if (p.hasProperty ("colour"))
@@ -138,6 +140,9 @@ namespace
 
         session.setRole (*channel, Session::Role::channel);
         channel->setName (name);
+
+        if (instrument == "audio")
+            session.setAudioChannel (*channel);
         channel->setColour (colour);
 
         if (auto error = setInstrument (edit, *channel, std::get<InstrumentChoice> (choice)); error.isNotEmpty())
@@ -205,6 +210,9 @@ namespace
 
         if (channel == nullptr)
             return CommandResult::failure ("add_midi_clip: no channel called '" + channelRef + "'");
+
+        if (Session::isAudioChannel (*channel))
+            return CommandResult::failure ("add_midi_clip: '" + channel->getName() + "' is an audio channel; add audio to it with import_audio");
 
         auto startBeat = te::BeatPosition::fromBeats (params::getDouble (p, "start_beat", 0.0));
         auto lengthBeats = te::BeatDuration::fromBeats (params::getDouble (p, "length_beats", 4.0));
@@ -366,6 +374,13 @@ namespace
 
         if (channel == nullptr)
             return CommandResult::failure ("set_instrument: no channel called '" + ref + "'");
+
+        if (Session::isAudioChannel (*channel))
+            return CommandResult::failure ("set_instrument: '" + channel->getName() + "' is an audio channel, which has no instrument");
+
+        if (instrument == "audio")
+            return CommandResult::failure ("set_instrument: an instrument channel can't become an audio channel; "
+                                           "make one with create_track and instrument \"audio\"");
 
         if (Session::getMultiOutputRack (*channel) != nullptr)
             return CommandResult::failure ("set_instrument: '" + channel->getName() + "' has multiple outputs on; "
@@ -557,6 +572,9 @@ namespace
 
         if (channel == nullptr)
             return CommandResult::failure ("set_steps: no channel called '" + ref + "'");
+
+        if (Session::isAudioChannel (*channel))
+            return CommandResult::failure ("set_steps: '" + channel->getName() + "' is an audio channel, which has no step pattern");
 
         auto steps = Session::getSteps (*channel);
         auto pitch = Session::getStepPitch (*channel);
@@ -785,6 +803,9 @@ namespace
         if (armed && channel == nullptr)
             return CommandResult::failure ("arm_channel: no channel called '" + ref + "'");
 
+        if (armed && Session::isAudioChannel (*channel))
+            return CommandResult::failure ("arm_channel: '" + channel->getName() + "' is an audio channel; MIDI input goes to instrument channels");
+
         if (armed)
             session.setArmedChannel (channel);
         else if (channel == nullptr || session.getArmedChannel() == channel)
@@ -898,6 +919,11 @@ namespace
                 if (Session::isPatternClip (*found.clip))
                     return CommandResult::failure ("move_clip: a step pattern belongs to its channel; it can only move in time");
 
+                if (Session::isAudioChannel (*target) != Session::isAudioChannel (*found.channel))
+                    return CommandResult::failure (Session::isAudioChannel (*target)
+                                                     ? "move_clip: '" + target->getName() + "' is an audio channel; MIDI clips go on instrument channels"
+                                                     : "move_clip: '" + target->getName() + "' is an instrument channel; audio clips go on audio channels");
+
                 if (! found.clip->moveTo (*target))
                     return CommandResult::failure ("move_clip: couldn't move the clip to '" + channelRef + "'");
             }
@@ -929,6 +955,14 @@ namespace
         auto contentStart = start - clip.getOffsetInBeats().inBeats();
         auto newStart = std::max (contentStart, params::getDouble (p, "start_beat", start));
         auto newEnd = params::getDouble (p, "end_beat", end);
+
+        // An audio clip can't run past the end of its file.
+        if (auto wave = dynamic_cast<te::WaveAudioClip*> (&clip); wave != nullptr && ! wave->isLooping())
+        {
+            auto pos = clip.getPosition();
+            auto fileEnd = tempo.toBeats (pos.getStart() - pos.getOffset() + wave->getMaximumLength()).inBeats();
+            newEnd = std::min (newEnd, fileEnd);
+        }
 
         if (newStart < 0.0 || newEnd - newStart < minClipBeats)
             return CommandResult::failure ("resize_clip: the clip would be shorter than a 64th note or start before the project");
@@ -1274,7 +1308,8 @@ void registerProjectCommands (CommandRegistry& registry)
                     "Adds an instrument channel and a mixer strip with the same name and colour, linked to it.",
                     schema ({ { "name", prop ("string", "Name for the channel and its strip") },
                               { "colour", prop ("string", "Hex colour such as #3c8ce0; picked automatically if omitted") },
-                              { "instrument", prop ("string", "\"4osc\" (built-in synth, default), \"sampler\" (plays samples: load them with add_sample or load_drum_kit), \"none\", or a plugin's id or name from list_plugins") } }),
+                              { "instrument", prop ("string", "\"4osc\" (built-in synth, default), \"sampler\" (plays samples: load them with add_sample or load_drum_kit), \"none\", "
+                                                              "\"audio\" (an audio channel, for audio clips: add them with import_audio), or a plugin's id or name from list_plugins") } }),
                     true, createTrack });
 
     registry.add ({ "route",
@@ -1490,6 +1525,7 @@ void registerProjectCommands (CommandRegistry& registry)
     registerOutputCommands (registry);
     registerSamplerCommands (registry);
     registerLibraryCommands (registry);
+    registerAudioCommands (registry);
 }
 
 } // namespace ng
