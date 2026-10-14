@@ -21,6 +21,12 @@ namespace ng
     (to 16ths when zoomed in); hold Alt to place freely. Each edit is one command, so one
     undo step.
 
+    Audio channels show their clips' waveforms. Drop audio files (from the browser or the
+    desktop) on an audio channel's lane to add them there, one after another, or anywhere else
+    for a new audio channel each; a folder brings in the audio files in it. Double-click an
+    empty spot on an audio lane to pick files for it. An audio clip can't be trimmed past the
+    end of its file, and audio and MIDI clips each stay on their own kind of channel.
+
     Ctrl + mouse wheel zooms around the mouse, Shift + wheel (or a sideways scroll)
     scrolls through time, and the plain wheel scrolls the lanes. While playing, the view
     follows the playhead.
@@ -28,6 +34,8 @@ namespace ng
     update() takes the project state after every command; the playhead is polled.
 */
 class TimelineView  : public juce::Component,
+                      public juce::DragAndDropTarget,
+                      public juce::FileDragAndDropTarget,
                       private juce::ScrollBar::Listener,
                       private juce::Timer
 {
@@ -50,6 +58,22 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     bool keyPressed (const juce::KeyPress&) override;
 
+    bool isInterestedInDragSource (const SourceDetails&) override;
+    void itemDragMove (const SourceDetails&) override;
+    void itemDragExit (const SourceDetails&) override;
+    void itemDropped (const SourceDetails&) override;
+    bool isInterestedInFileDrag (const juce::StringArray&) override;
+    void fileDragMove (const juce::StringArray&, int x, int y) override;
+    void fileDragExit (const juce::StringArray&) override;
+    void filesDropped (const juce::StringArray&, int x, int y) override;
+
+    /** Asks for audio files and puts them on the audio channel (or, with no channel, on a new
+        audio channel each) from the beat. */
+    void chooseAudioFiles (const juce::String& channelId, double beat);
+
+    /** The playhead, on the beat grid, for importing there. */
+    double getPlayheadBeatForImport() const     { return std::round (getPlayheadBeat() * 4.0) / 4.0; }
+
     /** Called to open a clip's notes in the piano roll. Step patterns are edited in the rack instead. */
     std::function<void (const juce::String& clipId)> onOpenClip;
 
@@ -67,7 +91,8 @@ private:
     {
         juce::String id, name;
         double startBeat = 0.0, lengthBeats = 0.0;
-        bool pattern = false;
+        bool pattern = false, audio = false, missing = false;
+        double maxEndBeat = -1.0;   // for an audio clip, where its file runs out
     };
 
     struct Lane
@@ -75,6 +100,7 @@ private:
         juce::String channelId, name;
         juce::Colour colour;
         juce::Array<Clip> clips;
+        bool audio = false;
     };
 
     enum class DragMode { none, move, trimStart, trimEnd };
@@ -107,6 +133,12 @@ private:
     void splitSelectedAtPlayhead();
     void pasteAtPlayhead();
     void moveSelected (double beats, int lanesDown);
+
+    juce::Array<juce::var> itemsForFiles (const juce::StringArray&) const;
+    void showDropTarget (juce::Point<float>);
+    void dropItems (const juce::Array<juce::var>&, juce::Point<float>);
+    te::SmartThumbnail* getThumbnail (const juce::String& file);
+    void paintWaveform (juce::Graphics&, const Lane&, const Clip&, juce::Rectangle<float>, double extraOffsetBeats);
 
     void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;
     void timerCallback() override;
@@ -146,6 +178,14 @@ private:
     double loopAnchor = 0.0;
 
     juce::ScrollBar horizontal { false }, vertical { true };
+
+    // While audio is dragged over: the audio lane it would go on (-1 for new channels) and the beat.
+    bool dropActive = false;
+    int dropLane = -1;
+    double dropBeat = 0.0;
+
+    std::map<juce::String, std::unique_ptr<te::SmartThumbnail>> thumbnails;   // by file path
+    std::unique_ptr<juce::FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TimelineView)
 };

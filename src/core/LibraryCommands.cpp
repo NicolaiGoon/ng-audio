@@ -256,6 +256,8 @@ namespace
 
             if (t.channel == nullptr)
                 t.error = command + ": no channel called '" + ref + "'";
+            else if (Session::isAudioChannel (*t.channel))
+                t.error = command + ": '" + t.channel->getName() + "' is an audio channel, which has no instrument";
 
             return t;
         }
