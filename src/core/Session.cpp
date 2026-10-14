@@ -292,13 +292,41 @@ void Session::describeAudioClip (te::WaveAudioClip& clip, juce::DynamicObject& o
     if (! file.existsAsFile())
         obj.setProperty ("missing", true);
 
+    auto rounded = [] (double v) { return std::round (v * 1.0e6) / 1.0e6; };
+
     // Unless it loops, a clip ends where its file does.
     if (! clip.isLooping())
+        obj.setProperty ("max_end_beat", rounded (getSourceEndBeat (clip)));
+
+    auto& tempo = edit->tempoSequence;
+    auto pos = clip.getPosition();
+    auto beatsOf = [&] (te::TimePosition from, te::TimeDuration length)
     {
-        auto pos = clip.getPosition();
-        auto end = pos.getStart() - pos.getOffset() + clip.getMaximumLength();
-        obj.setProperty ("max_end_beat", std::round (edit->tempoSequence.toBeats (end).inBeats() * 1.0e6) / 1.0e6);
-    }
+        return rounded (tempo.toBeats (from + length).inBeats() - tempo.toBeats (from).inBeats());
+    };
+
+    obj.setProperty ("gain_db", std::round (clip.getGainDB() * 100.0) / 100.0);
+    obj.setProperty ("fade_in_beats", beatsOf (pos.getStart(), clip.getFadeIn()));
+    obj.setProperty ("fade_out_beats", beatsOf (pos.getEnd() - clip.getFadeOut(), clip.getFadeOut()));
+    obj.setProperty ("follow_tempo", clip.getAutoTempo());
+
+    if (clip.getAutoTempo())
+        obj.setProperty ("source_bpm", std::round (clip.getLoopInfo().getBpm (clip.getAudioFile().getInfo()) * 100.0) / 100.0);
+}
+
+double Session::getSourceStartBeat (te::WaveAudioClip& clip) const
+{
+    auto& tempo = edit->tempoSequence;
+    return tempo.toBeats (clip.getPosition().getStart()).inBeats() - clip.getOffsetInBeats().inBeats();
+}
+
+double Session::getSourceEndBeat (te::WaveAudioClip& clip) const
+{
+    if (clip.getAutoTempo())
+        return getSourceStartBeat (clip) + clip.getLoopInfo().getNumBeats();
+
+    auto pos = clip.getPosition();
+    return edit->tempoSequence.toBeats (pos.getStartOfSource() + clip.getSourceLength() / clip.getSpeedRatio()).inBeats();
 }
 
 juce::String Session::getSteps (const te::AudioTrack& channel)

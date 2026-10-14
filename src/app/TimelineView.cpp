@@ -52,6 +52,11 @@ void TimelineView::update (const juce::var& state)
             clip.audio = c["type"] == "audio";
             clip.missing = c["missing"];
             clip.maxEndBeat = c.hasProperty ("max_end_beat") ? static_cast<double> (c["max_end_beat"]) : -1.0;
+            clip.gainDb = c.getProperty ("gain_db", 0.0);
+            clip.fadeInBeats = c.getProperty ("fade_in_beats", 0.0);
+            clip.fadeOutBeats = c.getProperty ("fade_out_beats", 0.0);
+            clip.followTempo = c.getProperty ("follow_tempo", false);
+            clip.sourceBpm = c.getProperty ("source_bpm", 0.0);
             lane.clips.add (clip);
 
             if (clip.audio)
@@ -346,6 +351,9 @@ void TimelineView::paintLanes (juce::Graphics& g)
 
                 paintClip (g, lanes[i], clip, area);
 
+                if (clip.audio)
+                    paintFades (g, clip, area, clip.id == selectedClip);
+
                 if (clip.id == selectedClip)
                 {
                     g.setColour (juce::Colours::white);
@@ -362,9 +370,15 @@ void TimelineView::paintLanes (juce::Graphics& g)
             auto preview = drag.clip;
             preview.startBeat = drag.start;
             preview.lengthBeats = drag.end - drag.start;
+            preview.fadeInBeats = std::min (drag.fadeIn, preview.lengthBeats);
+            preview.fadeOutBeats = std::min (drag.fadeOut, preview.lengthBeats - preview.fadeInBeats);
             // Trimming the start leaves the notes where they are in the song.
             auto extraOffset = drag.mode == DragMode::trimStart ? drag.start - drag.clip.startBeat : 0.0;
             paintClip (g, lanes[drag.lane], preview, area, extraOffset);
+
+            if (preview.audio)
+                paintFades (g, preview, area, true);
+
             g.setColour (juce::Colours::white);
             g.drawRoundedRectangle (area.reduced (0.5f), 3.0f, 2.0f);
         }
@@ -431,7 +445,9 @@ void TimelineView::paintClip (juce::Graphics& g, const Lane& lane, const Clip& c
     {
         g.setColour (juce::Colours::white.withAlpha (0.9f));
         g.setFont (juce::FontOptions (11.0f));
-        g.drawText (clip.name, title.reduced (4.0f, 0.0f), juce::Justification::centredLeft, true);
+        // An audio clip's fade handles sit in the corners, so its name starts clear of them.
+        g.drawText (clip.name, title.reduced (4.0f, 0.0f).withTrimmedLeft (clip.audio ? 6.0f : 0.0f),
+                    juce::Justification::centredLeft, true);
     }
 
     if (clip.audio)
@@ -528,17 +544,81 @@ void TimelineView::paintWaveform (juce::Graphics& g, const Lane& lane, const Cli
 
     // Where the file starts in the song, in beats. Trimming the start leaves the audio in place.
     auto& tempo = session.getEdit().tempoSequence;
-    auto pos = wave->getPosition();
-    auto offsetBeats = tempo.toBeats (pos.getStart()).inBeats() - tempo.toBeats (pos.getStartOfSource()).inBeats();
-    auto sourceStart = tempo.toTime (te::BeatPosition::fromBeats (clip.startBeat - offsetBeats - extraOffsetBeats));
-    auto timeAt = [&] (float x) { return tempo.toTime (te::BeatPosition::fromBeats (xToBeat (x))) - sourceStart; };
+    auto offsetBeats = tempo.toBeats (wave->getPosition().getStart()).inBeats() - session.getSourceStartBeat (*wave);
+    auto sourceStartBeat = clip.startBeat - offsetBeats - extraOffsetBeats;
+    auto sourceStart = tempo.toTime (te::BeatPosition::fromBeats (sourceStartBeat));
+
+    // A clip that follows the tempo plays its file at a steady rate of beats; otherwise it plays
+    // in real time.
+    auto timeAt = [&] (float x)
+    {
+        if (clip.followTempo && clip.sourceBpm > 0.0)
+            return te::TimeDuration::fromSeconds ((xToBeat (x) - sourceStartBeat) * 60.0 / clip.sourceBpm);
+
+        return tempo.toTime (te::BeatPosition::fromBeats (xToBeat (x))) - sourceStart;
+    };
 
     if (auto thumb = getThumbnail (wave->getOriginalFile().getFullPathName()))
     {
+        // Taller or shorter with the clip's gain, so a quiet take can be seen.
+        auto zoom = juce::jlimit (0.05f, 4.0f, juce::Decibels::decibelsToGain ((float) clip.gainDb));
         g.setColour (lane.colour.brighter (0.5f).withAlpha (0.9f));
         thumb->drawChannels (g, visible.toNearestInt(),
-                             { te::TimePosition() + timeAt (visible.getX()), te::TimePosition() + timeAt (visible.getRight()) }, 1.0f);
+                             { te::TimePosition() + timeAt (visible.getX()), te::TimePosition() + timeAt (visible.getRight()) }, zoom);
     }
+}
+
+void TimelineView::paintFades (juce::Graphics& g, const Clip& clip, juce::Rectangle<float> area, bool showHandles)
+{
+    // A fade shades the part of the clip above its ramp.
+    g.setColour (juce::Colours::black.withAlpha (0.4f));
+    auto inX = area.getX() + (float) (clip.fadeInBeats * pixelsPerBeat);
+    auto outX = area.getRight() - (float) (clip.fadeOutBeats * pixelsPerBeat);
+
+    if (clip.fadeInBeats > 0.0)
+    {
+        juce::Path shade;
+        shade.addTriangle (area.getX(), area.getY(), inX, area.getY(), area.getX(), area.getBottom());
+        g.fillPath (shade);
+    }
+
+    if (clip.fadeOutBeats > 0.0)
+    {
+        juce::Path shade;
+        shade.addTriangle (outX, area.getY(), area.getRight(), area.getY(), area.getRight(), area.getBottom());
+        g.fillPath (shade);
+    }
+
+    g.setColour (juce::Colours::white.withAlpha (0.7f));
+
+    if (clip.fadeInBeats > 0.0)
+        g.drawLine (area.getX(), area.getBottom(), inX, area.getY(), 1.0f);
+
+    if (clip.fadeOutBeats > 0.0)
+        g.drawLine (outX, area.getY(), area.getRight(), area.getBottom(), 1.0f);
+
+    if (! showHandles || area.getWidth() < 24.0f)
+        return;
+
+    g.setColour (juce::Colours::white);
+    g.fillRect (getFadeHandle (area, clip.fadeInBeats, true, pixelsPerBeat));
+    g.fillRect (getFadeHandle (area, clip.fadeOutBeats, false, pixelsPerBeat));
+}
+
+juce::Rectangle<float> TimelineView::getFadeHandle (juce::Rectangle<float> clipArea, double beatsFromEdge, bool fadeIn,
+                                                    double pixelsPerBeat)
+{
+    auto size = 7.0f;
+    auto x = fadeIn ? clipArea.getX() + (float) (beatsFromEdge * pixelsPerBeat)
+                    : clipArea.getRight() - (float) (beatsFromEdge * pixelsPerBeat);
+    x = juce::jlimit (clipArea.getX(), clipArea.getRight() - size, x - size / 2.0f);
+    return { x, clipArea.getY(), size, size };
+}
+
+juce::Rectangle<float> TimelineView::getClipArea (int lane, double startBeat, double lengthBeats) const
+{
+    auto y = getLanesArea().getY() + lane * laneHeight - scrollY;
+    return { (float) beatToX (startBeat), (float) y + 3.0f, (float) (lengthBeats * pixelsPerBeat), (float) laneHeight - 6.0f };
 }
 
 //==============================================================================
@@ -633,6 +713,23 @@ TimelineView::Hit TimelineView::hitTestLanes (juce::Point<float> pos) const
 
         hit.clip = i;
         auto edge = std::min (6.0f, (right - left) / 4.0f);
+        auto area = getClipArea (hit.lane, clip.startBeat, clip.lengthBeats);
+
+        // An audio clip's fade handles sit in its top corners, over the trim edges.
+        if (clip.audio && area.getWidth() >= 24.0f)
+        {
+            if (getFadeHandle (area, clip.fadeInBeats, true, pixelsPerBeat).expanded (3.0f).contains (pos))
+            {
+                hit.mode = DragMode::fadeIn;
+                break;
+            }
+
+            if (getFadeHandle (area, clip.fadeOutBeats, false, pixelsPerBeat).expanded (3.0f).contains (pos))
+            {
+                hit.mode = DragMode::fadeOut;
+                break;
+            }
+        }
 
         if (! clip.pattern && pos.x < left + edge)
             hit.mode = DragMode::trimStart;
@@ -720,6 +817,8 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
     drag.clip = clip;
     drag.start = clip.startBeat;
     drag.end = clip.startBeat + clip.lengthBeats;
+    drag.fadeIn = clip.fadeInBeats;
+    drag.fadeOut = clip.fadeOutBeats;
 }
 
 void TimelineView::mouseDrag (const juce::MouseEvent& e)
@@ -780,6 +879,17 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
                 drag.end = std::min (drag.end, drag.clip.maxEndBeat);
             break;
 
+        // Fades move freely, to a 32nd, and can't overlap each other.
+        case DragMode::fadeIn:
+            drag.fadeIn = juce::jlimit (0.0, drag.clip.lengthBeats - drag.clip.fadeOutBeats,
+                                        std::round ((drag.clip.fadeInBeats + delta) * 32.0) / 32.0);
+            break;
+
+        case DragMode::fadeOut:
+            drag.fadeOut = juce::jlimit (0.0, drag.clip.lengthBeats - drag.clip.fadeInBeats,
+                                         std::round ((drag.clip.fadeOutBeats - delta) * 32.0) / 32.0);
+            break;
+
         case DragMode::none:
             break;
     }
@@ -837,6 +947,14 @@ void TimelineView::mouseUp (const juce::MouseEvent&)
     {
         dispatcher.execute ("resize_clip", makeObject ({ { "clip", clipId }, { "end_beat", finished.end } }));
     }
+    else if (finished.mode == DragMode::fadeIn && std::abs (finished.fadeIn - finished.clip.fadeInBeats) > 1.0e-6)
+    {
+        dispatcher.execute ("set_audio_clip", makeObject ({ { "clip", clipId }, { "fade_in_beats", finished.fadeIn } }));
+    }
+    else if (finished.mode == DragMode::fadeOut && std::abs (finished.fadeOut - finished.clip.fadeOutBeats) > 1.0e-6)
+    {
+        dispatcher.execute ("set_audio_clip", makeObject ({ { "clip", clipId }, { "fade_out_beats", finished.fadeOut } }));
+    }
 
     repaint();
 }
@@ -854,6 +972,8 @@ void TimelineView::mouseMove (const juce::MouseEvent& e)
     {
         case DragMode::trimStart:
         case DragMode::trimEnd:  setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); break;
+        case DragMode::fadeIn:
+        case DragMode::fadeOut:  setMouseCursor (juce::MouseCursor::PointingHandCursor); break;
         case DragMode::move:     setMouseCursor (juce::MouseCursor::DraggingHandCursor); break;
         case DragMode::none:     setMouseCursor (juce::MouseCursor::NormalCursor); break;
     }
@@ -974,12 +1094,39 @@ void TimelineView::showClipMenu()
     if (! clip->audio)
         menu.addItem ("Edit notes (Enter)", ! clip->pattern, false, [this] { openSelected(); });
 
+    if (clip->audio && ! clip->missing)
+    {
+        juce::PopupMenu gain;
+
+        for (auto db : { 6.0, 3.0, 0.0, -3.0, -6.0, -12.0 })
+            gain.addItem ((db > 0.0 ? "+" : "") + juce::String (db, 0) + " dB", true, std::abs (clip->gainDb - db) < 0.01,
+                          [this, db] { setSelectedAudio ("gain_db", db); });
+
+        auto current = juce::String (clip->gainDb, 1);
+        menu.addSubMenu ("Gain (" + (clip->gainDb > 0.0 ? "+" + current : current) + " dB)", gain);
+        menu.addItem ("Follow tempo", true, clip->followTempo,
+                      [this, on = ! clip->followTempo] { setSelectedAudio ("follow_tempo", on); });
+        menu.addItem ("Remove fades", clip->fadeInBeats > 0.0 || clip->fadeOutBeats > 0.0, false, [this]
+        {
+            dispatcher.execute ("set_audio_clip", makeObject ({ { "clip", selectedClip }, { "fade_in_beats", 0.0 },
+                                                                { "fade_out_beats", 0.0 } }));
+        });
+        menu.addSeparator();
+    }
+
     menu.addItem ("Split at playhead (S)", canSplit, false, [this] { splitSelectedAtPlayhead(); });
     menu.addItem ("Duplicate (Ctrl+D)", [this] { duplicateSelected(); });
     menu.addItem ("Copy (Ctrl+C)", [this] { copiedClip = selectedClip; });
     menu.addSeparator();
     menu.addItem ("Delete (Del)", [this] { deleteSelected(); });
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition());
+}
+
+void TimelineView::setSelectedAudio (const juce::String& property, const juce::var& value)
+{
+    auto params = makeObject ({ { "clip", selectedClip } });
+    params.getDynamicObject()->setProperty (property, value);
+    dispatcher.execute ("set_audio_clip", params);
 }
 
 void TimelineView::openSelected()
