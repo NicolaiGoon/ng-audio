@@ -104,6 +104,10 @@ and every action available to AI tools through one command layer.
   each take into a clip on its channel, as one undo step. *Mon auto* plays the input through the
   channel while it's armed; *Mon on* always and *Mon off* never. Takes are saved as WAV files in a
   *Recordings* folder beside the project (or in Music/Ng DAW/Recordings before it's saved).
+- **Editing audio clips.** Select an audio clip and drag the small handles in its top corners to
+  fade it in or out. Right-click it for its *Gain* (+6 to -12 dB; the waveform grows or shrinks
+  with it), *Follow tempo*, which time-stretches the clip so it keeps its length in beats when the
+  tempo changes, and *Remove fades*.
 - **Linked-by-default mixer strips.** Adding an instrument creates a channel *and* a mixer strip
   with the same name and colour, already routed. Pick a different strip in the channel rack to
   detach it; several channels can share one strip; pick its own strip again to re-link it.
@@ -128,6 +132,7 @@ and every action available to AI tools through one command layer.
   | `quantize_notes` | Moves a clip's notes (or some of them) onto a grid, optionally with their ends |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
   | `set_metronome` | Turns the metronome on or off |
+  | `set_audio_clip` | Sets an audio clip's gain, fade in and out, and whether it follows the tempo (time-stretched from its source tempo) |
   | `set_audio_input` | Sets the audio input an audio channel records from, and how it's monitored |
   | `arm_channel` / `record` | Arms a channel for MIDI input (one at a time) or audio input (any number), and records into them until `stop` |
   | `new_project` / `open_project` / `save_project` | Project files; New and Open refuse to drop unsaved changes unless `discard_changes` is true |
@@ -169,7 +174,7 @@ src/core/BusCommands.cpp      buses and sends
 src/core/OutputCommands.cpp   multi-output instruments
 src/core/SamplerCommands.cpp  the sampler's samples and drum kits
 src/core/LibraryCommands.cpp  sample folders, finding samples, and presets
-src/core/AudioCommands.cpp    importing audio files onto audio channels, and their audio inputs
+src/core/AudioCommands.cpp    importing audio files onto audio channels, editing audio clips, and audio inputs
 src/app/                      the JUCE window (timeline, channel rack, mixer, transport, console)
 src/app/MixerView.*           mixer strips: fader, pan, effects, sends, mute/solo, meters, master
 src/app/PluginWindow.*        plugin editor windows, and sliders for built-in effects

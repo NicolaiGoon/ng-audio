@@ -93,6 +93,8 @@ private:
         double startBeat = 0.0, lengthBeats = 0.0;
         bool pattern = false, audio = false, missing = false;
         double maxEndBeat = -1.0;   // for an audio clip, where its file runs out
+        double gainDb = 0.0, fadeInBeats = 0.0, fadeOutBeats = 0.0, sourceBpm = 0.0;   // audio only
+        bool followTempo = false;
     };
 
     struct Lane
@@ -103,7 +105,7 @@ private:
         bool audio = false;
     };
 
-    enum class DragMode { none, move, trimStart, trimEnd };
+    enum class DragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut };
     enum class RulerDrag { none, playhead, loopStart, loopEnd, newLoop };
 
     /** What's under the mouse in the lanes: a lane, maybe a clip, and which part of it. */
@@ -119,10 +121,14 @@ private:
         int lane = -1, targetLane = -1;
         Clip clip;
         double start = 0.0, end = 0.0;   // where the clip would go, in beats
+        double fadeIn = 0.0, fadeOut = 0.0;   // an audio clip's fades as they would be, in beats
         bool moved = false;
     };
 
     Hit hitTestLanes (juce::Point<float>) const;
+    juce::Rectangle<float> getClipArea (int lane, double startBeat, double lengthBeats) const;
+    static juce::Rectangle<float> getFadeHandle (juce::Rectangle<float> clipArea, double beatsFromEdge, bool fadeIn, double pixelsPerBeat);
+    void setSelectedAudio (const juce::String& property, const juce::var& value);
     int laneAt (float y) const;
     double snap (double beat, const juce::ModifierKeys&) const;
     const Clip* findSelectedClip (int* laneIndex = nullptr) const;
@@ -139,6 +145,7 @@ private:
     void dropItems (const juce::Array<juce::var>&, juce::Point<float>);
     te::SmartThumbnail* getThumbnail (const juce::String& file);
     void paintWaveform (juce::Graphics&, const Lane&, const Clip&, juce::Rectangle<float>, double extraOffsetBeats);
+    void paintFades (juce::Graphics&, const Clip&, juce::Rectangle<float>, bool showHandles);
 
     void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;
     void timerCallback() override;

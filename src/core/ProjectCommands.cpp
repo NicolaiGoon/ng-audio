@@ -991,11 +991,7 @@ namespace
 
         // An audio clip can't run past the end of its file.
         if (auto wave = dynamic_cast<te::WaveAudioClip*> (&clip); wave != nullptr && ! wave->isLooping())
-        {
-            auto pos = clip.getPosition();
-            auto fileEnd = tempo.toBeats (pos.getStart() - pos.getOffset() + wave->getMaximumLength()).inBeats();
-            newEnd = std::min (newEnd, fileEnd);
-        }
+            newEnd = std::min (newEnd, session.getSourceEndBeat (*wave));
 
         if (newStart < 0.0 || newEnd - newStart < minClipBeats)
             return CommandResult::failure ("resize_clip: the clip would be shorter than a 64th note or start before the project");
