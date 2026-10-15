@@ -9,8 +9,8 @@ namespace ng
     The arrangement timeline: a bar ruler, then one lane per channel showing its clips,
     with the playhead on top. Click in the ruler to move the playhead.
 
-    The loop region shows in the ruler (dimmed while looping is off). Drag in the ruler (or
-    Ctrl+drag in the lanes) to draw a new one, drag its edges to change it, or right-click
+    The loop region shows in the ruler (dimmed while looping is off). Drag in the ruler to
+    draw a new one, drag its edges to change it, or right-click
     the ruler to loop a bar or the whole project.
 
     Clips work as in FL Studio's playlist. Click a clip to pick it, then click empty spots on
@@ -263,7 +263,7 @@ private:
     // While audio is dragged over: the audio lane it would go on (-1 for new channels) and the beat.
     bool dropActive = false;
 
-    /** Set by a Ctrl+click: if the mouse comes up without dragging, the view fits the song. */
+    /** Set by a Ctrl + left click, which fits the song in view when the mouse comes up. */
     bool fitOnClick = false;
     int dropLane = -1;
     double dropBeat = 0.0;

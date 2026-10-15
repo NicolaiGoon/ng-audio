@@ -29,7 +29,7 @@ Linux, build it from source (see *Building*).
   against a bar ruler, with the loop region and the playhead. Click in the ruler to move the
   playhead, or drag in it to draw a new loop. Ctrl + mouse wheel (or the wheel over the ruler)
   zooms in time, Alt + wheel makes the lanes taller or shorter, Shift + wheel scrolls through
-  time, and the zoom buttons in the timeline's header do the same. Ctrl+click fits the whole song
+  time, and the zoom buttons in the timeline's header do the same. Ctrl + left click fits the whole song
   in view, as in FL Studio. Drag a lane's bottom edge (in
   the names on the left) to size just that lane; double-click the edge to reset it. The view
   glides along with the playhead while playing, and an automated value's dot rides its line.
@@ -41,7 +41,7 @@ Linux, build it from source (see *Building*).
   channel's lane too) and drag its edges to trim it. Del deletes the selected clip, Ctrl+D
   duplicates it and S splits it at the playhead. Drags snap to the beat (16ths when zoomed in); hold Alt to place freely. A step
   pattern can be copied along the timeline, and every copy follows the channel's steps; drag a
-  copy's edge to resize it, and its steps repeat across the new length.
+  copy's edge to resize it: the steps play once, cut off or followed by silence, as in FL Studio.
 - **A piano roll.** Double-click a clip (or select it and press Enter) to edit its notes in
   place of the rack and mixer. Click to draw a note (drag to set its length), drag a note to
   move it and its right edge to resize it; right-click or Del deletes. Ctrl+click and Ctrl+drag
@@ -57,8 +57,8 @@ Linux, build it from source (see *Building*).
 - **A transport** with Play, back to the start (|< or Home), tempo (type it, click the arrows
   or drag), time signature, the song position (bar.beat.sixteenth), a Loop switch and a
   Metronome that clicks on every beat, louder on the bar. New projects loop the whole project,
-  rounded up to whole bars. The loop region shows in the timeline ruler: drag in the ruler (or
-  Ctrl+drag in an empty part of the lanes) to draw a new one, drag its edges to change it, or right-click to loop a bar or the whole project.
+  rounded up to whole bars. The loop region shows in the timeline ruler: drag in the ruler to draw a
+  new one, drag its edges to change it, or right-click to loop a bar or the whole project.
 - **MIDI input.** Arm a channel with its ● button in the channel rack, and any MIDI keyboard
   plays it (one channel is armed at a time). No keyboard? The typing keyboard (the keys button in
   the top bar, or Ctrl+K) plays the armed channel from the computer keyboard as in FL Studio: the

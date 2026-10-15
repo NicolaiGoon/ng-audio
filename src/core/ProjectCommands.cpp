@@ -527,8 +527,9 @@ namespace
 
     /** Brings a channel's pattern clips in line with its steps. A pattern can be placed on the
         timeline several times (duplicate_clip); every copy plays the same steps, so each one is
-        refilled where it stands. A copy that was resized (resize_clip) keeps its own length, with
-        the steps repeating across it, as in FL Studio; the rest follow the steps' length.
+        refilled where it stands. A copy that was resized (resize_clip) keeps its own length, as in FL
+        Studio: the steps play once from its start, cut off if it's shorter, with silence after
+        them if it's longer. The rest follow the steps' length.
         With no copies left, the pattern goes back at the start. */
     void rebuildPatternClip (Session& session, te::AudioTrack& channel)
     {
@@ -577,11 +578,10 @@ namespace
                                  te::TimeDuration() });
             clip->getSequence().clear (um);
 
-            for (double repeat = 0.0; repeat < clipBeats; repeat += patternBeats)
-                for (int i = 0; i < steps.length(); ++i)
-                    if (auto beat = repeat + i * beatsPerStep; steps[i] == 'x' && beat < clipBeats - 1.0e-6)
-                        clip->getSequence().addNote (pitch, te::BeatPosition::fromBeats (beat),
-                                                     te::BeatDuration::fromBeats (beatsPerStep), 100, 0, um);
+            for (int i = 0; i < steps.length(); ++i)
+                if (auto beat = i * beatsPerStep; steps[i] == 'x' && beat < clipBeats - 1.0e-6)
+                    clip->getSequence().addNote (pitch, te::BeatPosition::fromBeats (beat),
+                                                 te::BeatDuration::fromBeats (beatsPerStep), 100, 0, um);
         }
     }
 
@@ -1001,7 +1001,7 @@ namespace
         auto start = tempo.toBeats (clip.getPosition().getStart()).inBeats();
         auto end = tempo.toBeats (clip.getPosition().getEnd()).inBeats();
 
-        // A step pattern copy gets its own length, and its steps repeat across it from its start.
+        // A step pattern copy gets its own length; its steps play once from its start.
         if (Session::isPatternClip (clip))
         {
             auto newStart = params::getDouble (p, "start_beat", start);
@@ -1598,7 +1598,7 @@ void registerProjectCommands (CommandRegistry& registry)
 
     registry.add ({ "resize_clip",
                     "Moves a clip's start and/or end; its notes stay where they are in the song. "
-                    "A step pattern copy can be resized too: its steps repeat across its new length.",
+                    "A step pattern copy can be resized too: its steps play once from its start, cut off or followed by silence.",
                     schema ({ { "clip", prop ("string", "Clip id, from get_state") },
                               { "start_beat", prop ("number", "New start, in beats") },
                               { "end_beat", prop ("number", "New end, in beats") } },
