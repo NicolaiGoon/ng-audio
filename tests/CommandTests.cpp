@@ -972,7 +972,9 @@ namespace
             auto notesBefore = static_cast<int> (copies[1]["notes"]);
             CHECK (f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", start + 5.0 } })).ok);
 
-            for (auto& c : *clipsOf (f, 0).getArray())
+            auto resized = clipsOf (f, 0);   // kept alive: the loop below walks its array
+
+            for (auto& c : *resized.getArray())
                 if (c["id"].toString() == id)
                 {
                     CHECK (near (c["length_beats"], 5.0));
