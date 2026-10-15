@@ -28,41 +28,48 @@ namespace
     {
         return object ({ { "name", name }, { "description", description }, { "inputSchema", schema } });
     }
+}
 
-    /** The app's commands as tools, plus batch, undo and redo. */
-    juce::var listTools (const CommandRegistry& registry)
-    {
-        juce::Array<juce::var> tools;
-        auto commands = registry.describe();
+juce::String McpServer::getInstructions()
+{
+    return instructions;
+}
 
-        for (auto& t : *commands.getArray())
-            tools.add (t);
+juce::var McpServer::listTools (const CommandRegistry& registry)
+{
+    juce::Array<juce::var> tools;
+    auto commands = registry.describe();
 
-        auto commandItem = params::schema ({ { "command", params::prop ("string", "A tool name, e.g. create_track") },
-                                             { "params", params::prop ("object", "That tool's arguments") } },
-                                           { "command" });
+    for (auto& t : *commands.getArray())
+        tools.add (t);
 
-        auto batchCommands = params::prop ("array", "The commands, run in order");
-        batchCommands.getDynamicObject()->setProperty ("items", commandItem);
+    auto commandItem = params::schema ({ { "command", params::prop ("string", "A tool name, e.g. create_track") },
+                                         { "params", params::prop ("object", "That tool's arguments") } },
+                                       { "command" });
 
-        tools.add (tool ("batch",
-                         "Runs several commands as one undo step, e.g. adding a part and putting effects on it. If any command "
-                         "fails, all of them are undone. A string param \"$<n>.<field>\" is that field of command n's result "
-                         "(counting from 0), so later commands can use what earlier ones created: "
-                         "[{\"command\": \"create_track\", \"params\": {\"name\": \"Bass\"}}, "
-                         "{\"command\": \"add_midi_clip\", \"params\": {\"channel\": \"$0.channel\", \"notes\": [...]}}]. "
-                         "Fields can go deeper (\"$1.clips.0.id\"); write \"$$\" for a literal \"$\". Returns each command's result.",
-                         params::schema ({ { "label", params::prop ("string", "What the change does, as the undo history and the "
-                                                                              "app's command log show it, e.g. \"Add a bass line\"") },
-                                           { "commands", batchCommands } },
-                                         { "label", "commands" })));
+    auto batchCommands = params::prop ("array", "The commands, run in order");
+    batchCommands.getDynamicObject()->setProperty ("items", commandItem);
 
-        tools.add (tool ("undo", "Undoes the newest change in the project (a command, a batch, or something done by hand).",
-                         params::schema ({})));
-        tools.add (tool ("redo", "Redoes the change undo last took back.", params::schema ({})));
-        return tools;
-    }
+    tools.add (tool ("batch",
+                     "Runs several commands as one undo step, e.g. adding a part and putting effects on it. If any command "
+                     "fails, all of them are undone. A string param \"$<n>.<field>\" is that field of command n's result "
+                     "(counting from 0), so later commands can use what earlier ones created: "
+                     "[{\"command\": \"create_track\", \"params\": {\"name\": \"Bass\"}}, "
+                     "{\"command\": \"add_midi_clip\", \"params\": {\"channel\": \"$0.channel\", \"notes\": [...]}}]. "
+                     "Fields can go deeper (\"$1.clips.0.id\"); write \"$$\" for a literal \"$\". Returns each command's result.",
+                     params::schema ({ { "label", params::prop ("string", "What the change does, as the undo history and the "
+                                                                          "app's command log show it, e.g. \"Add a bass line\"") },
+                                       { "commands", batchCommands } },
+                                     { "label", "commands" })));
 
+    tools.add (tool ("undo", "Undoes the newest change in the project (a command, a batch, or something done by hand).",
+                     params::schema ({})));
+    tools.add (tool ("redo", "Redoes the change undo last took back.", params::schema ({})));
+    return tools;
+}
+
+namespace
+{
     juce::var textResult (const juce::String& text, bool isError)
     {
         juce::Array<juce::var> content { object ({ { "type", "text" }, { "text", text } }) };

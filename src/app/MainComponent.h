@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BrowserPanel.h"
+#include "ChatPanel.h"
 #include "CommandLogPanel.h"
 #include "core/Autosave.h"
 #include "core/Bridge.h"
@@ -87,7 +88,8 @@ private:
     void updateButtons();
     void updatePlayStep();
     void updatePositionDisplay();
-    void showPreferences();
+    void showPreferences (const juce::String& tab = {});
+    void showChat (bool);
     void showHistory();
     void checkForRecovery();
     void updateCpuMeter();
@@ -117,7 +119,7 @@ private:
                      undoButton { "Undo" }, redoButton { "Redo" }, settingsButton { "Settings" }, historyButton { "History" }, pluginsButton { "Plugins" }, shortcutsButton { "?" },
                      runButton { "Run" }, closePianoRollButton { "Close" },
                      quantizeButton { "Quantize" };
-    juce::ToggleButton consoleButton { "Console" }, keysButton { "Keys" }, browserButton { "Browser" };
+    juce::ToggleButton consoleButton { "Console" }, keysButton { "Keys" }, browserButton { "Browser" }, chatButton { "AI chat" };
     juce::MidiKeyboardState keyboardState;
     juce::MidiKeyboardComponent keyboard { keyboardState, juce::KeyboardComponentBase::horizontalKeyboard };
 
@@ -148,6 +150,7 @@ private:
     PianoRoll pianoRoll { session, dispatcher };
     BrowserPanel browserPanel { session, dispatcher };
     CommandLogPanel commandLog { dispatcher };
+    ChatPanel chatPanel { session, dispatcher };
 
     /** Lets the MCP server (and so Claude) run commands here. */
     BridgeServer bridge { dispatcher };

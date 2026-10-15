@@ -447,6 +447,7 @@ namespace
                 { "Ctrl+K", "Show or hide the keyboard" },
                 { "Ctrl+B", "Show or hide the browser" },
                 { "Ctrl+H", "The undo history" },
+                { "Ctrl+J", "Show or hide the AI chat" },
                 { "Ctrl+,", "Settings" },
                 { "F1", "This list" },
             };
@@ -629,7 +630,8 @@ MainComponent::MainComponent (te::Engine& engine)
     {
         commandLog.add (entry);
 
-        if (! commandLogShown && entry.source != "Console" && ! consoleButton.getToggleState())
+        // (Not for the chat panel's changes: they show in the chat.)
+        if (! commandLogShown && entry.source != "Console" && ! entry.source.endsWith ("(chat)") && ! consoleButton.getToggleState())
         {
             consoleButton.setToggleState (true, juce::dontSendNotification);
             consoleButton.onClick();
@@ -678,6 +680,11 @@ MainComponent::MainComponent (te::Engine& engine)
 
     browserButton.setTooltip ("Show the browser: instruments, effects, presets and samples to drag in (Ctrl+B)");
     browserButton.onClick = [this] { showBrowser (browserButton.getToggleState()); };
+
+    chatButton.setTooltip ("Show the AI chat: ask for changes in plain words, with Claude, OpenAI, Gemini or a local model (Ctrl+J)");
+    chatButton.onClick = [this] { showChat (chatButton.getToggleState()); };
+    chatPanel.onOpenSettings = [this] { showPreferences ("AI"); };
+    addChildComponent (chatPanel);
     addChildComponent (browserPanel);
     showBrowser (session.getEngine().getPropertyStorage().getPropertiesFile().getBoolValue ("ngBrowserVisible", true));
     keyboardState.addListener (this);
@@ -752,7 +759,7 @@ MainComponent::MainComponent (te::Engine& engine)
                                                              &addButton, &playButton, &undoButton, &redoButton,
                                                              &returnButton, &recordButton, &keysButton, &tempo, &timeSignature, &positionDisplay,
                                                              &loopButton, &metronomeButton,
-                                                             &settingsButton, &historyButton, &cpuMeter, &pluginsButton, &shortcutsButton, &consoleButton, &browserButton, &audioButton, &exportButton, &timelineHeader, &timelineHint, &timeline,
+                                                             &settingsButton, &historyButton, &cpuMeter, &chatButton, &pluginsButton, &shortcutsButton, &consoleButton, &browserButton, &audioButton, &exportButton, &timelineHeader, &timelineHint, &timeline,
                                                              &channelsHeader, &mixerHeader, &addBusButton, &mixer })
         addAndMakeVisible (c);
 
@@ -762,6 +769,7 @@ MainComponent::MainComponent (te::Engine& engine)
         addChildComponent (c);
 
     loadStarterProject();
+    showChat (session.getEngine().getPropertyStorage().getPropertiesFile().getBoolValue ("ngChatVisible", false));
 
     if (auto error = bridge.start(); error.isNotEmpty())
         DBG ("AI bridge: " << error);
@@ -992,6 +1000,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('i', command, 0))                    { timeline.chooseAudioFiles ({}, timeline.getPlayheadBeatForImport()); return true; }
     if (key == juce::KeyPress ('e', command, 0))                    { showExport(); return true; }
     if (key == juce::KeyPress ('h', command, 0))                    { showHistory(); return true; }
+    if (key == juce::KeyPress ('j', command, 0))                    { showChat (! chatPanel.isVisible()); return true; }
     if (key == juce::KeyPress (',', command, 0))                    { showPreferences(); return true; }
 
     if (key == juce::KeyPress (juce::KeyPress::spaceKey))           { playButton.onClick(); return true; }
@@ -1299,10 +1308,10 @@ void MainComponent::updateTransportControls (const juce::var& state)
     updatePositionDisplay();
 }
 
-void MainComponent::showPreferences()
+void MainComponent::showPreferences (const juce::String& tab)
 {
     juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned (new PreferencesPanel (session, [this] { lastAutosave = juce::Time::getCurrentTime(); }));
+    options.content.setOwned (new PreferencesPanel (session, [this] { lastAutosave = juce::Time::getCurrentTime(); }, tab));
     options.dialogTitle = "Settings";
     options.dialogBackgroundColour = getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId);
     options.componentToCentreAround = this;
@@ -1310,6 +1319,17 @@ void MainComponent::showPreferences()
     options.resizable = true;
     options.escapeKeyTriggersCloseButton = true;
     options.launchAsync();
+}
+
+void MainComponent::showChat (bool shouldShow)
+{
+    chatButton.setToggleState (shouldShow, juce::dontSendNotification);
+    chatPanel.setVisible (shouldShow);
+    session.getEngine().getPropertyStorage().getPropertiesFile().setValue ("ngChatVisible", shouldShow);
+    resized();
+
+    if (shouldShow && isShowing())
+        chatPanel.focusInput();
 }
 
 void MainComponent::showHistory()
@@ -1471,6 +1491,9 @@ void MainComponent::timerCallback()
         cpuMeterTicks = 0;
         updateCpuMeter();
         autosaveIfDue();
+
+        if (chatPanel.isVisible())
+            chatPanel.updateProvider();   // Settings may have changed the provider
     }
 
     updateButtons();
@@ -1655,7 +1678,13 @@ void MainComponent::resized()
         r.removeFromBottom (10);
     }
 
-    // The browser runs down the left, beside the timeline, rack and mixer.
+    // The AI chat runs down the right, the browser down the left.
+    if (chatPanel.isVisible())
+    {
+        chatPanel.setBounds (r.removeFromRight (juce::jlimit (300, 420, r.getWidth() / 4)));
+        r.removeFromRight (10);
+    }
+
     if (browserPanel.isVisible())
     {
         browserPanel.setBounds (r.removeFromLeft (230));
@@ -1665,6 +1694,7 @@ void MainComponent::resized()
     // The timeline gets a bit under half; the rack and mixer share the rest.
     auto timelineTop = r.removeFromTop (24);
     browserButton.setBounds (timelineTop.removeFromLeft (80));
+    chatButton.setBounds (timelineTop.removeFromLeft (80));
     timelineTop.removeFromLeft (6);
     audioButton.setBounds (timelineTop.removeFromRight (70).reduced (0, 1));
     timelineTop.removeFromRight (6);
