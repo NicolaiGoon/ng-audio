@@ -528,8 +528,8 @@ namespace
     /** Brings a channel's pattern clips in line with its steps. A pattern can be placed on the
         timeline several times (duplicate_clip); every copy plays the same steps, so each one is
         refilled where it stands. A copy that was resized (resize_clip) keeps its own length, as in FL
-        Studio: the steps play once from its start, cut off if it's shorter, with silence after
-        them if it's longer. The rest follow the steps' length.
+        Studio: the steps play once from its start, cut off if it's shorter (a longer one
+        first grows the step row, see resize_clip). The rest follow the steps' length.
         With no copies left, the pattern goes back at the start. */
     void rebuildPatternClip (Session& session, te::AudioTrack& channel)
     {
@@ -1016,6 +1016,15 @@ namespace
                 return CommandResult::failure ("resize_clip: the pattern isn't on a channel");
 
             auto* um = &session.getUndoManager();
+
+            // Longer than the steps adds empty steps to the channel's row (up to the most it
+            // can have), as FL Studio's pattern grows; past that, the rest is silence.
+            auto steps = Session::getSteps (*channel);
+            auto wantedSteps = juce::jmin (maxStepCount, (int) std::ceil ((newEnd - newStart) / beatsPerStep - 1.0e-6));
+
+            if (wantedSteps > steps.length())
+                channel->state.setProperty (stepsProp, steps.paddedRight ('.', wantedSteps), um);
+
             auto stepsBeats = Session::getSteps (*channel).length() * beatsPerStep;
 
             if (std::abs ((newEnd - newStart) - stepsBeats) < 1.0e-6)
@@ -1598,7 +1607,8 @@ void registerProjectCommands (CommandRegistry& registry)
 
     registry.add ({ "resize_clip",
                     "Moves a clip's start and/or end; its notes stay where they are in the song. "
-                    "A step pattern copy can be resized too: its steps play once from its start, cut off or followed by silence.",
+                    "A step pattern copy can be resized too: longer adds empty steps to the channel's row (up to 64); "
+                    "shorter cuts off the steps past its end.",
                     schema ({ { "clip", prop ("string", "Clip id, from get_state") },
                               { "start_beat", prop ("number", "New start, in beats") },
                               { "end_beat", prop ("number", "New end, in beats") } },
