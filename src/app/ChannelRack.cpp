@@ -1,6 +1,7 @@
 #include "ChannelRack.h"
 #include "BrowserPanel.h"
 #include "Widgets.h"
+#include "Theme.h"
 
 namespace ng
 {
@@ -132,7 +133,7 @@ namespace
 
             armButton.setClickingTogglesState (false);
             armButton.setToggleState (channel["armed"], juce::dontSendNotification);
-            armButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd0402f));
+            armButton.setColour (juce::TextButton::buttonOnColourId, theme::accent);   // blue, so only Rec looks like recording
             armButton.setTooltip ("Arm for MIDI input: play this channel from a MIDI keyboard (or Keys) and record into it");
             armButton.onClick = [this]
             {
