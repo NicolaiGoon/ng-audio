@@ -961,9 +961,34 @@ namespace
         CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "length", 8 } })).ok);
         CHECK (near (clipsOf (f, 0)[1]["length_beats"], 2.0));
 
-        // Patterns stay on their channel and keep their own length.
+        // Patterns stay on their channel.
         CHECK (! f.dispatcher.execute ("move_clip", obj ({ { "clip", pattern }, { "channel", "Other" } })).ok);
-        CHECK (! f.dispatcher.execute ("resize_clip", obj ({ { "clip", pattern }, { "end_beat", 12 } })).ok);
+
+        // A resized copy keeps its own length, with the steps repeating across it (FL Studio style).
+        {
+            auto copies = clipsOf (f, 0);
+            auto id = copies[1]["id"].toString();
+            auto start = static_cast<double> (copies[1]["start_beat"]);
+            auto notesBefore = static_cast<int> (copies[1]["notes"]);
+            CHECK (f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", start + 5.0 } })).ok);
+
+            for (auto& c : *clipsOf (f, 0).getArray())
+                if (c["id"].toString() == id)
+                {
+                    CHECK (near (c["length_beats"], 5.0));
+                    CHECK (static_cast<int> (c["notes"]) > notesBefore * 2);
+                }
+
+            // A step change keeps that length; the other copy still follows the steps.
+            CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "step", 1 } })).ok);
+            auto after = clipsOf (f, 0);
+            CHECK (near (after[1]["length_beats"], 5.0));
+            CHECK (near (after[0]["length_beats"], 2.0));
+            CHECK (! f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", start + 0.1 } })).ok);
+            CHECK (f.dispatcher.undo());
+            CHECK (f.dispatcher.undo());
+            CHECK (near (clipsOf (f, 0)[1]["length_beats"], 2.0));
+        }
         CHECK (! f.dispatcher.execute ("split_clip", obj ({ { "clip", pattern }, { "beat", 5 } })).ok);
 
         // With every copy deleted, the next step change puts the pattern back at the start.

@@ -39,7 +39,8 @@ Linux, build it from source (see *Building*).
   (split, duplicate, delete, open in the piano roll). Drag a clip to move it (onto another
   channel's lane too) and drag its edges to trim it. Del deletes the selected clip, Ctrl+D
   duplicates it and S splits it at the playhead. Drags snap to the beat (16ths when zoomed in); hold Alt to place freely. A step
-  pattern can be copied along the timeline, and every copy follows the channel's steps.
+  pattern can be copied along the timeline, and every copy follows the channel's steps; drag a
+  copy's edge to resize it, and its steps repeat across the new length.
 - **A piano roll.** Double-click a clip (or select it and press Enter) to edit its notes in
   place of the rack and mixer. Click to draw a note (drag to set its length), drag a note to
   move it and its right edge to resize it; right-click or Del deletes. Ctrl+click and Ctrl+drag
