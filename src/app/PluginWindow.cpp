@@ -47,7 +47,7 @@ namespace
 
             refresh();
             setSize (420, 40 + rows.size() * rowHeight + 8);
-            startTimerHz (10);
+            startTimerHz (30);   // smooth enough to follow automation
         }
 
         bool allowWindowResizing() override                         { return false; }

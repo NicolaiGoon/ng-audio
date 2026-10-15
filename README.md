@@ -26,41 +26,60 @@ Linux, build it from source (see *Building*).
   shows the project name with a `*` while there are unsaved changes, and New, Open and closing
   the app ask whether to save them first.
 - **A timeline.** One lane per channel shows its clips (with a small picture of their notes)
-  against a bar ruler, with the loop region and the playhead. Click or drag in the ruler to
-  move the playhead. Ctrl + mouse wheel zooms, Shift + wheel scrolls through time, and the view
-  follows the playhead while playing.
-- **Clip editing.** On the timeline, drag a clip to move it (onto another channel's lane too),
-  drag its edges to trim it, and double-click an empty spot for a new one-bar clip. Del deletes
-  the selected clip, Ctrl+D duplicates it, S splits it at the playhead, and right-click offers
-  the same. Drags snap to the beat (16ths when zoomed in); hold Alt to place freely. A step
+  against a bar ruler, with the loop region and the playhead. Click in the ruler to move the
+  playhead, or drag in it to draw a new loop. Ctrl + mouse wheel (or the wheel over the ruler)
+  zooms in time, Alt + wheel makes the lanes taller or shorter, Shift + wheel scrolls through
+  time, and the zoom buttons in the timeline's header do the same. Drag a lane's bottom edge (in
+  the names on the left) to size just that lane; double-click the edge to reset it. The view
+  glides along with the playhead while playing, and an automated value's dot rides its line.
+- **Clip editing, FL Studio style.** Click a clip to pick it, then click anywhere in its lane to
+  place a copy there, or drag along the lane to paint copies one after another. Right-click a
+  clip to delete it, or right-drag across clips to delete them all (one undo step). Shift+click
+  an empty spot makes a new one-bar clip; the ▾ on a clip, or Shift+right-click, opens its menu
+  (split, duplicate, delete, open in the piano roll). Drag a clip to move it (onto another
+  channel's lane too) and drag its edges to trim it. Del deletes the selected clip, Ctrl+D
+  duplicates it and S splits it at the playhead. Drags snap to the beat (16ths when zoomed in); hold Alt to place freely. A step
   pattern can be copied along the timeline, and every copy follows the channel's steps.
 - **A piano roll.** Double-click a clip (or select it and press Enter) to edit its notes in
   place of the rack and mixer. Click to draw a note (drag to set its length), drag a note to
   move it and its right edge to resize it; right-click or Del deletes. Ctrl+click and Ctrl+drag
   select several, Ctrl+A selects all, and the arrow keys move the selection (Shift + up/down
-  for an octave). Notes snap to the grid picked in Snap (1/4 to 1/32); hold Alt to place freely.
+  for an octave). Drawing, clicking or moving a note, or clicking the keys on the left, plays
+  it so you hear what you're placing. Ctrl + wheel zooms in time and Alt + wheel sizes the rows.
+  Notes snap to the grid picked in Snap (1/4 to 1/32); hold Alt to place freely.
   Under the notes, the velocity lane shows how hard each one plays: click or drag across it to
   set the velocity of the notes there (only the selected ones, if any are). Quantize (or Q)
   moves the selected notes, or all of them, onto the grid. Each edit is one undo step.
 - **A step sequencer.** Each channel has a row of 16 steps (16th notes) under its name; click a
-  step to turn it on or off. The step under the playhead is outlined while playing.
+  step to turn it on or off, or drag across steps to paint them (right-click clears). The step under the playhead is outlined while playing.
 - **A transport** with Play, back to the start (|< or Home), tempo (type it, click the arrows
   or drag), time signature, the song position (bar.beat.sixteenth), a Loop switch and a
   Metronome that clicks on every beat, louder on the bar. New projects loop the whole project,
-  rounded up to whole bars. The loop region shows in the timeline ruler: drag its edges to
-  change it, Shift+drag to draw a new one, or right-click to loop a bar or the whole project.
+  rounded up to whole bars. The loop region shows in the timeline ruler: drag in the ruler (or
+  Ctrl+drag in an empty part of the lanes) to draw a new one, drag its edges to change it, or right-click to loop a bar or the whole project.
 - **MIDI input.** Arm a channel with its ● button in the channel rack, and any MIDI keyboard
-  plays it (one channel is armed at a time). No keyboard? Tick Keys for an on-screen one you can
-  play with the mouse or the computer keys (A W S E D F T G ...). Rec records what you play into
+  plays it (one channel is armed at a time). No keyboard? The typing keyboard (the keys button in
+  the top bar, or Ctrl+K) plays the armed channel from the computer keyboard as in FL Studio: the
+  bottom row Z S X D C V G B H N J M is one octave from C4 and Q 2 W 3 E R 5 T... the next; it
+  arms the first instrument if none is. While it's on, those letters play notes instead of their
+  shortcuts. The piano button (Ctrl+Shift+K) shows an on-screen keyboard to play with the mouse. Rec records what you play into
   the armed channel from the playhead; Rec again or Stop finishes, and the recording becomes a
   clip in one undo step.
 - **Keyboard shortcuts.** Space plays and stops, Ctrl+Z undoes, Ctrl+Y (or Ctrl+Shift+Z)
   redoes, R records, C turns the metronome on or off, Ctrl+L looping, Ctrl+T adds an
-  instrument and Ctrl+K shows the keyboard. On the timeline, Ctrl+C and Ctrl+V copy a clip and
+  instrument, Ctrl+K turns the typing keyboard on or off and Ctrl+Shift+K shows the piano. On the timeline, Ctrl+C and Ctrl+V copy a clip and
   paste it at the playhead, the left and right arrows move it by a beat (Shift: a bar), up and
   down move it to the next channel, and Esc deselects. In the piano roll, Ctrl+C, Ctrl+X and
   Ctrl+V copy, cut and paste notes at the playhead, Ctrl+D duplicates them, and Esc closes it.
   F1 or the ? button lists them all.
+- **A layout you can arrange.** The top bar holds the menus (File, Edit, View, Options, Help),
+  the transport and the buttons for settings, export, history and the browser. The timeline,
+  channel rack, mixer and piano roll are panels: drag the bars between them to give each more
+  room (double-click a bar to reset it), and click the window button in a panel's header (or
+  double-click the header) to detach it into a window of its own, e.g. the mixer on a second
+  screen. Closing that window puts the panel back. The layout is remembered; *View > Reset the
+  layout* puts everything back. Knobs and faders follow automation live while the song plays,
+  and an animated splash shows the app's progress while it starts.
 - **Plugins.** *Plugins* opens the list of VST3 plugins found on this computer. *Scan for VST3
   plugins...* asks which folders to look in (the usual places are filled in) and adds what it
   finds; right-click a plugin to remove it. The list is saved with the app's settings, and a

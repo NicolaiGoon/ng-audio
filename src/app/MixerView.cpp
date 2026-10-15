@@ -609,8 +609,8 @@ class MixerView::StripColumn  : public juce::Component,
 {
 public:
     StripColumn (Session& s, CommandDispatcher& d, const juce::var& strip, const juce::var& allStrips,
-                 te::LevelMeterPlugin* meterPlugin)
-        : dispatcher (d), id (strip["id"].toString()), isMaster (id == "master"), isOutput (strip.hasProperty ("output_of")),
+                 te::LevelMeterPlugin* meterPlugin, te::VolumeAndPanPlugin* volumePlugin)
+        : volume (volumePlugin), dispatcher (d), id (strip["id"].toString()), isMaster (id == "master"), isOutput (strip.hasProperty ("output_of")),
           colour (isMaster ? juce::Colours::grey : colourFrom (strip["colour"])),
           swatch (d, id, colour), effects (s, d, id, strip["effects"]), meter (meterPlugin)
     {
@@ -697,6 +697,19 @@ public:
             addAndMakeVisible (c);
 
         setValues (strip);
+    }
+
+    /** Follows the fader and pan as they play (automation moves them) unless they're being dragged. */
+    void refreshLive()
+    {
+        if (volume == nullptr)
+            return;
+
+        if (! fader.isMouseButtonDown())
+            fader.setValue (volume->getVolumeDb(), juce::dontSendNotification);
+
+        if (! pan.isMouseButtonDown())
+            pan.setValue (volume->getPan(), juce::dontSendNotification);
     }
 
     /** Shows new values without sending them back as commands. */
@@ -857,6 +870,7 @@ private:
         slider.onValueChange = [this, &slider, param] { send ({ { param, slider.getValue() } }); };
     }
 
+    te::VolumeAndPanPlugin::Ptr volume;   // the strip can be deleted before this column is
     CommandDispatcher& dispatcher;
     juce::String id;
     bool isMaster, isOutput;
@@ -887,6 +901,17 @@ MixerView::MixerView (Session& s, CommandDispatcher& d)
     viewport.setViewedComponent (&columnHolder, false);
     viewport.setScrollBarsShown (false, true);
     addAndMakeVisible (viewport);
+    startTimerHz (30);
+}
+
+void MixerView::timerCallback()
+{
+    // Automation moves faders and pan as the song plays; the controls follow.
+    for (auto* column : columns)
+        column->refreshLive();
+
+    if (masterColumn != nullptr)
+        masterColumn->refreshLive();
 }
 
 MixerView::~MixerView()
@@ -937,7 +962,8 @@ void MixerView::update (const juce::var& state)
     {
         auto track = session.findTrack (strip["id"].toString(), Session::Role::strip);
         auto meterPlugin = track != nullptr ? track->getLevelMeterPlugin() : nullptr;
-        columnHolder.addAndMakeVisible (columns.add (new StripColumn (session, dispatcher, strip, strips, meterPlugin)));
+        auto volumePlugin = track != nullptr ? track->getVolumePlugin() : nullptr;
+        columnHolder.addAndMakeVisible (columns.add (new StripColumn (session, dispatcher, strip, strips, meterPlugin, volumePlugin)));
     }
 
     auto master = state["master"].clone();
@@ -945,7 +971,8 @@ void MixerView::update (const juce::var& state)
     if (auto obj = master.getDynamicObject())
         obj->setProperty ("id", "master");
 
-    masterColumn = std::make_unique<StripColumn> (session, dispatcher, master, strips, session.getMasterMeter());
+    masterColumn = std::make_unique<StripColumn> (session, dispatcher, master, strips, session.getMasterMeter(),
+                                                  session.getEdit().getMasterVolumePlugin().get());
     addAndMakeVisible (*masterColumn);
 
     resized();

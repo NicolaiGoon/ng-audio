@@ -7,19 +7,23 @@ namespace ng
 
 /**
     The arrangement timeline: a bar ruler, then one lane per channel showing its clips,
-    with the playhead on top. Click or drag in the ruler to move the playhead.
+    with the playhead on top. Click in the ruler to move the playhead.
 
-    The loop region shows in the ruler (dimmed while looping is off). Drag its edges to
-    change it, Shift+drag in the ruler to draw a new one, or right-click the ruler to loop
-    a bar or the whole project.
+    The loop region shows in the ruler (dimmed while looping is off). Drag in the ruler (or
+    Ctrl+drag in the lanes) to draw a new one, drag its edges to change it, or right-click
+    the ruler to loop a bar or the whole project.
 
-    Clips: drag to move (to another lane too), drag an edge to trim, double-click an empty
-    spot for a new one-bar clip, and double-click a clip (or press Enter) to edit its notes. Delete removes the selected clip, Ctrl+D duplicates it and
-    S splits it at the playhead; right-click for the same actions. Ctrl+C copies it and
-    Ctrl+V pastes a copy at the playhead. The arrow keys move it by a beat (Shift: a bar)
-    or to the lane above or below, and Escape deselects it. Drags snap to the beat
-    (to 16ths when zoomed in); hold Alt to place freely. Each edit is one command, so one
-    undo step.
+    Clips work as in FL Studio's playlist. Click a clip to pick it, then click empty spots on
+    its lane to paint copies of it there (drag to paint several in a row); on a lane with no
+    clips, a click makes a new empty one-bar clip (Shift+click always does). Right-click a
+    clip to delete it, or right-drag across several. Drag a clip to move it (to another lane
+    too), drag an edge to trim it, and double-click it (or press Enter) to edit its notes.
+    The small arrow on a clip's name (or Shift+right-click) opens its menu. Delete removes
+    the selected clip, Ctrl+D duplicates it and S splits it at the playhead. Ctrl+C copies it
+    and Ctrl+V pastes a copy at the playhead. The arrow keys move it by a beat (Shift: a bar)
+    or to the lane above or below, and Escape deselects it. Drags snap to the beat (to 16ths
+    when zoomed in); hold Alt to place freely. Each edit (and each paint or delete drag) is
+    one undo step.
 
     Audio channels show their clips' waveforms. Drop audio files (from the browser or the
     desktop) on an audio channel's lane to add them there, one after another, or anywhere else
@@ -32,17 +36,18 @@ namespace ng
     pick which). Click to add a point, drag one to move it, and double-click or right-click it
     to remove it. Each click or drag is one undo step.
 
-    Ctrl + mouse wheel zooms around the mouse, Shift + wheel (or a sideways scroll)
-    scrolls through time, and the plain wheel scrolls the lanes. While playing, the view
-    follows the playhead.
+    Ctrl + mouse wheel (or the wheel over the ruler) zooms in time around the mouse, Alt +
+    wheel makes the lanes taller or shorter, Shift + wheel (or a sideways scroll) scrolls
+    through time, and the plain wheel scrolls the lanes. Drag the bottom edge of a lane's
+    name to make just that lane taller (e.g. to see an audio clip's waveform). While
+    playing, the view glides along with the playhead.
 
     update() takes the project state after every command; the playhead is polled.
 */
 class TimelineView  : public juce::Component,
                       public juce::DragAndDropTarget,
                       public juce::FileDragAndDropTarget,
-                      private juce::ScrollBar::Listener,
-                      private juce::Timer
+                      private juce::ScrollBar::Listener
 {
 public:
     TimelineView (Session&, CommandDispatcher&);
@@ -89,7 +94,16 @@ public:
     double getPixelsPerBeat() const noexcept    { return pixelsPerBeat; }
     void setPixelsPerBeat (double newPixelsPerBeat, float anchorX);
 
-    static constexpr int headerWidth = 130, rulerHeight = 24, laneHeight = 44, automationHeight = 64, scrollBarSize = 12;
+    static constexpr int headerWidth = 130, rulerHeight = 24, defaultLaneHeight = 44, automationHeight = 64, scrollBarSize = 12;
+
+    /** Zooms in time (factor > 1 zooms in) around the middle of the view. */
+    void zoomHorizontally (double factor);
+
+    /** Makes every lane taller (factor > 1) or shorter. */
+    void zoomVertically (double factor);
+
+    /** Fits the whole song into the view. */
+    void zoomToFit();
 
     /** Shows or hides a channel's automation lane. */
     void showAutomation (const juce::String& channelId, bool shouldShow);
@@ -123,7 +137,7 @@ private:
         juce::Array<juce::Point<double>> points;   // beat, value
     };
 
-    enum class DragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut };
+    enum class DragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut, paint, erase, laneHeight };
     enum class RulerDrag { none, playhead, loopStart, loopEnd, newLoop };
 
     /** What's under the mouse in the lanes: a lane, maybe a clip, and which part of it. */
@@ -144,6 +158,16 @@ private:
     };
 
     Hit hitTestLanes (juce::Point<float>) const;
+
+    /** Lanes are a common height (the vertical zoom) unless one has been dragged taller. */
+    int getLaneHeight (int lane) const;
+    int laneEdgeAt (juce::Point<float>) const;
+    juce::Rectangle<float> getClipMenuButton (juce::Rectangle<float> clipArea) const;
+
+    // Painting copies of a clip (FL Studio style) and deleting clips by right-dragging.
+    const Clip* getBrush (int lane) const;
+    void paintAt (int lane, double beat, bool forceNew);
+    void eraseAt (juce::Point<float>);
 
     // Lanes are laneHeight tall, plus automationHeight when their automation shows.
     int getLaneTop (int lane) const;
@@ -183,7 +207,8 @@ private:
     void paintFades (juce::Graphics&, const Clip&, juce::Rectangle<float>, bool showHandles);
 
     void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;
-    void timerCallback() override;
+    void onVBlank();
+    void repaintPlayhead (double beat);
 
     juce::Rectangle<int> getRulerArea() const;
     juce::Rectangle<int> getLanesArea() const;
@@ -212,8 +237,21 @@ private:
     int scrollY = 0;
     double lastPlayheadBeat = -1.0;
 
+    /** Where following the playhead is gliding the view to (-1 when it isn't). */
+    double glideTarget = -1.0;
+
+    int baseLaneHeight = defaultLaneHeight;
+    std::map<juce::String, int> laneHeights;   // by channel id, for lanes dragged to their own height
+    int laneHeightDragStart = 0;
+
     juce::String selectedClip, copiedClip;
     Drag drag;
+
+    /** The last clip picked on each lane (by channel id): what clicking that lane paints. */
+    std::map<juce::String, juce::String> brushes;
+    double paintNextBeat = 0.0;
+    juce::StringArray erased;          // clips a right-drag has deleted, until the lanes catch up
+    juce::String lastPainted;          // so a double-click on a clip just painted doesn't open it
 
     RulerDrag rulerDrag = RulerDrag::none;
     juce::Range<double> loopPreview;        // the loop being dragged, while rulerDrag is a loop drag
@@ -231,6 +269,7 @@ private:
     std::map<juce::String, AutomationLane> automationLanes;   // by channel id, for the lanes showing one
     int automationDragLane = -1, automationDragPoint = -1;
     std::unique_ptr<juce::FileChooser> chooser;
+    juce::VBlankAttachment vblank { this, [this] { onVBlank(); } };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TimelineView)
 };
