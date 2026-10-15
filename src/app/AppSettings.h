@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/AiChat.h"
 #include "core/Session.h"
 
 namespace ng
@@ -73,6 +74,54 @@ namespace settings
     inline void setAutosaveMinutes (te::Engine& engine, int minutes)
     {
         file (engine).setValue ("ngAutosaveMinutes", minutes);
+    }
+
+    //==============================================================================
+    /** The chat panel's AI provider. Each provider keeps its own model and API key, so switching
+        back and forth doesn't lose them. Keys are kept in this computer's Ng DAW settings file. */
+    inline juce::String providerKey (const juce::String& providerName, const char* what)
+    {
+        return juce::String ("ngAi") + what + "_" + providerName.retainCharacters ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+    }
+
+    /** The environment variable a provider's key can also come from. */
+    inline juce::String getKeyVariable (const juce::String& providerName)
+    {
+        if (providerName.startsWith ("Claude"))     return "ANTHROPIC_API_KEY";
+        if (providerName == "OpenAI")               return "OPENAI_API_KEY";
+        if (providerName == "Google Gemini")        return "GEMINI_API_KEY";
+        if (providerName == "OpenRouter")           return "OPENROUTER_API_KEY";
+        return {};
+    }
+
+    /** The chosen provider, with its model, address and key filled in. */
+    inline AiChat::Provider getAiProvider (te::Engine& engine, const juce::String& name = {})
+    {
+        auto& f = file (engine);
+        auto provider = AiChat::findProvider (name.isNotEmpty() ? name : f.getValue ("ngAiProvider"));
+
+        provider.model = f.getValue (providerKey (provider.name, "Model"), provider.model);
+        provider.apiKey = f.getValue (providerKey (provider.name, "Key"));
+
+        if (provider.baseUrl.isEmpty())
+            provider.baseUrl = f.getValue (providerKey (provider.name, "Url"));
+
+        if (provider.apiKey.isEmpty())
+            if (auto variable = getKeyVariable (provider.name); variable.isNotEmpty())
+                provider.apiKey = juce::SystemStats::getEnvironmentVariable (variable, {});
+
+        return provider;
+    }
+
+    inline void setAiProvider (te::Engine& engine, const AiChat::Provider& provider)
+    {
+        auto& f = file (engine);
+        f.setValue ("ngAiProvider", provider.name);
+        f.setValue (providerKey (provider.name, "Model"), provider.model);
+        f.setValue (providerKey (provider.name, "Key"), provider.apiKey);
+
+        if (AiChat::findProvider (provider.name).baseUrl.isEmpty())
+            f.setValue (providerKey (provider.name, "Url"), provider.baseUrl);
     }
 }
 

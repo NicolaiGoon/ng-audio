@@ -3,6 +3,7 @@
 
 #include "core/McpServer.h"
 #include "core/Autosave.h"
+#include "core/AiChat.h"
 
 #if ! JUCE_WINDOWS
  #include <sys/stat.h>
@@ -2905,6 +2906,160 @@ namespace
         CHECK (near (run ("get_automation", { { "strip", "Pad" }, { "parameter", "pan" } }).value["points"][1]["value"], 1.0));
     }
 
+    void testAiChat (tracktion::Engine& engine)
+    {
+        std::cout << "\nAI chat\n";
+        Fixture f (engine);
+        ng::AiChat chat (f.registry);
+
+        // A pretend service: hands back scripted replies and remembers each request.
+        juce::Array<juce::var> replies, requests;
+        juce::StringArray endpoints, headers;
+        juce::String failWith;
+
+        auto transport = [&] (const juce::String& url, const juce::String& h, const juce::var& body, juce::String& error) -> juce::var
+        {
+            endpoints.add (url);
+            headers.add (h);
+            requests.add (juce::JSON::parse (juce::JSON::toString (body)));
+
+            if (failWith.isNotEmpty())
+            {
+                error = failWith;
+                return {};
+            }
+
+            auto reply = replies.getFirst();
+            replies.remove (0);
+            return reply;
+        };
+
+        juce::StringArray events;
+        auto onEvent = [&] (const ng::AiChat::Event& e)
+        {
+            using T = ng::AiChat::Event::Type;
+            events.add ((e.type == T::text ? "text: " : e.type == T::toolStarted ? "start: " : e.failed ? "failed: " : "done: ") + e.text);
+        };
+
+        auto runTool = [&] (const juce::String& name, const juce::var& input, bool& isError)
+        {
+            return ng::AiChat::runTool (f.dispatcher, "Test AI", name, input, isError);
+        };
+
+        auto hasChannel = [&] (const juce::String& name)
+        {
+            auto channels = f.state()["channels"];
+
+            for (auto& c : *channels.getArray())
+                if (c["name"] == name)
+                    return true;
+
+            return false;
+        };
+
+        // Claude: a tool call, then an answer.
+        auto claude = ng::AiChat::findProvider ("Claude (Anthropic)");
+        claude.apiKey = "test-key";
+        chat.setProvider (claude);
+        CHECK (chat.getProvider().model == "claude-opus-5-5");
+
+        replies.add (juce::JSON::parse (R"({"stop_reason": "tool_use", "content": [
+            {"type": "thinking", "thinking": "", "signature": "abc"},
+            {"type": "text", "text": "Adding a bass channel."},
+            {"type": "tool_use", "id": "toolu_1", "name": "create_track", "input": {"name": "Bass"}}]})"));
+        replies.add (juce::JSON::parse (R"({"stop_reason": "end_turn", "content": [{"type": "text", "text": "Done."}]})"));
+
+        auto error = chat.runTurn ("Add a bass", transport, runTool, onEvent);
+        CHECK (error.isEmpty());
+        CHECK (hasChannel ("Bass"));
+        CHECK (events == juce::StringArray ({ "text: Adding a bass channel.", "start: create_track", "done: create_track", "text: Done." }));
+        CHECK (chat.getNumMessages() == 4);
+        CHECK (endpoints[0] == "https://api.anthropic.com/v1/messages");
+        CHECK (headers[0].contains ("x-api-key: test-key") && headers[0].contains ("anthropic-version: 2023-06-01"));
+        CHECK (requests[0]["model"] == "claude-opus-5-5");
+        CHECK (requests[0]["tools"][0].hasProperty ("input_schema"));
+        CHECK (requests[0]["fallbacks"] == "default");
+
+        // The second request carries the assistant's turn as it came, then the tool's result.
+        auto second = requests[1]["messages"];
+        CHECK (second[1]["content"][0]["type"] == "thinking" && second[1]["content"][0]["signature"] == "abc");
+        CHECK (second[2]["content"][0]["type"] == "tool_result");
+        CHECK (second[2]["content"][0]["tool_use_id"] == "toolu_1");
+        CHECK (! static_cast<bool> (second[2]["content"][0]["is_error"]));
+
+        // A failed request leaves the conversation as it was; so does a refusal.
+        failWith = "Couldn't reach it";
+        CHECK (chat.runTurn ("Again", transport, runTool, onEvent) == "Couldn't reach it");
+        CHECK (chat.getNumMessages() == 4);
+        failWith = {};
+
+        replies.add (juce::JSON::parse (R"({"stop_reason": "refusal", "content": []})"));
+        CHECK (chat.runTurn ("Something", transport, runTool, onEvent).contains ("declined"));
+        CHECK (chat.getNumMessages() == 4);
+
+        // An OpenAI-style service: switching provider starts a new conversation.
+        auto openAi = ng::AiChat::findProvider ("OpenAI");
+        openAi.apiKey = "sk-test";
+        chat.setProvider (openAi);
+        CHECK (chat.getNumMessages() == 0);
+        CHECK (chat.runTurn ("Add keys", transport, runTool, onEvent).contains ("Pick a model"));
+        CHECK (chat.getNumMessages() == 0);
+
+        openAi.model = "test-model";
+        chat.setProvider (openAi);
+        requests.clear(); endpoints.clear(); headers.clear(); events.clear();
+
+        replies.add (juce::JSON::parse (R"({"choices": [{"finish_reason": "tool_calls", "message": {"role": "assistant", "content": null,
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "create_track", "arguments": "{\"name\": \"Keys\"}"}},
+                           {"id": "call_2", "type": "function", "function": {"name": "create_track", "arguments": "{not json"}},
+                           {"id": "call_3", "type": "function", "function": {"name": "no_such_tool", "arguments": "{}"}}]}}]})"));
+        replies.add (juce::JSON::parse (R"({"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "Added keys."}}]})"));
+
+        CHECK (chat.runTurn ("Add keys", transport, runTool, onEvent).isEmpty());
+        CHECK (hasChannel ("Keys"));
+        CHECK (events == juce::StringArray ({ "start: create_track", "done: create_track", "start: create_track", "failed: create_track",
+                                              "start: no_such_tool", "failed: no_such_tool", "text: Added keys." }));
+        CHECK (endpoints[0] == "https://api.openai.com/v1/chat/completions");
+        CHECK (headers[0].contains ("Authorization: Bearer sk-test"));
+        CHECK (requests[0]["model"] == "test-model");
+        CHECK (requests[0]["messages"][0]["role"] == "system");
+        CHECK (requests[0]["tools"][0]["type"] == "function");
+        CHECK (requests[0]["tools"][0]["function"].hasProperty ("parameters"));
+
+        auto followUp = requests[1]["messages"];
+        CHECK (followUp.size() == 6);   // system, user, assistant, three tool results
+        CHECK (followUp[3]["role"] == "tool" && followUp[3]["tool_call_id"] == "call_1");
+        CHECK (followUp[4]["content"].toString().contains ("valid JSON"));
+        CHECK (followUp[5]["content"].toString().contains ("Unknown tool"));
+
+        // A local model needs no key, so it sends none.
+        auto local = ng::AiChat::findProvider ("Ollama (on this computer)");
+        local.model = "llama";
+        chat.setProvider (local);
+        CHECK (! chat.getHeaders().contains ("Authorization"));
+        CHECK (chat.getEndpoint() == "http://localhost:11434/v1/chat/completions");
+
+        // The models list, with Gemini's "models/" prefix taken off.
+        replies.add (juce::JSON::parse (R"({"data": [{"id": "models/gemini-test"}, {"id": "other-model"}]})"));
+        juce::String listError;
+        auto models = ng::AiChat::listModels (ng::AiChat::findProvider ("Google Gemini"), transport, listError);
+        CHECK (listError.isEmpty());
+        CHECK (models == juce::StringArray ({ "gemini-test", "other-model" }));
+        CHECK (requests.getLast().isVoid());
+        CHECK (endpoints[endpoints.size() - 1] == "https://generativelanguage.googleapis.com/v1beta/openai/models");
+
+        // Batch, undo and redo work as tools too.
+        bool isError = false;
+        auto batch = juce::JSON::parse (R"({"label": "Two pads", "commands": [
+            {"command": "create_track", "params": {"name": "Pad 1"}}, {"command": "create_track", "params": {"name": "Pad 2"}}]})");
+        ng::AiChat::runTool (f.dispatcher, "Test AI", "batch", batch, isError);
+        CHECK (! isError && hasChannel ("Pad 1") && hasChannel ("Pad 2"));
+        ng::AiChat::runTool (f.dispatcher, "Test AI", "undo", {}, isError);
+        CHECK (! isError && ! hasChannel ("Pad 1") && ! hasChannel ("Pad 2"));
+        ng::AiChat::runTool (f.dispatcher, "Test AI", "redo", {}, isError);
+        CHECK (! isError && hasChannel ("Pad 2"));
+    }
+
     void testAutosaveAndRecovery (tracktion::Engine& engine)
     {
         std::cout << "autosave and crash recovery\n";
@@ -3059,6 +3214,7 @@ int main (int argc, char* argv[])
         RUN (testExport);
         RUN (testAutomation);
         RUN (testAutosaveAndRecovery);
+        RUN (testAiChat);
         RUN (testBatchReferences);
         RUN (testStateViews);
         RUN (testTagsAndStripRouting);

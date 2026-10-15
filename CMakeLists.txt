@@ -7,6 +7,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Link the C++ runtime into the executables on Windows, so the installer runs on a clean PC
 # without the Visual C++ redistributable.
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(NG_LINUX ON)
+else()
+    set(NG_LINUX OFF)
+endif()
+
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # ------------------------------------------------------------------------------
@@ -57,13 +63,15 @@ add_library(ng_core STATIC
     src/core/AutomationCommands.cpp
     src/core/Bridge.cpp
     src/core/McpServer.cpp
-    src/core/Autosave.cpp)
+    src/core/Autosave.cpp
+    src/core/AiChat.cpp)
 
 target_include_directories(ng_core PUBLIC src)
 
 target_compile_definitions(ng_core PUBLIC
     JUCE_PLUGINHOST_VST3=1
-    JUCE_USE_CURL=0
+    # The chat panel talks to AI services over HTTPS: through libcurl on Linux, the OS elsewhere.
+    JUCE_USE_CURL=$<BOOL:${NG_LINUX}>
     JUCE_WEB_BROWSER=0
     JUCE_MODAL_LOOPS_PERMITTED=1
     JUCE_STRICT_REFCOUNTEDPOINTER=1
@@ -98,8 +106,9 @@ target_include_directories(ng_core INTERFACE
 target_compile_definitions(ng_core INTERFACE
     $<TARGET_PROPERTY:ng_core,COMPILE_DEFINITIONS>)
 
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(ng_core PUBLIC atomic)
+if (NG_LINUX)
+    find_package(CURL REQUIRED)
+    target_link_libraries(ng_core PUBLIC atomic CURL::libcurl)
 endif()
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
@@ -129,7 +138,8 @@ target_sources(NgDaw PRIVATE
     src/app/ExportPanel.cpp
     src/app/CommandLogPanel.cpp
     src/app/PreferencesPanel.cpp
-    src/app/HistoryPanel.cpp)
+    src/app/HistoryPanel.cpp
+    src/app/ChatPanel.cpp)
 
 target_link_libraries(NgDaw PRIVATE ng_core juce::juce_recommended_warning_flags)
 
