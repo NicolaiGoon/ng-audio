@@ -22,12 +22,15 @@ namespace ng
     (or straight after where they were copied from, when the playhead is outside the
     clip), and Ctrl+D duplicates them straight after themselves.
 
+    Notes sound as they're drawn, clicked or dragged to a new pitch (on the clip's own
+    channel), and clicking the keyboard on the left plays its keys.
+
     Every edit replaces the clip's notes with one set_notes command, so it's one undo step.
-    Mouse wheel scrolls pitch, Shift + wheel scrolls time and Ctrl + wheel zooms.
+    Mouse wheel scrolls pitch, Shift + wheel scrolls time, Ctrl + wheel zooms in time and
+    Alt + wheel zooms the pitch rows.
 */
 class PianoRoll  : public juce::Component,
-                   private juce::ScrollBar::Listener,
-                   private juce::Timer
+                   private juce::ScrollBar::Listener
 {
 public:
     PianoRoll (Session&, CommandDispatcher&);
@@ -61,7 +64,11 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     bool keyPressed (const juce::KeyPress&) override;
 
-    static constexpr int keyboardWidth = 56, rulerHeight = 22, rowHeight = 14, scrollBarSize = 12, velocityHeight = 64;
+    static constexpr int keyboardWidth = 56, rulerHeight = 22, scrollBarSize = 12, velocityHeight = 64;
+
+    /** Zooms in time (factor > 1 zooms in) or the pitch rows. */
+    void zoomHorizontally (double factor);
+    void zoomVertically (double factor);
 
 private:
     enum class DragMode { none, move, resizeEnd, select, velocity };
@@ -105,7 +112,13 @@ private:
     void fitToClip();
     void updateScrollBars();
     void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;
-    void timerCallback() override;
+    void onVBlank();
+    void repaintPlayhead (double beat);
+    void setRowHeight (int newHeight, float anchorY);
+
+    /** Plays a note on the clip's channel until stopPreview(), so it can be heard while editing. */
+    void previewNote (int pitch, int velocity = 100);
+    void stopPreview();
 
     void paintGrid (juce::Graphics&);
     void paintKeyboard (juce::Graphics&);
@@ -132,8 +145,12 @@ private:
     double lastPlayheadBeat = -1.0;
     bool needsFit = false;
     Drag drag;
+    int rowHeight = 14;
+    int previewPitch = -1;
+    bool playingKeys = false;   // while the mouse plays the keyboard on the left
 
     juce::ScrollBar horizontal { false }, vertical { true };
+    juce::VBlankAttachment vblank { this, [this] { onVBlank(); } };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PianoRoll)
 };

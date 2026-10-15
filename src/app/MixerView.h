@@ -10,11 +10,14 @@ namespace ng
     level meter) and the master strip on the right. Moving a control runs set_mixer_strip; a fader drag is one
     undo step.
 
+    The faders and pan knobs follow automation as the song plays.
+
     update() takes the project state after every command. When only fader, pan, mute or
     solo values or send levels changed it updates the existing columns in place, so a fader being
     dragged isn't rebuilt under the mouse.
 */
-class MixerView  : public juce::Component
+class MixerView  : public juce::Component,
+                   private juce::Timer
 {
 public:
     MixerView (Session&, CommandDispatcher&);
@@ -28,6 +31,8 @@ public:
     void resized() override;
 
 private:
+    void timerCallback() override;
+
     class Meter;
     class EffectSlots;
     class SendSlots;
