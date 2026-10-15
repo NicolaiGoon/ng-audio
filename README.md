@@ -29,7 +29,8 @@ Linux, build it from source (see *Building*).
   against a bar ruler, with the loop region and the playhead. Click in the ruler to move the
   playhead, or drag in it to draw a new loop. Ctrl + mouse wheel (or the wheel over the ruler)
   zooms in time, Alt + wheel makes the lanes taller or shorter, Shift + wheel scrolls through
-  time, and the zoom buttons in the timeline's header do the same. Drag a lane's bottom edge (in
+  time, and the zoom buttons in the timeline's header do the same. Ctrl+click fits the whole song
+  in view, as in FL Studio. Drag a lane's bottom edge (in
   the names on the left) to size just that lane; double-click the edge to reset it. The view
   glides along with the playhead while playing, and an automated value's dot rides its line.
 - **Clip editing, FL Studio style.** Click a clip to pick it, then click anywhere in its lane to

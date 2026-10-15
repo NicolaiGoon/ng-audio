@@ -68,6 +68,7 @@ namespace
                 { "Right-click, drag", "Delete clips" },
                 { "Drag in the ruler", "Draw a loop (Ctrl+drag in the lanes too)" },
                 { "Alt + wheel", "Taller or shorter lanes" },
+                { "Ctrl+click", "Fit the whole song in view" },
                 { "Enter", "Edit the clip's notes" },
                 { "Del", "Delete the clip" },
                 { "Ctrl+D", "Duplicate it after itself" },
@@ -602,7 +603,7 @@ juce::PopupMenu MainComponent::getMenu (int menuIndex)
         }
 
         menu.addSeparator();
-        menu.addItem (menuItem ("Zoom the timeline to fit the song", {}, [this] { timeline.zoomToFit(); }));
+        menu.addItem (menuItem ("Zoom the timeline to fit the song", "Ctrl+click", [this] { timeline.zoomToFit(); }));
         menu.addItem (menuItem ("Reset the layout", {}, [this] { resetLayout(); }));
     }
     else if (menuIndex == 3)
