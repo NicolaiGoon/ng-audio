@@ -520,13 +520,16 @@ namespace
     // Step patterns: each channel has a row of steps (16th notes) that plays one pitch.
     // The steps are stored on the channel and turned into a MIDI clip at the start of the
     // project, marked as the channel's pattern clip and rebuilt whenever the steps change.
-    const juce::Identifier stepsProp ("ngSteps"), stepPitchProp ("ngStepPitch"), patternClipProp ("ngPattern");
+    const juce::Identifier stepsProp ("ngSteps"), stepPitchProp ("ngStepPitch"), patternClipProp ("ngPattern"),
+                          patternBeatsProp ("ngPatternBeats");
     constexpr int maxStepCount = 64;
     constexpr double beatsPerStep = 0.25;
 
     /** Brings a channel's pattern clips in line with its steps. A pattern can be placed on the
         timeline several times (duplicate_clip); every copy plays the same steps, so each one is
-        refilled where it stands. With no copies left, the pattern goes back at the start. */
+        refilled where it stands. A copy that was resized (resize_clip) keeps its own length, with
+        the steps repeating across it, as in FL Studio; the rest follow the steps' length.
+        With no copies left, the pattern goes back at the start. */
     void rebuildPatternClip (Session& session, te::AudioTrack& channel)
     {
         auto& edit = session.getEdit();
@@ -549,7 +552,8 @@ namespace
         }
 
         auto& tempo = edit.tempoSequence;
-        auto lengthBeats = te::BeatDuration::fromBeats (steps.length() * beatsPerStep);
+        auto patternBeats = steps.length() * beatsPerStep;
+        auto lengthBeats = te::BeatDuration::fromBeats (patternBeats);
 
         if (instances.isEmpty())
         {
@@ -567,13 +571,17 @@ namespace
         for (auto clip : instances)
         {
             auto startBeat = tempo.toBeats (clip->getPosition().getStart());
-            clip->setPosition ({ { clip->getPosition().getStart(), tempo.toTime (startBeat + lengthBeats) }, te::TimeDuration() });
+            auto clipBeats = clip->state.hasProperty (patternBeatsProp) ? static_cast<double> (clip->state[patternBeatsProp])
+                                                                         : patternBeats;
+            clip->setPosition ({ { clip->getPosition().getStart(), tempo.toTime (startBeat + te::BeatDuration::fromBeats (clipBeats)) },
+                                 te::TimeDuration() });
             clip->getSequence().clear (um);
 
-            for (int i = 0; i < steps.length(); ++i)
-                if (steps[i] == 'x')
-                    clip->getSequence().addNote (pitch, te::BeatPosition::fromBeats (i * beatsPerStep),
-                                                 te::BeatDuration::fromBeats (beatsPerStep), 100, 0, um);
+            for (double repeat = 0.0; repeat < clipBeats; repeat += patternBeats)
+                for (int i = 0; i < steps.length(); ++i)
+                    if (auto beat = repeat + i * beatsPerStep; steps[i] == 'x' && beat < clipBeats - 1.0e-6)
+                        clip->getSequence().addNote (pitch, te::BeatPosition::fromBeats (beat),
+                                                     te::BeatDuration::fromBeats (beatsPerStep), 100, 0, um);
         }
     }
 
@@ -985,9 +993,6 @@ namespace
         if (auto error = requireClip (session, "resize_clip", p, found))
             return *error;
 
-        if (Session::isPatternClip (*found.clip))
-            return CommandResult::failure ("resize_clip: a step pattern's length follows its steps; change it with set_steps");
-
         if (! p.hasProperty ("start_beat") && ! p.hasProperty ("end_beat"))
             return CommandResult::failure ("resize_clip: give start_beat, end_beat or both");
 
@@ -995,6 +1000,33 @@ namespace
         auto& clip = *found.clip;
         auto start = tempo.toBeats (clip.getPosition().getStart()).inBeats();
         auto end = tempo.toBeats (clip.getPosition().getEnd()).inBeats();
+
+        // A step pattern copy gets its own length, and its steps repeat across it from its start.
+        if (Session::isPatternClip (clip))
+        {
+            auto newStart = params::getDouble (p, "start_beat", start);
+            auto newEnd = params::getDouble (p, "end_beat", end);
+
+            if (newStart < 0.0 || newEnd - newStart < beatsPerStep - 1.0e-6)
+                return CommandResult::failure ("resize_clip: a step pattern can't be shorter than one step or start before the project");
+
+            auto* channel = dynamic_cast<te::AudioTrack*> (clip.getTrack());
+
+            if (channel == nullptr)
+                return CommandResult::failure ("resize_clip: the pattern isn't on a channel");
+
+            auto* um = &session.getUndoManager();
+            auto stepsBeats = Session::getSteps (*channel).length() * beatsPerStep;
+
+            if (std::abs ((newEnd - newStart) - stepsBeats) < 1.0e-6)
+                clip.state.removeProperty (patternBeatsProp, um);
+            else
+                clip.state.setProperty (patternBeatsProp, newEnd - newStart, um);
+
+            clip.setStart (tempo.toTime (te::BeatPosition::fromBeats (newStart)), false, true);
+            rebuildPatternClip (session, *channel);
+            return CommandResult::success (describeClip (session, clip));
+        }
 
         // The start can come back as far as the clip's content goes, but no further.
         auto contentStart = start - clip.getOffsetInBeats().inBeats();
@@ -1566,7 +1598,7 @@ void registerProjectCommands (CommandRegistry& registry)
 
     registry.add ({ "resize_clip",
                     "Moves a clip's start and/or end; its notes stay where they are in the song. "
-                    "A step pattern's length follows its steps instead.",
+                    "A step pattern copy can be resized too: its steps repeat across its new length.",
                     schema ({ { "clip", prop ("string", "Clip id, from get_state") },
                               { "start_beat", prop ("number", "New start, in beats") },
                               { "end_beat", prop ("number", "New end, in beats") } },

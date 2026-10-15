@@ -1322,9 +1322,9 @@ TimelineView::Hit TimelineView::hitTestLanes (juce::Point<float> pos) const
             }
         }
 
-        if (! clip.pattern && pos.x < left + edge)
+        if (pos.x < left + edge)
             hit.mode = DragMode::trimStart;
-        else if (! clip.pattern && pos.x > right - edge)
+        else if (pos.x > right - edge)
             hit.mode = DragMode::trimEnd;
         else
             hit.mode = DragMode::move;
