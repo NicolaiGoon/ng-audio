@@ -63,6 +63,7 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    void finishMouseDrag();
     void mouseMove (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
@@ -261,6 +262,9 @@ private:
 
     // While audio is dragged over: the audio lane it would go on (-1 for new channels) and the beat.
     bool dropActive = false;
+
+    /** Set by a Ctrl+click: if the mouse comes up without dragging, the view fits the song. */
+    bool fitOnClick = false;
     int dropLane = -1;
     double dropBeat = 0.0;
 

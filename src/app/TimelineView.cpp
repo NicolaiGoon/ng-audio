@@ -226,6 +226,12 @@ void TimelineView::zoomToFit()
     glideTarget = -1.0;
     pixelsPerBeat = juce::jlimit (minPixelsPerBeat, maxPixelsPerBeat, (getLanesArea().getWidth() - 20) / std::max (4.0, end));
     scrollBeats = 0.0;
+    scrollY = 0;
+
+    // And every lane in view, as tall as there's room for.
+    if (auto content = getContentHeight(); content > 0 && ! lanes.isEmpty())
+        zoomVertically ((double) getLanesArea().getHeight() / (double) content);
+
     updateScrollBars();
     repaint();
 }
@@ -1483,6 +1489,9 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
     rulerDrag = RulerDrag::none;
     glideTarget = -1.0;
 
+    // Ctrl+click (without dragging) fits the whole song in view, as in FL Studio.
+    fitOnClick = e.mods.isCommandDown() && ! e.mods.isPopupMenu();
+
     if (getRulerArea().contains (e.getPosition()))
     {
         auto beat = std::max (0.0, snap (xToBeat (e.position.x), e.mods));
@@ -1494,7 +1503,7 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
         }
 
         // A click moves the playhead; dragging from there draws a new loop (see mouseDrag).
-        rulerDrag = e.mods.isShiftDown() ? RulerDrag::newLoop : rulerHitTest (e.position.x);
+        rulerDrag = (e.mods.isShiftDown() || e.mods.isCommandDown()) ? RulerDrag::newLoop : rulerHitTest (e.position.x);
         loopPreview = rulerDrag == RulerDrag::newLoop ? juce::Range<double> (beat, beat) : loopBeats;
         loopAnchor = beat;
 
@@ -1742,7 +1751,15 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
     repaint();
 }
 
-void TimelineView::mouseUp (const juce::MouseEvent&)
+void TimelineView::mouseUp (const juce::MouseEvent& e)
+{
+    finishMouseDrag();
+
+    if (std::exchange (fitOnClick, false) && e.mouseWasClicked())
+        zoomToFit();
+}
+
+void TimelineView::finishMouseDrag()
 {
     if (automationDragPoint >= 0)
     {
