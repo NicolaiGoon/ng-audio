@@ -71,7 +71,7 @@ public:
     void zoomVertically (double factor);
 
 private:
-    enum class DragMode { none, move, resizeEnd, select, velocity };
+    enum class DragMode { none, move, resizeEnd, select, velocity, paint, erase };
 
     struct Drag
     {
@@ -95,6 +95,8 @@ private:
     int noteAt (juce::Point<float>, bool* onRightEdge = nullptr) const;
     double snapBeat (double beat, const juce::ModifierKeys&, bool roundDown) const;
     double minLength (const juce::ModifierKeys&) const;
+    bool paintNoteAt (juce::Point<float>, const juce::ModifierKeys&);
+    void eraseNoteAt (juce::Point<float>);
     double getPlayheadBeatInClip() const;
 
     int countSelected() const;

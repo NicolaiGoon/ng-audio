@@ -197,7 +197,7 @@ private:
                closePianoRollButton { "Close the piano roll (Esc)", icons::Icon::close };
     juce::TextButton quantizeButton { "Quantize" };
     juce::Label timelineHint { {}, "Click a clip, then click its lane to paint copies. Right-click deletes. Drag in the ruler for a loop." },
-                pianoRollHint { {}, "Click to draw, drag to move, drag the right edge to resize. Right-click or Del deletes." },
+                pianoRollHint { {}, "Click or drag to draw notes, drag a note to move it, its right edge to resize. Right-click or right-drag deletes." },
                 snapLabel { {}, "Snap" };
 
     //==============================================================================

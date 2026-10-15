@@ -79,6 +79,8 @@ namespace
                 { "Up, Down", "Move it to the channel above or below" },
                 { "Esc", "Deselect it" },
                 { "Piano roll", nullptr },
+                { "Click, drag", "Draw notes (as long as the last one)" },
+                { "Right-click, drag", "Delete notes" },
                 { "Ctrl+A", "Select all notes" },
                 { "Del", "Delete the selected notes" },
                 { "Ctrl+C, Ctrl+X", "Copy or cut them" },

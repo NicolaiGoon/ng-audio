@@ -44,8 +44,10 @@ Linux, build it from source (see *Building*).
   copy's edge to resize it: making it longer adds empty steps to the channel's step row, as in
   FL Studio, and making it shorter cuts off the steps past its end.
 - **A piano roll.** Double-click a clip (or select it and press Enter) to edit its notes in
-  place of the rack and mixer. Click to draw a note (drag to set its length), drag a note to
-  move it and its right edge to resize it; right-click or Del deletes. Ctrl+click and Ctrl+drag
+  place of the rack and mixer. Click to draw a note, or hold and drag to paint more along the
+  way, as on the timeline; each is as long as the last note drawn or resized. Drag a note to
+  move it and its right edge to resize it. Right-click deletes a note and right-dragging deletes
+  every note it passes over (one undo step); Del deletes the selection. Ctrl+click and Ctrl+drag
   select several, Ctrl+A selects all, and the arrow keys move the selection (Shift + up/down
   for an octave). Drawing, clicking or moving a note, or clicking the keys on the left, plays
   it so you hear what you're placing. Ctrl + wheel zooms in time and Alt + wheel sizes the rows.
