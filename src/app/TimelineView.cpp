@@ -1489,8 +1489,14 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
     rulerDrag = RulerDrag::none;
     glideTarget = -1.0;
 
-    // Ctrl+click (without dragging) fits the whole song in view, as in FL Studio.
-    fitOnClick = e.mods.isCommandDown() && ! e.mods.isPopupMenu();
+    // Ctrl + left click fits the whole song in view, as in FL Studio, and does nothing else.
+    fitOnClick = e.mods.isCommandDown() && e.mods.isLeftButtonDown();
+
+    if (fitOnClick)
+    {
+        drag = {};
+        return;
+    }
 
     if (getRulerArea().contains (e.getPosition()))
     {
@@ -1503,7 +1509,7 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
         }
 
         // A click moves the playhead; dragging from there draws a new loop (see mouseDrag).
-        rulerDrag = (e.mods.isShiftDown() || e.mods.isCommandDown()) ? RulerDrag::newLoop : rulerHitTest (e.position.x);
+        rulerDrag = e.mods.isShiftDown() ? RulerDrag::newLoop : rulerHitTest (e.position.x);
         loopPreview = rulerDrag == RulerDrag::newLoop ? juce::Range<double> (beat, beat) : loopBeats;
         loopAnchor = beat;
 
@@ -1553,16 +1559,6 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
 
     if (hit.clip < 0)
     {
-        // Ctrl+drag in the lanes draws a loop, like dragging in the ruler.
-        if (e.mods.isCommandDown() && hit.lane >= 0)
-        {
-            auto beat = std::max (0.0, snap (xToBeat (e.position.x), e.mods));
-            rulerDrag = RulerDrag::newLoop;
-            loopAnchor = beat;
-            loopPreview = { beat, beat };
-            return;
-        }
-
         if (hit.lane < 0)
         {
             selectedClip = {};
@@ -1751,12 +1747,15 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
     repaint();
 }
 
-void TimelineView::mouseUp (const juce::MouseEvent& e)
+void TimelineView::mouseUp (const juce::MouseEvent&)
 {
-    finishMouseDrag();
-
-    if (std::exchange (fitOnClick, false) && e.mouseWasClicked())
+    if (std::exchange (fitOnClick, false))
+    {
         zoomToFit();
+        return;
+    }
+
+    finishMouseDrag();
 }
 
 void TimelineView::finishMouseDrag()

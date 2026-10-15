@@ -964,7 +964,7 @@ namespace
         // Patterns stay on their channel.
         CHECK (! f.dispatcher.execute ("move_clip", obj ({ { "clip", pattern }, { "channel", "Other" } })).ok);
 
-        // A resized copy keeps its own length, with the steps repeating across it (FL Studio style).
+        // A resized copy keeps its own length; the steps play once, with silence after them (FL Studio style).
         {
             auto copies = clipsOf (f, 0);
             auto id = copies[1]["id"].toString();
@@ -978,7 +978,7 @@ namespace
                 if (c["id"].toString() == id)
                 {
                     CHECK (near (c["length_beats"], 5.0));
-                    CHECK (static_cast<int> (c["notes"]) > notesBefore * 2);
+                    CHECK (static_cast<int> (c["notes"]) == notesBefore);
                 }
 
             // A step change keeps that length; the other copy still follows the steps.
@@ -987,6 +987,12 @@ namespace
             CHECK (near (after[1]["length_beats"], 5.0));
             CHECK (near (after[0]["length_beats"], 2.0));
             CHECK (! f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", start + 0.1 } })).ok);
+
+            // Shorter than the steps cuts off the notes past its end.
+            CHECK (f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", start + 0.5 } })).ok);
+            auto cut = clipsOf (f, 0);
+            CHECK (static_cast<int> (cut[1]["notes"]) == 2);   // steps 0 and 1 of "xxx.x..."
+            CHECK (f.dispatcher.undo());
             CHECK (f.dispatcher.undo());
             CHECK (f.dispatcher.undo());
             CHECK (near (clipsOf (f, 0)[1]["length_beats"], 2.0));
