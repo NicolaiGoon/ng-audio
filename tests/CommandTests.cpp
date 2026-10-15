@@ -964,38 +964,36 @@ namespace
         // Patterns stay on their channel.
         CHECK (! f.dispatcher.execute ("move_clip", obj ({ { "clip", pattern }, { "channel", "Other" } })).ok);
 
-        // A resized copy keeps its own length; the steps play once, with silence after them (FL Studio style).
+        // Lengthening a copy grows the channel's step row (FL Studio style), so every copy that
+        // follows the steps grows with it; the new steps are empty.
         {
             auto copies = clipsOf (f, 0);
             auto id = copies[1]["id"].toString();
             auto start = static_cast<double> (copies[1]["start_beat"]);
             auto notesBefore = static_cast<int> (copies[1]["notes"]);
             CHECK (f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", start + 5.0 } })).ok);
+            CHECK (f.state()["channels"][0]["pattern"]["steps"].toString().length() == 20);
 
-            auto resized = clipsOf (f, 0);   // kept alive: the loop below walks its array
+            auto grown = clipsOf (f, 0);   // kept alive: the checks below read its array
+            CHECK (near (grown[0]["length_beats"], 5.0));
+            CHECK (near (grown[1]["length_beats"], 5.0));
+            CHECK (static_cast<int> (grown[1]["notes"]) == notesBefore);
 
-            for (auto& c : *resized.getArray())
-                if (c["id"].toString() == id)
-                {
-                    CHECK (near (c["length_beats"], 5.0));
-                    CHECK (static_cast<int> (c["notes"]) == notesBefore);
-                }
-
-            // A step change keeps that length; the other copy still follows the steps.
+            // Shorter than the steps cuts off the notes past its end, and keeps that length as the steps change.
+            CHECK (! f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", start + 0.1 } })).ok);
+            CHECK (f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", start + 0.5 } })).ok);
+            CHECK (static_cast<int> (clipsOf (f, 0)[1]["notes"]) == 1);   // steps 0 and 1 of "x.x.x..."
             CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "step", 1 } })).ok);
             auto after = clipsOf (f, 0);
-            CHECK (near (after[1]["length_beats"], 5.0));
-            CHECK (near (after[0]["length_beats"], 2.0));
-            CHECK (! f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", start + 0.1 } })).ok);
+            CHECK (near (after[1]["length_beats"], 0.5));
+            CHECK (static_cast<int> (after[1]["notes"]) == 2);
+            CHECK (near (after[0]["length_beats"], 5.0));
 
-            // Shorter than the steps cuts off the notes past its end.
-            CHECK (f.dispatcher.execute ("resize_clip", obj ({ { "clip", id }, { "end_beat", start + 0.5 } })).ok);
-            auto cut = clipsOf (f, 0);
-            CHECK (static_cast<int> (cut[1]["notes"]) == 2);   // steps 0 and 1 of "xxx.x..."
             CHECK (f.dispatcher.undo());
             CHECK (f.dispatcher.undo());
             CHECK (f.dispatcher.undo());
             CHECK (near (clipsOf (f, 0)[1]["length_beats"], 2.0));
+            CHECK (f.state()["channels"][0]["pattern"]["steps"].toString().length() == 8);
         }
         CHECK (! f.dispatcher.execute ("split_clip", obj ({ { "clip", pattern }, { "beat", 5 } })).ok);
 

@@ -260,14 +260,24 @@ namespace
                 dispatcher.execute ("route", makeObject ({ { "channel", id }, { "strip", dest } }));
             };
 
-            for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &status, &armButton, &instrument, &editButton, &output, &deleteButton, &grid })
+            for (auto* c : std::initializer_list<juce::Component*> { &swatch, &name, &status, &armButton, &instrument, &editButton, &output, &deleteButton,
+                                                                     &grid, &fewerSteps, &moreSteps })
                 addAndMakeVisible (c);
+
+            // The step row grows and shrinks a bar (16 steps) at a time, down to 4 and up to 64.
+            stepCount = channel["pattern"]["steps"].toString().length();
+            fewerSteps.setTooltip ("Fewer steps (a bar less)");
+            moreSteps.setTooltip ("More steps (a bar more, up to 64). Lengthening a pattern on the timeline adds steps too");
+            fewerSteps.setEnabled (stepCount > 4);
+            moreSteps.setEnabled (stepCount < 64);
+            fewerSteps.onClick = [this] { setStepCount (stepCount > 16 ? stepCount - 16 : juce::jmax (4, stepCount / 2)); };
+            moreSteps.onClick = [this] { setStepCount (stepCount < 16 ? 16 : juce::jmin (64, stepCount + 16)); };
 
             // An audio channel plays its clips and records from an audio input: no instrument,
             // no MIDI, no steps.
             if (isAudio)
             {
-                for (auto* c : std::initializer_list<juce::Component*> { &instrument, &editButton, &outsButton, &grid })
+                for (auto* c : std::initializer_list<juce::Component*> { &instrument, &editButton, &outsButton, &grid, &fewerSteps, &moreSteps })
                     c->setVisible (false);
 
                 armButton.setTooltip ("Arm to record from the audio input (any number of audio channels can be armed)");
@@ -318,8 +328,13 @@ namespace
         void resized() override
         {
             auto r = getLocalBounds().reduced (6, 5);
-            grid.setBounds (r.removeFromBottom (22).withTrimmedLeft (20));
-            audioHint.setBounds (grid.getBounds());
+            auto gridRow = r.removeFromBottom (22).withTrimmedLeft (20);
+            audioHint.setBounds (gridRow);
+            moreSteps.setBounds (gridRow.removeFromRight (22));
+            gridRow.removeFromRight (2);
+            fewerSteps.setBounds (gridRow.removeFromRight (22));
+            gridRow.removeFromRight (6);
+            grid.setBounds (gridRow);
             r.removeFromBottom (4);
             swatch.setBounds (r.removeFromLeft (14));
             r.removeFromLeft (6);
@@ -359,6 +374,12 @@ namespace
                 browser::savePresetWithName (dispatcher, this, channelName, makeObject ({ { "channel", id } }));
             });
             menu.showMenuAsync (juce::PopupMenu::Options());
+        }
+
+        void setStepCount (int count)
+        {
+            if (auto result = dispatcher.execute ("set_steps", makeObject ({ { "channel", id }, { "length", count } })); ! result.ok)
+                showWarning ("Can't change the steps", result.error);
         }
 
         void paint (juce::Graphics& g) override
@@ -446,6 +467,8 @@ namespace
                          outsButton { "Outs" };
         bool hasOutputs = false;
         StepGrid grid;
+        juce::TextButton fewerSteps { juce::String::fromUTF8 ("\xe2\x88\x92") }, moreSteps { "+" };
+        int stepCount = 16;
         juce::String audioWildcard, channelName;
         juce::Label audioHint;
         juce::ComboBox input, monitor;

@@ -41,7 +41,8 @@ Linux, build it from source (see *Building*).
   channel's lane too) and drag its edges to trim it. Del deletes the selected clip, Ctrl+D
   duplicates it and S splits it at the playhead. Drags snap to the beat (16ths when zoomed in); hold Alt to place freely. A step
   pattern can be copied along the timeline, and every copy follows the channel's steps; drag a
-  copy's edge to resize it: the steps play once, cut off or followed by silence, as in FL Studio.
+  copy's edge to resize it: making it longer adds empty steps to the channel's step row, as in
+  FL Studio, and making it shorter cuts off the steps past its end.
 - **A piano roll.** Double-click a clip (or select it and press Enter) to edit its notes in
   place of the rack and mixer. Click to draw a note (drag to set its length), drag a note to
   move it and its right edge to resize it; right-click or Del deletes. Ctrl+click and Ctrl+drag
@@ -53,7 +54,8 @@ Linux, build it from source (see *Building*).
   set the velocity of the notes there (only the selected ones, if any are). Quantize (or Q)
   moves the selected notes, or all of them, onto the grid. Each edit is one undo step.
 - **A step sequencer.** Each channel has a row of 16 steps (16th notes) under its name; click a
-  step to turn it on or off, or drag across steps to paint them (right-click clears). The step under the playhead is outlined while playing.
+  step to turn it on or off, or drag across steps to paint them (right-click clears). The − and + beside the row take away
+  or add a bar of steps (4 to 64). The step under the playhead is outlined while playing.
 - **A transport** with Play, back to the start (|< or Home), tempo (type it, click the arrows
   or drag), time signature, the song position (bar.beat.sixteenth), a Loop switch and a
   Metronome that clicks on every beat, louder on the bar. New projects loop the whole project,
