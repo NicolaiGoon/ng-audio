@@ -27,6 +27,12 @@ public:
 
     static juce::var error (const juce::var& id, int code, const juce::String& text);
 
+    /** The app's commands as MCP tools (name, description, inputSchema), plus batch, undo and redo. */
+    static juce::var listTools (const CommandRegistry&);
+
+    /** What an AI client is told about the tools when it connects. */
+    static juce::String getInstructions();
+
 private:
     static juce::var success (const juce::var& id, const juce::var& result);
 
