@@ -138,9 +138,29 @@ Linux, build it from source (see *Building*).
   channel while it's armed; *Mon on* always and *Mon off* never. Takes are saved as WAV files in a
   *Recordings* folder beside the project (or in Music/Ng DAW/Recordings before it's saved).
 - **Editing audio clips.** Select an audio clip and drag the small handles in its top corners to
-  fade it in or out. Right-click it for its *Gain* (+6 to -12 dB; the waveform grows or shrinks
+  fade it in or out. Shift-drag its right edge to stretch it to a new length instead of trimming it.
+  Right-click it for its *Gain* (+6 to -12 dB; the waveform grows or shrinks
   with it), *Follow tempo*, which time-stretches the clip so it keeps its length in beats when the
   tempo changes, and *Remove fades*.
+- **The sample editor.** Double-click an audio clip (or select it and press Enter) to open it in
+  place of the rack and mixer: its whole file as a waveform, with the part the clip plays lit up
+  and the song's bars and beats laid over it. Drag the lit part's edges to trim the clip. Above it:
+  - *Stretch mode*: **Stretch** (the default) changes speed and pitch separately with
+    [Rubber Band](https://breakfastquay.com/rubberband/)'s R3 engine, its highest quality one, for
+    most sounds; **Beats** uses Rubber Band's percussive mode, which keeps drum hits crisp;
+    **Resample** changes speed and pitch together, like a record played faster, as FL Studio does.
+    Stretched audio is rendered once in the background and cached, so it costs nothing while the
+    song plays.
+  - *Pitch* (semitones) and *Fine* (cents). In Resample mode pitch also changes the speed.
+  - *Gain*, or *Normalize* to bring the file's loudest peak to 0 dB.
+  - *Follow tempo* with the file's own tempo: type it, or *Detect* it. A short loop's tempo is
+    matched to a whole number of bars, so loops line up exactly. *Song tempo* sets the song to
+    the file's tempo instead.
+  - *Length (beats)*: type a length, or use ÷2 and ×2, to stretch the clip to fit.
+  - *Reverse*, and *Sampler*, which makes a sampler channel playing the file across the keys.
+
+  Knobs apply when they're let go (or typed into); double-click one to reset it. Each change is
+  one undo step.
 - **Exporting.** *Export* above the timeline (or Ctrl+E) saves the whole song (to the end of the
   last clip, plus two seconds for tails) or the loop region as a WAV (16-bit, 24-bit or 32-bit
   float) or an MP3, at 44.1 to 96 kHz. Tick *stems* for one file per mixer strip instead, all the
@@ -189,7 +209,8 @@ Linux, build it from source (see *Building*).
   | `quantize_notes` | Moves a clip's notes (or some of them) onto a grid, optionally with their ends |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
   | `set_metronome` | Turns the metronome on or off |
-  | `set_audio_clip` | Sets an audio clip's gain, fade in and out, and whether it follows the tempo (time-stretched from its source tempo) |
+  | `set_audio_clip` | Sets an audio clip's gain (or normalizes it), fades, pitch, length (stretched), stretch mode (`stretch`, `beats` or `resample`), reverse, and whether it follows the tempo (time-stretched from its source tempo) |
+  | `analyze_audio` | Reads an audio clip's file (or any audio file): length, sample rate, channels, peak level and detected tempo |
   | `export_audio` | Exports the song or the loop region as a WAV or MP3 file, or as one file per mixer strip (stems) |
   | `set_audio_input` | Sets the audio input an audio channel records from, and how it's monitored |
   | `arm_channel` / `record` | Arms a channel for MIDI input (one at a time) or audio input (any number), and records into them until `stop` |

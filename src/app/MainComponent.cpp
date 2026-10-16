@@ -260,6 +260,7 @@ MainComponent::MainComponent (te::Engine& engine)
         mixer.clear();
         timeline.clear();
         closePianoRoll();
+        closeSampleEditor();
         rack.clear();
     };
 
@@ -329,6 +330,7 @@ MainComponent::~MainComponent()
     dispatcher.onCommandExecuted = nullptr;
     session.onEditAboutToChange = nullptr;
     pianoRoll.clear();
+    sampleEditor.clear();
 }
 
 //==============================================================================
@@ -420,7 +422,13 @@ void MainComponent::setUpPanels()
     rackProportion = juce::jlimit (0.1, 0.9, props.getDoubleValue ("ngRackProportion", 0.5));
 
     // The timeline.
-    timeline.onOpenClip = [this] (const juce::String& clipId) { openPianoRoll (clipId); };
+    timeline.onOpenClip = [this] (const juce::String& clipId)
+    {
+        if (dynamic_cast<te::WaveAudioClip*> (session.findClip (clipId)) != nullptr)
+            openSampleEditor (clipId);
+        else
+            openPianoRoll (clipId);
+    };
     addAudioButton.onClick = [this] { showAudioMenu (&addAudioButton); };
     timelineZoomOut.onClick = [this] { timeline.zoomHorizontally (0.7); };
     timelineZoomIn.onClick = [this] { timeline.zoomHorizontally (1.0 / 0.7); };
@@ -473,7 +481,15 @@ void MainComponent::setUpPanels()
     pianoRollPanel.addHeaderItem (rollZoomOut, 24, true);
     pianoRollPanel.setActive (false);
 
-    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel })
+    // The sample editor, for audio clips.
+    closeSampleEditorButton.onClick = [this] { closeSampleEditor(); };
+    sampleEditorHint.setFont (juce::FontOptions (12.0f));
+    sampleEditorHint.setColour (juce::Label::textColourId, juce::Colours::grey);
+    sampleEditorPanel.addHeaderItem (sampleEditorHint, 600);
+    sampleEditorPanel.addHeaderItem (closeSampleEditorButton, 24, true);
+    sampleEditorPanel.setActive (false);
+
+    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
     {
         panel->onDetachChanged = [this] { resized(); };
         addChildComponent (panel);
@@ -529,14 +545,14 @@ void MainComponent::setUpPanels()
 
 void MainComponent::restoreDetachedPanels()
 {
-    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel })
+    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
         if (getProperties().getBoolValue ("ngPanelDetached_" + panel->getId()))
             panel->setDetached (true);
 }
 
 void MainComponent::resetLayout()
 {
-    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel })
+    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
         panel->setDetached (false);
 
     browserWidth = 240;
@@ -617,9 +633,10 @@ juce::PopupMenu MainComponent::getMenu (int menuIndex)
         menu.addItem (menuItem ("Command console", {}, [this] { showConsole (! consoleShown); }, true, consoleShown));
         menu.addSeparator();
 
-        for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel })
+        for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
         {
-            auto name = panel == &timelinePanel ? "Timeline" : panel == &rackPanel ? "Channel rack" : panel == &mixerPanel ? "Mixer" : "Piano roll";
+            auto name = panel == &timelinePanel ? "Timeline" : panel == &rackPanel ? "Channel rack" : panel == &mixerPanel ? "Mixer"
+                          : panel == &pianoRollPanel ? "Piano roll" : "Sample editor";
             menu.addItem (menuItem (juce::String (name) + " in its own window", {}, [this, panel] { panel->setDetached (! panel->isDetached()); },
                                     true, panel->isDetached()));
         }
@@ -1063,6 +1080,13 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
+    if (key == juce::KeyPress (juce::KeyPress::escapeKey) && sampleEditor.getClip().isNotEmpty())
+    {
+        closeSampleEditor();
+        timeline.grabKeyboardFocus();
+        return true;
+    }
+
     return false;
 }
 
@@ -1147,7 +1171,7 @@ bool MainComponent::ownsComponent (juce::Component* c) const
     if (isParentOf (c))
         return true;
 
-    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel })
+    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
         if (panel->isParentOf (c))
             return true;
 
@@ -1328,6 +1352,7 @@ void MainComponent::updatePlayStep()
     }
 
     rack.setPlayStep (step);
+    sampleEditor.updatePlayhead();
 }
 
 void MainComponent::updateButtons()
@@ -1357,12 +1382,20 @@ void MainComponent::refreshViews()
     if (pianoRoll.getClip().isNotEmpty() && ! pianoRoll.update())
         closePianoRoll();
 
+    if (sampleEditor.getClip().isNotEmpty() && ! sampleEditor.update())
+        closeSampleEditor();
+
     updatePianoRollTitle();
+    updateSampleEditorTitle();
     updateTransportControls (state);
 }
 
 void MainComponent::openPianoRoll (const juce::String& clipId)
 {
+    // One editor at a time takes the rack and mixer's place.
+    sampleEditor.clear();
+    sampleEditorPanel.setActive (false);
+
     pianoRoll.setClip (clipId);
     pianoRollPanel.setActive (true);
     updatePianoRollTitle();
@@ -1382,6 +1415,40 @@ void MainComponent::closePianoRoll()
     pianoRoll.clear();
     pianoRollPanel.setActive (false);
     resized();
+}
+
+void MainComponent::openSampleEditor (const juce::String& clipId)
+{
+    pianoRoll.clear();
+    pianoRollPanel.setActive (false);
+
+    sampleEditor.setClip (clipId);
+    sampleEditorPanel.setActive (true);
+    updateSampleEditorTitle();
+    resized();
+    sampleEditorPanel.toFront();
+}
+
+void MainComponent::closeSampleEditor()
+{
+    sampleEditor.clear();
+    sampleEditorPanel.setActive (false);
+    resized();
+}
+
+void MainComponent::updateSampleEditorTitle()
+{
+    auto clip = session.findClip (sampleEditor.getClip());
+
+    if (clip == nullptr)
+        return;
+
+    auto title = "Sample editor: " + clip->getName();
+
+    if (auto track = clip->getTrack())
+        title << " on " << track->getName();
+
+    sampleEditorPanel.setTitle (title);
 }
 
 void MainComponent::updatePianoRollTitle()
@@ -1414,7 +1481,8 @@ void MainComponent::paint (juce::Graphics& g)
         return;
 
     auto anyAttached = (! timelinePanel.isDetached()) || (! rackPanel.isDetached()) || (! mixerPanel.isDetached())
-                         || (pianoRollPanel.isActive() && ! pianoRollPanel.isDetached());
+                         || (pianoRollPanel.isActive() && ! pianoRollPanel.isDetached())
+                         || (sampleEditorPanel.isActive() && ! sampleEditorPanel.isDetached());
 
     if (! anyAttached)
     {
@@ -1546,9 +1614,10 @@ void MainComponent::layOutPanels (juce::Rectangle<int> r)
     centreArea = r;
     bottomArea = {};
 
-    // What's in the main window: the attached panels. The piano roll, while open, takes the
-    // rack and mixer's place.
-    auto rollHere = pianoRollPanel.isActive() && ! pianoRollPanel.isDetached();
+    // What's in the main window: the attached panels. The piano roll or the sample editor,
+    // while open, takes the rack and mixer's place.
+    auto* editorPanel = sampleEditorPanel.isActive() ? &sampleEditorPanel : &pianoRollPanel;
+    auto rollHere = editorPanel->isActive() && ! editorPanel->isDetached();
     auto timelineHere = ! timelinePanel.isDetached();
     auto rackHere = ! rackPanel.isDetached() && ! rollHere;
     auto mixerHere = ! mixerPanel.isDetached() && ! rollHere;
@@ -1558,6 +1627,7 @@ void MainComponent::layOutPanels (juce::Rectangle<int> r)
     rackPanel.setVisible (rackHere || rackPanel.isDetached());
     mixerPanel.setVisible (mixerHere || mixerPanel.isDetached());
     pianoRollPanel.setVisible (pianoRollPanel.isActive());
+    sampleEditorPanel.setVisible (sampleEditorPanel.isActive());
     timelineSplitter.setVisible (timelineHere && bottomHere);
     rackSplitter.setVisible (rackHere && mixerHere);
 
@@ -1580,7 +1650,7 @@ void MainComponent::layOutPanels (juce::Rectangle<int> r)
 
     if (rollHere)
     {
-        pianoRollPanel.setBounds (r);
+        editorPanel->setBounds (r);
         return;
     }
 
