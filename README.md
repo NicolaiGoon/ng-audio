@@ -33,6 +33,11 @@ Linux, build it from source (see *Building*).
   in view, as in FL Studio. Drag a lane's bottom edge (in
   the names on the left) to size just that lane; double-click the edge to reset it. The view
   glides along with the playhead while playing, and an automated value's dot rides its line.
+- **Playlist tools, FL Studio style.** The buttons in the timeline's header (or B, C, D and T)
+  pick what a left click does: **Paint** (the default, below), **Slice** (click a clip to cut it in
+  two there, on the grid unless Alt is held), **Delete** (click or drag across clips) and **Mute**
+  (click or drag across clips to mute or unmute them; a muted clip stays in place, greyed out,
+  and plays nothing). Right-click deletes with any tool.
 - **Clip editing, FL Studio style.** Click a clip to pick it, then click anywhere in its lane to
   place a copy there, or drag along the lane to paint copies one after another. Right-click a
   clip to delete it, or right-drag across clips to delete them all (one undo step). Shift+click
@@ -72,7 +77,7 @@ Linux, build it from source (see *Building*).
   the armed channel from the playhead; Rec again or Stop finishes, and the recording becomes a
   clip in one undo step.
 - **Keyboard shortcuts.** Space plays and stops, Ctrl+Z undoes, Ctrl+Y (or Ctrl+Shift+Z)
-  redoes, R records, C turns the metronome on or off, Ctrl+L looping, Ctrl+T adds an
+  redoes, R records, Ctrl+M turns the metronome on or off, Ctrl+L looping, Ctrl+T adds an
   instrument, Ctrl+K turns the typing keyboard on or off and Ctrl+Shift+K shows the piano. On the timeline, Ctrl+C and Ctrl+V copy a clip and
   paste it at the playhead, the left and right arrows move it by a beat (Shift: a bar), up and
   down move it to the next channel, and Esc deselects. In the piano roll, Ctrl+C, Ctrl+X and
@@ -204,7 +209,7 @@ Linux, build it from source (see *Building*).
   | `set_loop` | Loop on/off and the loop region in beats (default: the whole project, in whole bars) |
   | `set_steps` | Sets or toggles a channel's step pattern (`steps`, `step`, `length`, `pitch`) |
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
-  | `move_clip` / `resize_clip` / `split_clip` / `duplicate_clip` / `delete_clip` | Clip editing, by clip id from `get_state` |
+  | `move_clip` / `resize_clip` / `split_clip` / `duplicate_clip` / `delete_clip` / `mute_clip` | Clip editing, by clip id from `get_state` |
   | `get_notes` / `set_notes` | Reads or replaces a MIDI clip's notes (beats from the clip's start) |
   | `quantize_notes` | Moves a clip's notes (or some of them) onto a grid, optionally with their ends |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |

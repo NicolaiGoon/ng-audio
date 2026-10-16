@@ -447,7 +447,7 @@ void SampleEditor::resized()
     gainKnob.setBounds (place (gainLabel, 98));
 
     {
-        auto area = place (bpmLabel, 272);
+        auto area = place (bpmLabel, 300);
         followButton.setBounds (area.removeFromLeft (104));
         bpmValue.setBounds (area.removeFromLeft (46).reduced (0, 2));
         area.removeFromLeft (4);

@@ -924,6 +924,7 @@ namespace
 
         obj->setProperty ("start_beat", rounded (start));
         obj->setProperty ("length_beats", rounded (end - start));
+        obj->setProperty ("muted", clip.isMuted());
         return juce::var (obj);
     }
 
@@ -1083,6 +1084,21 @@ namespace
             return CommandResult::failure ("split_clip: couldn't split the clip");
 
         return CommandResult::success (juce::Array<juce::var> { describeClip (session, *found.clip), describeClip (session, *second) });
+    }
+
+    /** Mutes or unmutes a clip (toggles it when muted isn't given): it stays in place but is silent. */
+    CommandResult muteClip (Session& session, const juce::var& p)
+    {
+        FoundClip found;
+
+        if (auto error = requireClip (session, "mute_clip", p, found))
+            return *error;
+
+        if (p.hasProperty ("muted") && ! p["muted"].isBool())
+            return CommandResult::failure ("mute_clip: muted is true or false");
+
+        found.clip->setMuted (p.hasProperty ("muted") ? static_cast<bool> (p["muted"]) : ! found.clip->isMuted());
+        return CommandResult::success (describeClip (session, *found.clip));
     }
 
     CommandResult duplicateClip (Session& session, const juce::var& p)
@@ -1621,6 +1637,14 @@ void registerProjectCommands (CommandRegistry& registry)
                               { "beat", prop ("number", "Where to split, in beats from the start of the project") } },
                             { "clip", "beat" }),
                     true, splitClip });
+
+    registry.add ({ "mute_clip",
+                    "Mutes or unmutes a clip: a muted clip stays where it is but plays nothing (as FL Studio's mute tool does). "
+                    "Leave out muted to toggle it.",
+                    schema ({ { "clip", prop ("string", "Clip id, from get_state") },
+                              { "muted", prop ("boolean", "True to mute, false to unmute; leave out to toggle") } },
+                            { "clip" }),
+                    true, muteClip });
 
     registry.add ({ "duplicate_clip",
                     "Copies a clip, by default to just after itself. A copied step pattern keeps following the channel's steps.",

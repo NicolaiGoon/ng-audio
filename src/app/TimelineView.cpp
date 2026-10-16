@@ -57,6 +57,7 @@ void TimelineView::update (const juce::var& state)
             clip.fadeInBeats = c.getProperty ("fade_in_beats", 0.0);
             clip.fadeOutBeats = c.getProperty ("fade_out_beats", 0.0);
             clip.followTempo = c.getProperty ("follow_tempo", false);
+            clip.muted = c.getProperty ("muted", false);
             clip.sourceBpm = c.getProperty ("source_bpm", 0.0);
             lane.clips.add (clip);
 
@@ -461,6 +462,16 @@ void TimelineView::paintLanes (juce::Graphics& g)
 
                 if (clip.audio)
                     paintFades (g, clip, area, clip.id == selectedClip);
+
+                // A muted clip is greyed out.
+                if (clip.muted)
+                {
+                    g.setColour (juce::Colour (0xff1d2025).withAlpha (0.7f));
+                    g.fillRoundedRectangle (area, 3.0f);
+                    g.setColour (juce::Colours::white.withAlpha (0.6f));
+                    g.setFont (juce::FontOptions (10.0f));
+                    g.drawText ("muted", area.reduced (4.0f, 1.0f), juce::Justification::bottomRight, false);
+                }
 
                 if (clip.id == selectedClip)
                 {
@@ -1493,6 +1504,54 @@ void TimelineView::eraseAt (juce::Point<float> pos)
     repaint();
 }
 
+void TimelineView::muteAt (juce::Point<float> pos)
+{
+    auto hit = hitTestLanes (pos);
+
+    if (hit.clip < 0)
+        return;
+
+    auto id = lanes[hit.lane].clips[hit.clip].id;
+
+    if (toggled.contains (id))
+        return;
+
+    toggled.add (id);
+    dispatcher.execute ("mute_clip", makeObject ({ { "clip", id } }));
+    repaint();
+}
+
+void TimelineView::sliceAt (juce::Point<float> pos, const juce::ModifierKeys& mods)
+{
+    auto hit = hitTestLanes (pos);
+
+    if (hit.clip < 0)
+        return;
+
+    auto& clip = lanes[hit.lane].clips.getReference (hit.clip);
+
+    if (clip.pattern)
+        return;
+
+    auto result = dispatcher.execute ("split_clip", makeObject ({ { "clip", clip.id }, { "beat", snap (xToBeat (pos.x), mods) } }));
+
+    if (result.ok)
+        selectedClip = result.value[1]["clip"].toString();
+}
+
+void TimelineView::setTool (Tool newTool)
+{
+    if (tool == newTool)
+        return;
+
+    tool = newTool;
+
+    if (onToolChanged != nullptr)
+        onToolChanged();
+
+    repaint();
+}
+
 void TimelineView::mouseDown (const juce::MouseEvent& e)
 {
     grabKeyboardFocus();
@@ -1563,6 +1622,31 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
             drag.mode = DragMode::erase;
             erased.clear();
             eraseAt (e.position);
+        }
+
+        return;
+    }
+
+    // The slice, delete and mute tools.
+    if (tool == Tool::slice)
+    {
+        sliceAt (e.position, e.mods);
+        return;
+    }
+
+    if (tool == Tool::erase || tool == Tool::mute)
+    {
+        if (hit.lane >= 0)
+        {
+            dispatcher.beginGesture (tool == Tool::erase ? "Delete clips" : "Mute clips");
+            drag.mode = tool == Tool::erase ? DragMode::erase : DragMode::mute;
+            erased.clear();
+            toggled.clear();
+
+            if (tool == Tool::erase)
+                eraseAt (e.position);
+            else
+                muteAt (e.position);
         }
 
         return;
@@ -1670,6 +1754,12 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
         return;
     }
 
+    if (drag.mode == DragMode::mute)
+    {
+        muteAt (e.position);
+        return;
+    }
+
     if (drag.mode == DragMode::paint)
     {
         // Copies go one after another as the mouse moves right.
@@ -1757,6 +1847,7 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
         case DragMode::none:
         case DragMode::paint:
         case DragMode::erase:
+        case DragMode::mute:
         case DragMode::laneHeight:
             break;
     }
@@ -1807,7 +1898,7 @@ void TimelineView::finishMouseDrag()
     auto finished = drag;
     drag = {};
 
-    if (finished.mode == DragMode::paint || finished.mode == DragMode::erase)
+    if (finished.mode == DragMode::paint || finished.mode == DragMode::erase || finished.mode == DragMode::mute)
     {
         dispatcher.endGesture();
         repaint();
@@ -1872,6 +1963,14 @@ void TimelineView::mouseMove (const juce::MouseEvent& e)
 
     auto hit = hitTestLanes (e.position);
 
+    if (tool != Tool::paint)
+    {
+        setMouseCursor (hit.clip < 0 ? juce::MouseCursor::NormalCursor
+                                     : tool == Tool::slice ? juce::MouseCursor::IBeamCursor
+                                                           : juce::MouseCursor::PointingHandCursor);
+        return;
+    }
+
     if (hit.clip >= 0 && hit.mode != DragMode::fadeIn && hit.mode != DragMode::fadeOut)
     {
         auto& clip = lanes.getReference (hit.lane).clips.getReference (hit.clip);
@@ -1893,6 +1992,7 @@ void TimelineView::mouseMove (const juce::MouseEvent& e)
         case DragMode::none:     setMouseCursor (hit.lane >= 0 ? juce::MouseCursor::CopyingCursor : juce::MouseCursor::NormalCursor); break;
         case DragMode::paint:
         case DragMode::erase:
+        case DragMode::mute:
         case DragMode::laneHeight: break;
     }
 }
@@ -1928,7 +2028,8 @@ void TimelineView::mouseDoubleClick (const juce::MouseEvent& e)
         auto id = lanes[hit.lane].clips[hit.clip].id;
 
         // The first click just painted this one; a double-click there isn't meant to open it.
-        if (id == lastPainted)
+        // The other tools act on each click instead.
+        if (id == lastPainted || tool != Tool::paint)
             return;
 
         selectedClip = id;
