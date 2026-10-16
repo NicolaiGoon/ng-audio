@@ -2553,6 +2553,179 @@ namespace
         folder.deleteRecursively();
     }
 
+    /** Writes a mono 44.1 kHz WAV file of the samples the function gives for each sample index. */
+    bool writeWav (const juce::File& file, int numSamples, std::function<float (int)> sampleAt)
+    {
+        std::unique_ptr<juce::FileOutputStream> stream (file.createOutputStream());
+
+        if (stream == nullptr)
+            return false;
+
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), 44100.0, 1, 24, {}, 0));
+
+        if (writer == nullptr)
+            return false;
+
+        stream.release();
+        juce::AudioBuffer<float> buffer (1, numSamples);
+
+        for (int i = 0; i < numSamples; ++i)
+            buffer.setSample (0, i, sampleAt (i));
+
+        return writer->writeFromAudioSampleBuffer (buffer, 0, numSamples);
+    }
+
+    /** The frequency of a tone between two times (in seconds), from how often it crosses zero upwards. */
+    double frequencyBetween (const juce::AudioBuffer<float>& buffer, double from, double to)
+    {
+        auto start = juce::jlimit (1, buffer.getNumSamples(), (int) (from * 44100.0));
+        auto end = juce::jlimit (start, buffer.getNumSamples(), (int) (to * 44100.0));
+        int crossings = 0;
+
+        for (int i = start; i < end; ++i)
+            if (buffer.getSample (0, i - 1) < 0.0f && buffer.getSample (0, i) >= 0.0f)
+                ++crossings;
+
+        return end > start ? crossings * 44100.0 / (end - start) : 0.0;
+    }
+
+    void testSampleEditing (tracktion::Engine& engine)
+    {
+        std::cout << "audio clips change pitch, stretch, resample, reverse and normalize, and their tempo is detected\n";
+        Fixture f (engine);
+        auto settle = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil (300); };
+
+        auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NgDawSampleTest");
+        folder.deleteRecursively();
+        CHECK (folder.createDirectory());
+
+        // 2 s of A440 at half level: 4 beats at 120 bpm.
+        auto tone = folder.getChildFile ("Tone.wav");
+        CHECK (writeWav (tone, 88200, [] (int i) { return 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * 440.0 * i / 44100.0); }));
+
+        auto r = f.dispatcher.execute ("import_audio", obj ({ { "file", tone.getFullPathName() } }));
+        CHECK (r.ok);
+        auto clip = r.value["clip"].toString();
+        auto state = [&] { return f.state()["channels"][0]["clips"][0]; };
+        CHECK (state()["stretch_mode"] == "stretch" && near (state()["pitch_semitones"], 0.0) && near (state()["speed"], 1.0));
+        CHECK (! static_cast<bool> (state()["reversed"]));
+
+        // An octave up, stretched: twice the frequency over the same 2 s.
+        r = f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "pitch_semitones", 12 } }));
+        CHECK (r.ok && near (r.value["pitch_semitones"], 12.0) && near (r.value["length_beats"], 4.0));
+        settle();
+        auto up = renderBuffer (f);
+        auto upFrequency = frequencyBetween (up, 0.5, 1.5);
+        std::cout << "       an octave up: " << upFrequency << " Hz, level at 1.7 s " << rmsBetween (up, 1.6, 1.8) << "\n";
+        CHECK (std::abs (upFrequency - 880.0) < 880.0 * 0.02);
+        CHECK (rmsBetween (up, 1.6, 1.8) > 0.1f);
+
+        // Resampled, the same octave up plays twice as fast: 1 s, 2 beats.
+        r = f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "stretch_mode", "resample" } }));
+        CHECK (r.ok && r.value["stretch_mode"] == "resample" && near (r.value["pitch_semitones"], 12.0));
+        CHECK (near (r.value["speed"], 2.0) && near (r.value["length_beats"], 2.0));
+        settle();
+        auto fast = renderBuffer (f);
+        std::cout << "       resampled: " << frequencyBetween (fast, 0.2, 0.8) << " Hz over " << fast.getNumSamples() / 44100.0 << " s\n";
+        CHECK (std::abs (frequencyBetween (fast, 0.2, 0.8) - 880.0) < 880.0 * 0.02);
+        CHECK (rmsBetween (fast, 1.1, 1.5) < 0.01f);
+        CHECK (! f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "follow_tempo", true } })).ok);
+
+        // Back to its own pitch, and so its own speed.
+        r = f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "pitch_semitones", 0 } }));
+        CHECK (r.ok && near (r.value["speed"], 1.0) && near (r.value["length_beats"], 4.0));
+        CHECK (! f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "pitch_semitones", 30 } })).ok);
+        CHECK (! f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "stretch_mode", "elastic" } })).ok);
+
+        // Stretched to 8 beats: half the speed, the same pitch.
+        r = f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "stretch_mode", "stretch" }, { "stretch_to_beats", 8 } }));
+        CHECK (r.ok && near (r.value["length_beats"], 8.0) && near (r.value["speed"], 0.5) && near (r.value["pitch_semitones"], 0.0));
+        CHECK (near (state()["max_end_beat"], 8.0));
+        settle();
+        auto slow = renderBuffer (f);
+        std::cout << "       stretched to 8 beats: " << frequencyBetween (slow, 1.0, 3.0) << " Hz, level at 3.5 s "
+                  << rmsBetween (slow, 3.3, 3.7) << "\n";
+        CHECK (std::abs (frequencyBetween (slow, 1.0, 3.0) - 440.0) < 440.0 * 0.02);
+        CHECK (rmsBetween (slow, 3.3, 3.7) > 0.1f);
+        CHECK (! f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "stretch_to_beats", 64 } })).ok);   // 8 times slower
+        f.dispatcher.undo();
+        CHECK (near (state()["length_beats"], 4.0) && state()["stretch_mode"] == "resample" && near (state()["speed"], 1.0));
+
+        // Following the tempo, stretching changes the tempo the file is taken to be.
+        CHECK (f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "stretch_mode", "stretch" }, { "follow_tempo", true } })).ok);
+        r = f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "stretch_to_beats", 2 } }));
+        CHECK (r.ok && near (r.value["source_bpm"], 240.0) && near (r.value["length_beats"], 2.0));
+        r = f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "source_bpm", 120 } }));
+        CHECK (r.ok && near (r.value["length_beats"], 4.0));
+        CHECK (f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "follow_tempo", false } })).ok);
+
+        // A stretched, pitched clip split in two: both halves keep the stretch and the pitch,
+        // and together still play the whole file.
+        CHECK (f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "stretch_to_beats", 8 }, { "pitch_semitones", 3 } })).ok);
+        r = f.dispatcher.execute ("split_clip", obj ({ { "clip", clip }, { "beat", 4 } }));
+        CHECK (r.ok && r.value.size() == 2);
+        auto clips = f.state()["channels"][0]["clips"];
+        CHECK (clips.size() == 2);
+
+        for (int i = 0; i < clips.size(); ++i)
+            CHECK (near (clips[i]["speed"], 0.5) && near (clips[i]["pitch_semitones"], 3.0) && near (clips[i]["length_beats"], 4.0));
+
+        settle();
+        auto halves = renderBuffer (f);
+        auto pitched = 440.0 * std::pow (2.0, 3.0 / 12.0);
+        std::cout << "       split halves: " << frequencyBetween (halves, 0.5, 1.5) << " and " << frequencyBetween (halves, 2.5, 3.5) << " Hz\n";
+        CHECK (std::abs (frequencyBetween (halves, 0.5, 1.5) - pitched) < pitched * 0.02);
+        CHECK (std::abs (frequencyBetween (halves, 2.5, 3.5) - pitched) < pitched * 0.02);
+        f.dispatcher.undo();
+        f.dispatcher.undo();
+        CHECK (f.state()["channels"][0]["clips"].size() == 1 && near (state()["speed"], 1.0));
+
+        // Normalizing a tone at half level is +6 dB.
+        r = f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "normalize", true } }));
+        CHECK (r.ok && std::abs (static_cast<double> (r.value["gain_db"]) - 6.02) < 0.1);
+        CHECK (! f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "normalize", true }, { "gain_db", 0 } })).ok);
+
+        // Reversed, a second of silence then a second of tone plays the tone first.
+        auto late = folder.getChildFile ("Late.wav");
+        CHECK (writeWav (late, 88200, [] (int i) { return i < 44100 ? 0.0f : 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * 440.0 * i / 44100.0); }));
+        CHECK (f.dispatcher.execute ("delete_clip", obj ({ { "clip", clip } })).ok);
+        r = f.dispatcher.execute ("import_audio", obj ({ { "file", late.getFullPathName() }, { "channel", f.state()["channels"][0]["id"] } }));
+        CHECK (r.ok);
+        clip = r.value["clip"].toString();
+        r = f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "reverse", true } }));
+        CHECK (r.ok && static_cast<bool> (r.value["reversed"]));
+        settle();
+        auto backwards = renderBuffer (f);
+        std::cout << "       reversed: " << rmsBetween (backwards, 0.2, 0.8) << " then " << rmsBetween (backwards, 1.2, 1.8) << "\n";
+        CHECK (rmsBetween (backwards, 0.2, 0.8) > 0.1f && rmsBetween (backwards, 1.2, 1.8) < 0.01f);
+
+        // It's all saved.
+        CHECK (f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "stretch_mode", "beats" }, { "pitch_semitones", -3.5 } })).ok);
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (f.dispatcher.execute ("save_project", obj ({ { "path", path } })).ok);
+        CHECK (f.dispatcher.execute ("open_project", obj ({ { "path", path }, { "discard_changes", true } })).ok);
+        CHECK (state()["stretch_mode"] == "beats" && near (state()["pitch_semitones"], -3.5) && static_cast<bool> (state()["reversed"]));
+
+        // Tempo detection: four bars of clicks at 125 bpm.
+        auto loop = folder.getChildFile ("Loop 125.wav");
+        auto beatLength = 44100.0 * 60.0 / 125.0;
+        CHECK (writeWav (loop, (int) std::round (beatLength * 16), [beatLength] (int i)
+        {
+            auto t = std::fmod ((double) i, beatLength) / 44100.0;
+            return (float) (0.8 * std::exp (-t * 40.0) * std::sin (juce::MathConstants<double>::twoPi * 80.0 * t));
+        }));
+        r = f.dispatcher.execute ("analyze_audio", obj ({ { "file", loop.getFullPathName() } }));
+        std::cout << "       detected " << r.value["bpm"].toString() << " bpm, " << r.value["beats"].toString() << " beats\n";
+        CHECK (r.ok && near (r.value["bpm"], 125.0) && near (r.value["beats"], 16.0) && near (r.value["length_seconds"], 7.68));
+        CHECK (static_cast<double> (r.value["peak_db"]) < 0.0 && static_cast<double> (r.value["peak_db"]) > -6.0);
+        CHECK (! f.dispatcher.execute ("analyze_audio", obj ({ { "file", folder.getChildFile ("Nope.wav").getFullPathName() } })).ok);
+
+        f.dispatcher.execute ("new_project", obj ({ { "discard_changes", true } }));
+        folder.deleteRecursively();
+    }
+
     //==============================================================================
     void testBatchReferences (tracktion::Engine& engine)
     {
@@ -3242,6 +3415,7 @@ int main (int argc, char* argv[])
         RUN (testLibrary);
         RUN (testAudioTracks);
         RUN (testAudioClipEditing);
+        RUN (testSampleEditing);
         RUN (testExport);
         RUN (testAutomation);
         RUN (testAutosaveAndRecovery);

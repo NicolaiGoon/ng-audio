@@ -708,13 +708,15 @@ void TimelineView::paintWaveform (juce::Graphics& g, const Lane& lane, const Cli
     auto sourceStart = tempo.toTime (te::BeatPosition::fromBeats (sourceStartBeat));
 
     // A clip that follows the tempo plays its file at a steady rate of beats; otherwise it plays
-    // in real time.
+    // in real time, at its own speed (faster when resampled up or squeezed).
+    auto speed = wave->getAutoTempo() ? 1.0 : wave->getSpeedRatio();
+    auto reversed = wave->getIsReversed();
     auto timeAt = [&] (float x)
     {
         if (clip.followTempo && clip.sourceBpm > 0.0)
             return te::TimeDuration::fromSeconds ((xToBeat (x) - sourceStartBeat) * 60.0 / clip.sourceBpm);
 
-        return tempo.toTime (te::BeatPosition::fromBeats (xToBeat (x))) - sourceStart;
+        return (tempo.toTime (te::BeatPosition::fromBeats (xToBeat (x))) - sourceStart) * speed;
     };
 
     if (auto thumb = getThumbnail (wave->getOriginalFile().getFullPathName()))
@@ -723,6 +725,15 @@ void TimelineView::paintWaveform (juce::Graphics& g, const Lane& lane, const Cli
         auto zoom = juce::jlimit (0.05f, 4.0f, juce::Decibels::decibelsToGain ((float) clip.gainDb));
         te::TimeRange range { te::TimePosition() + timeAt (visible.getX()), te::TimePosition() + timeAt (visible.getRight()) };
         auto drawArea = visible.toNearestInt();
+        juce::Graphics::ScopedSaveState saved (g);
+
+        // Played backwards, the file is drawn from its end, mirrored.
+        if (reversed)
+        {
+            auto end = te::TimePosition() + te::TimeDuration::fromSeconds (thumb->getTotalLength());
+            range = { te::TimePosition() + (end - range.getEnd()), te::TimePosition() + (end - range.getStart()) };
+            g.addTransform (juce::AffineTransform::scale (-1.0f, 1.0f, visible.getCentreX(), 0.0f));
+        }
 
         // A centre line, then the waveform bright on the dark clip.
         g.setColour (lane.colour.brighter (0.6f).withAlpha (0.35f));
@@ -1722,7 +1733,13 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
         case DragMode::trimEnd:
             drag.end = std::max (originalStart + minLength, snap (originalEnd + delta, e.mods));
 
-            if (drag.clip.maxEndBeat > 0.0)
+            // Shift-dragging an audio clip's end stretches it (FL Studio style); otherwise it trims,
+            // as far as its file goes.
+            drag.stretch = drag.clip.audio && e.mods.isShiftDown();
+
+            if (drag.stretch)
+                drag.end = juce::jlimit (originalStart + drag.clip.lengthBeats / 4.0, originalStart + drag.clip.lengthBeats * 4.0, drag.end);
+            else if (drag.clip.maxEndBeat > 0.0)
                 drag.end = std::min (drag.end, drag.clip.maxEndBeat);
             break;
 
@@ -1817,6 +1834,10 @@ void TimelineView::finishMouseDrag()
     else if (finished.mode == DragMode::trimStart && changedStart)
     {
         dispatcher.execute ("resize_clip", makeObject ({ { "clip", clipId }, { "start_beat", finished.start } }));
+    }
+    else if (finished.mode == DragMode::trimEnd && changedEnd && finished.stretch)
+    {
+        dispatcher.execute ("set_audio_clip", makeObject ({ { "clip", clipId }, { "stretch_to_beats", finished.end - finished.start } }));
     }
     else if (finished.mode == DragMode::trimEnd && changedEnd)
     {
@@ -2008,6 +2029,8 @@ void TimelineView::showClipMenu()
     juce::PopupMenu menu;
     if (! clip->audio)
         menu.addItem ("Edit notes (Enter)", ! clip->pattern, false, [this] { openSelected(); });
+    else
+        menu.addItem ("Edit sample: pitch, stretch, tempo (Enter)", ! clip->missing, false, [this] { openSelected(); });
 
     if (clip->audio && ! clip->missing)
     {
@@ -2048,7 +2071,7 @@ void TimelineView::openSelected()
 {
     auto clip = findSelectedClip();
 
-    if (clip != nullptr && ! clip->pattern && ! clip->audio && onOpenClip != nullptr)
+    if (clip != nullptr && ! clip->pattern && onOpenClip != nullptr)
         onOpenClip (clip->id);
 }
 

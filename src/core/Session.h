@@ -157,6 +157,19 @@ public:
         out), gain_db, fade_in_beats, fade_out_beats, and follow_tempo with the file's source_bpm. */
     void describeAudioClip (te::WaveAudioClip&, juce::DynamicObject&) const;
 
+    /** How an audio clip changes its speed and pitch, as set_audio_clip sets it:
+        "stretch" (Rubber Band's R3 engine: speed and pitch change separately, for most sounds),
+        "beats" (Rubber Band's percussive mode: keeps drum hits crisp) or "resample" (speed and
+        pitch change together, like a record played faster or slower). */
+    static juce::String getStretchMode (const te::WaveAudioClip&);
+
+    /** An audio clip's pitch change in semitones (fractions are cents). In resample mode it
+        comes from how fast the clip plays. */
+    static double getPitchChange (const te::WaveAudioClip&);
+
+    /** How fast an audio clip plays its file: 1 as recorded, 2 twice as fast. */
+    double getPlaybackSpeed (te::WaveAudioClip&) const;
+
     /** Where an audio clip's file starts and ends in the song, in beats, wherever the clip has
         been trimmed to. A clip that follows the tempo stretches its file over a fixed number of
         beats; otherwise the file lasts as long as it does at the project tempo. */

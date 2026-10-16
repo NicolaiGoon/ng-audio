@@ -85,7 +85,8 @@ public:
     /** The playhead, on the beat grid, for importing there. */
     double getPlayheadBeatForImport() const     { return std::round (getPlayheadBeat() * 4.0) / 4.0; }
 
-    /** Called to open a clip's notes in the piano roll. Step patterns are edited in the rack instead. */
+    /** Called to open a clip: a MIDI clip in the piano roll, an audio clip in the sample editor.
+        Step patterns are edited in the rack instead. */
     std::function<void (const juce::String& clipId)> onOpenClip;
 
     /** The selected clip's id, or empty. */
@@ -156,6 +157,7 @@ private:
         double start = 0.0, end = 0.0;   // where the clip would go, in beats
         double fadeIn = 0.0, fadeOut = 0.0;   // an audio clip's fades as they would be, in beats
         bool moved = false;
+        bool stretch = false;   // Shift-dragging an audio clip's end stretches it instead of trimming
     };
 
     Hit hitTestLanes (juce::Point<float>) const;
