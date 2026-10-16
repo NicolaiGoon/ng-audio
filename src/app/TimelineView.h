@@ -13,7 +13,8 @@ namespace ng
     draw a new one, drag its edges to change it, or right-click
     the ruler to loop a bar or the whole project.
 
-    Clips work as in FL Studio's playlist. Click a clip to pick it, then click empty spots on
+    Clips work as in FL Studio's playlist, with its paint, slice, delete and mute tools (see
+    setTool); this describes the paint tool, the default. Click a clip to pick it, then click empty spots on
     its lane to paint copies of it there (drag to paint several in a row); on a lane with no
     clips, a click makes a new empty one-bar clip (Shift+click always does). Right-click a
     clip to delete it, or right-drag across several. Drag a clip to move it (to another lane
@@ -107,6 +108,17 @@ public:
     /** Fits the whole song into the view. */
     void zoomToFit();
 
+    /** What a left click on the lanes does, as FL Studio's playlist tools: paint (pick, move, trim
+        and paint copies, the default), slice (cut a clip in two where it's clicked), delete
+        (click or drag across clips to delete them) or mute (click or drag across clips to mute
+        or unmute them). Right-click deletes whatever the tool. */
+    enum class Tool { paint, slice, erase, mute };
+    void setTool (Tool);
+    Tool getTool() const noexcept               { return tool; }
+
+    /** Called when the tool changes, so the header's buttons can follow. */
+    std::function<void()> onToolChanged;
+
     /** Shows or hides a channel's automation lane. */
     void showAutomation (const juce::String& channelId, bool shouldShow);
     bool isShowingAutomation (const juce::String& channelId) const     { return automationLanes.count (channelId) > 0; }
@@ -119,7 +131,7 @@ private:
         bool pattern = false, audio = false, missing = false;
         double maxEndBeat = -1.0;   // for an audio clip, where its file runs out
         double gainDb = 0.0, fadeInBeats = 0.0, fadeOutBeats = 0.0, sourceBpm = 0.0;   // audio only
-        bool followTempo = false;
+        bool followTempo = false, muted = false;
     };
 
     struct Lane
@@ -139,7 +151,7 @@ private:
         juce::Array<juce::Point<double>> points;   // beat, value
     };
 
-    enum class DragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut, paint, erase, laneHeight };
+    enum class DragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut, paint, erase, mute, laneHeight };
     enum class RulerDrag { none, playhead, loopStart, loopEnd, newLoop };
 
     /** What's under the mouse in the lanes: a lane, maybe a clip, and which part of it. */
@@ -171,6 +183,8 @@ private:
     const Clip* getBrush (int lane) const;
     void paintAt (int lane, double beat, bool forceNew);
     void eraseAt (juce::Point<float>);
+    void muteAt (juce::Point<float>);
+    void sliceAt (juce::Point<float>, const juce::ModifierKeys&);
 
     // Lanes are laneHeight tall, plus automationHeight when their automation shows.
     int getLaneTop (int lane) const;
@@ -254,6 +268,8 @@ private:
     std::map<juce::String, juce::String> brushes;
     double paintNextBeat = 0.0;
     juce::StringArray erased;          // clips a right-drag has deleted, until the lanes catch up
+    juce::StringArray toggled;         // clips a mute-tool drag has muted or unmuted
+    Tool tool = Tool::paint;
     juce::String lastPainted;          // so a double-click on a clip just painted doesn't open it
 
     RulerDrag rulerDrag = RulerDrag::none;

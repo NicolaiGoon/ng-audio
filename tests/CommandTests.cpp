@@ -2660,6 +2660,12 @@ namespace
         CHECK (r.ok && near (r.value["length_beats"], 4.0));
         CHECK (f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "follow_tempo", false } })).ok);
 
+        // A clip that plays its whole file still does when it starts following at the file's own
+        // tempo: 2 s at 90 bpm is 3 beats.
+        r = f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "follow_tempo", true }, { "source_bpm", 90 } }));
+        CHECK (r.ok && near (r.value["length_beats"], 3.0) && near (r.value["max_end_beat"], 3.0));
+        f.dispatcher.undo();
+
         // A stretched, pitched clip split in two: both halves keep the stretch and the pitch,
         // and together still play the whole file.
         CHECK (f.dispatcher.execute ("set_audio_clip", obj ({ { "clip", clip }, { "stretch_to_beats", 8 }, { "pitch_semitones", 3 } })).ok);
@@ -2677,6 +2683,20 @@ namespace
         std::cout << "       split halves: " << frequencyBetween (halves, 0.5, 1.5) << " and " << frequencyBetween (halves, 2.5, 3.5) << " Hz\n";
         CHECK (std::abs (frequencyBetween (halves, 0.5, 1.5) - pitched) < pitched * 0.02);
         CHECK (std::abs (frequencyBetween (halves, 2.5, 3.5) - pitched) < pitched * 0.02);
+
+        // Muting the second half silences just it; muting again (a toggle) brings it back.
+        auto second = clips[1]["id"].toString();
+        r = f.dispatcher.execute ("mute_clip", obj ({ { "clip", second } }));
+        CHECK (r.ok && static_cast<bool> (r.value["muted"]) && static_cast<bool> (f.state()["channels"][0]["clips"][1]["muted"]));
+        settle();
+        auto muted = renderBuffer (f);
+        std::cout << "       second half muted: " << rmsBetween (muted, 0.5, 1.5) << " then " << rmsBetween (muted, 2.5, 3.5) << "\n";
+        CHECK (rmsBetween (muted, 0.5, 1.5) > 0.1f && rmsBetween (muted, 2.5, 3.5) < 0.001f);
+        r = f.dispatcher.execute ("mute_clip", obj ({ { "clip", second } }));
+        CHECK (r.ok && ! static_cast<bool> (r.value["muted"]));
+        CHECK (! f.dispatcher.execute ("mute_clip", obj ({ { "clip", second }, { "muted", "yes" } })).ok);
+        f.dispatcher.undo();
+        f.dispatcher.undo();
         f.dispatcher.undo();
         f.dispatcher.undo();
         CHECK (f.state()["channels"][0]["clips"].size() == 1 && near (state()["speed"], 1.0));

@@ -1368,6 +1368,9 @@ juce::var Session::toVar() const
             clipObj->setProperty ("length_beats", std::round ((endBeat - startBeat) * 1.0e6) / 1.0e6);
             clipObj->setProperty ("pattern", isPatternClip (*clip));
 
+            if (clip->isMuted())
+                clipObj->setProperty ("muted", true);
+
             clipObj->setProperty ("type", dynamic_cast<te::WaveAudioClip*> (clip) != nullptr ? "audio" : "midi");
 
             if (auto midi = dynamic_cast<te::MidiClip*> (clip))

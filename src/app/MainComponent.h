@@ -160,7 +160,7 @@ private:
                recordButton { "Record into the armed channels from the playhead (MIDI or audio); click again (or Stop) to finish (R)",
                               icons::Icon::record },
                loopButton { "Loop playback: the loop region, or the whole project if none is drawn (Ctrl+L)", icons::Icon::loop },
-               metronomeButton { "Metronome: a click on every beat while playing, louder on the bar (C)", icons::Icon::metronome },
+               metronomeButton { "Metronome: a click on every beat while playing, louder on the bar (Ctrl+M)", icons::Icon::metronome },
                typingKeysButton { "Typing keyboard: play the armed channel from the computer keyboard, as in FL Studio "
                                   "(Z S X D C... and Q 2 W 3 E...). While it's on, those keys play notes instead of their shortcuts (Ctrl+K)",
                                   icons::Icon::typingKeys },
@@ -207,7 +207,8 @@ private:
                rollTaller { "Bigger rows (Alt + wheel)", icons::Icon::zoomInVertical },
                closePianoRollButton { "Close the piano roll (Esc)", icons::Icon::close },
                closeSampleEditorButton { "Close the sample editor (Esc)", icons::Icon::close };
-    juce::TextButton quantizeButton { "Quantize" };
+    juce::TextButton quantizeButton { "Quantize" }, paintToolButton { "Paint" }, sliceToolButton { "Slice" },
+                     deleteToolButton { "Delete" }, muteToolButton { "Mute" };
     juce::Label timelineHint { {}, "Click a clip, then click its lane to paint copies. Right-click deletes. Drag in the ruler for a loop." },
                 pianoRollHint { {}, "Click or drag to draw notes, drag a note to move it, its right edge to resize. Right-click or right-drag deletes." },
                 sampleEditorHint { {}, "Drag the lit part's edges to trim. Knobs apply when let go; double-click one to reset it." },

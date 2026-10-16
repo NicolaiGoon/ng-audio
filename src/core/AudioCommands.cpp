@@ -250,14 +250,21 @@ namespace
                 auto startBeat = tempo.toBeats (pos.getStart());
                 auto endBeat = tempo.toBeats (pos.getEnd());
                 auto offsetBeats = pos.getOffset().inSeconds() * speed * bpm / 60.0;
+                auto playsToTheEnd = std::abs (session.getSourceEndBeat (clip) - endBeat.inBeats()) < 1.0e-3;
 
                 clip.setSpeedRatio (1.0);
                 clip.getLoopInfo().setBpm (bpm, clip.getAudioFile().getInfo());
                 clip.setAutoTempo (true);
 
-                // The clip keeps its place and length in beats, playing the same part of the file.
+                // The clip keeps its place and length in beats, playing the same part of the file;
+                // one that played to the end of its file still does, at its new tempo.
                 clip.setPosition ({ { tempo.toTime (startBeat), tempo.toTime (endBeat) },
                                     te::TimeDuration::fromSeconds (offsetBeats / tempo.getBeatsPerSecondAt (pos.getStart())) });
+
+                if (playsToTheEnd)
+                    clip.setPosition ({ { clip.getPosition().getStart(),
+                                          tempo.toTime (te::BeatPosition::fromBeats (session.getSourceEndBeat (clip))) },
+                                        clip.getPosition().getOffset() });
             }
             else if (! followTempo && clip.getAutoTempo())
             {
