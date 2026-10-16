@@ -2,6 +2,7 @@
 
 #include "core/AiChat.h"
 #include "core/Session.h"
+#include "Theme.h"
 
 namespace ng
 {
@@ -31,7 +32,12 @@ namespace settings
                                           : juce::LookAndFeel_V4::getDarkColourScheme();
 
         if (auto* lf = dynamic_cast<juce::LookAndFeel_V4*> (&juce::LookAndFeel::getDefaultLookAndFeel()))
+        {
             lf->setColourScheme (scheme);
+
+            if (auto* ng = dynamic_cast<NgLookAndFeel*> (lf))
+                ng->applyAccents();
+        }
 
         for (int i = 0; i < juce::TopLevelWindow::getNumTopLevelWindows(); ++i)
             if (auto* window = juce::TopLevelWindow::getTopLevelWindow (i))

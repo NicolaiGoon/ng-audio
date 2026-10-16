@@ -139,7 +139,10 @@ target_sources(NgDaw PRIVATE
     src/app/CommandLogPanel.cpp
     src/app/PreferencesPanel.cpp
     src/app/HistoryPanel.cpp
-    src/app/ChatPanel.cpp)
+    src/app/ChatPanel.cpp
+    src/app/Theme.cpp
+    src/app/DockPanel.cpp
+    src/app/ChannelRack.cpp)
 
 target_link_libraries(NgDaw PRIVATE ng_core juce::juce_recommended_warning_flags)
 
