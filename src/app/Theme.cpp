@@ -276,6 +276,26 @@ namespace icons
                 p.lineTo (16.5f, 15.0f);
                 break;
 
+            case Icon::chat:
+                p.startNewSubPath (6.0f, 4.5f);
+                p.lineTo (18.0f, 4.5f);
+                p.quadraticTo (20.5f, 4.5f, 20.5f, 7.0f);
+                p.lineTo (20.5f, 13.5f);
+                p.quadraticTo (20.5f, 16.0f, 18.0f, 16.0f);
+                p.lineTo (11.0f, 16.0f);
+                p.lineTo (7.0f, 19.5f);
+                p.lineTo (7.0f, 16.0f);
+                p.lineTo (6.0f, 16.0f);
+                p.quadraticTo (3.5f, 16.0f, 3.5f, 13.5f);
+                p.lineTo (3.5f, 7.0f);
+                p.quadraticTo (3.5f, 4.5f, 6.0f, 4.5f);
+                p.closeSubPath();
+                p.startNewSubPath (8.0f, 9.0f);
+                p.lineTo (16.0f, 9.0f);
+                p.startNewSubPath (8.0f, 12.0f);
+                p.lineTo (13.5f, 12.0f);
+                break;
+
             case Icon::close:
                 p.startNewSubPath (6.5f, 6.5f);
                 p.lineTo (17.5f, 17.5f);

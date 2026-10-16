@@ -24,7 +24,7 @@ namespace icons
     {
         play, stop, record, toStart, loop, metronome, undo, redo, settings, typingKeys, piano,
         newFile, open, save, detach, attach, zoomIn, zoomOut, zoomInVertical, zoomOutVertical,
-        plus, browser, mixer, rack, timeline, exportAudio, history, console, close, help, plugins, audio
+        plus, browser, mixer, rack, timeline, exportAudio, history, console, close, help, plugins, audio, chat
     };
 
     juce::Path get (Icon);

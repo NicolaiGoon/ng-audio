@@ -223,7 +223,21 @@ Linux, build it from source (see *Building*).
     {"command": "create_track", "params": {"name": "Lead"}}]}
   ```
 
-- **Claude in the app:** `NgDawMcp` is an MCP server, so Claude (Claude Code, Claude Desktop or
+- **AI chat** (tick *AI chat* above the timeline, or Ctrl+J): a chat down the right of the window.
+  Ask for a change in plain words ("add a bass line that follows the chords and put it on a bus
+  with compression") and the AI makes it with the same commands as everything else, so each
+  change goes in the command log and the undo history. Its replies, and each command it ran, show
+  in the chat; *Stop* stops it and *New chat* starts over. Pick the provider in *Settings* > *AI*:
+  - **Claude** (Anthropic), **OpenAI**, **Google Gemini** or **OpenRouter**, with your own API key
+    for that service (kept in this computer's Ng DAW settings, or read from `ANTHROPIC_API_KEY`,
+    `OPENAI_API_KEY`, `GEMINI_API_KEY` or `OPENROUTER_API_KEY`). The service's charges apply to
+    your account.
+  - **Ollama** or **LM Studio** on this computer, with a model that supports tools; nothing leaves
+    the computer.
+  - **Other**: any service with an OpenAI-style chat completions API, at the address you give.
+
+  *Load models* lists the provider's models. Each provider keeps its own key and model.
+- **Claude Desktop and Claude Code:** `NgDawMcp` is an MCP server, so Claude (Claude Code, Claude Desktop or
   any MCP client) can use every command above on the project that's open in Ng DAW, plus `batch`,
   `undo` and `redo`. Ask it, say, to "add a bass line following the chords and put it on a bass bus
   with compression", and it happens in the open project as one undo step.
@@ -234,6 +248,7 @@ Linux, build it from source (see *Building*).
     on macOS, `%APPDATA%\Ng DAW` on Windows), readable only by you, and refuses requests without
     the token. `NG_DAW_BRIDGE_FILE` sets another path for both ends.
 
+  *Settings* > *AI* shows the exact command and settings for this computer, with Copy buttons.
   To add it to Claude Code (with Ng DAW open):
 
   ```sh
@@ -264,6 +279,7 @@ src/core/LibraryCommands.cpp  sample folders, finding samples, and presets
 src/core/AudioCommands.cpp    importing audio files onto audio channels, editing audio clips, and audio inputs
 src/core/ExportCommands.cpp   exporting the song, the loop region and stems to WAV or MP3
 src/core/AutomationCommands.cpp  automating volume, pan and effect parameters
+src/core/AiChat.*             the AI chat's engine: Claude and OpenAI-style APIs, and running the tools the model asks for
 src/core/Autosave.*           autosaving unsaved changes, and finding and recovering them after a crash
 src/core/Bridge.*             the local connection other programs (the MCP server) use to run commands in the app
 src/core/McpServer.*          the MCP protocol: tools/list and tools/call, passed to the app through the bridge
@@ -276,6 +292,7 @@ src/app/BrowserPanel.*        the browser, and what dropping its items on the ra
 src/app/ExportPanel.*         the Export dialog
 src/app/PreferencesPanel.*    the Settings window, and the CPU meter's buffer-size advice
 src/app/HistoryPanel.*        the undo history
+src/app/ChatPanel.*           the AI chat panel
 src/app/AppSettings.h         the app's preferences: theme, project folder, autosave
 src/app/CommandLogPanel.*     the AI command log, with undo for each entry
 src/app/TimelineView.*        the arrangement timeline: lanes, clips and waveforms, ruler, playhead, zoom, audio drops
@@ -322,7 +339,7 @@ The workflow then creates the GitHub release with the installer attached.
 
 - **macOS:** Xcode command line tools. `-G Xcode` works too.
 - **Windows:** Visual Studio 2022 with the C++ workload. `-G "Visual Studio 17 2022"`.
-- **Linux (Debian/Ubuntu):**
+- **Linux (Debian/Ubuntu):** (libcurl is for the AI chat's HTTPS requests)
   `sudo apt install libasound2-dev libjack-jackd2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libcurl4-openssl-dev`
 
 To build against existing checkouts instead of downloading, pass
