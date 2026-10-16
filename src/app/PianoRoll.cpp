@@ -1,4 +1,5 @@
 #include "PianoRoll.h"
+#include "TypingKeyboard.h"
 #include "Widgets.h"
 
 namespace ng
@@ -33,11 +34,11 @@ PianoRoll::PianoRoll (Session& s, CommandDispatcher& d)
     }
 
     setWantsKeyboardFocus (true);
-    startTimerHz (30);
 }
 
 PianoRoll::~PianoRoll()
 {
+    stopPreview();
     horizontal.removeListener (this);
     vertical.removeListener (this);
 }
@@ -135,6 +136,7 @@ bool PianoRoll::update()
 
 void PianoRoll::clear()
 {
+    stopPreview();
     clipId = {};
     notes.clear();
     selected.clear();
@@ -474,18 +476,83 @@ void PianoRoll::scrollBarMoved (juce::ScrollBar* bar, double newRangeStart)
     repaint();
 }
 
-void PianoRoll::timerCallback()
+void PianoRoll::repaintPlayhead (double beat)
+{
+    auto x = juce::roundToInt (beatToX (beat));
+
+    if (x >= keyboardWidth - 8 && x <= getWidth())
+        repaint (x - 8, 0, 16, getVelocityArea().getBottom());
+}
+
+void PianoRoll::onVBlank()
 {
     if (clipId.isEmpty())
         return;
 
     auto beat = getPlayheadBeatInClip();
 
-    if (std::abs (beat - lastPlayheadBeat) > 1.0e-4)
+    // Only the strips the playhead left and arrived at need drawing again.
+    if (std::abs (beat - lastPlayheadBeat) > 1.0e-5)
     {
+        repaintPlayhead (lastPlayheadBeat);
+        repaintPlayhead (beat);
         lastPlayheadBeat = beat;
-        repaint (getGridArea().getUnion (getRulerArea()).getUnion (getVelocityArea()));
     }
+}
+
+void PianoRoll::zoomHorizontally (double factor)
+{
+    auto anchorX = (float) getGridArea().getCentreX();
+    auto anchorBeat = xToBeat (anchorX);
+    pixelsPerBeat = juce::jlimit (minPixelsPerBeat, maxPixelsPerBeat, pixelsPerBeat * factor);
+    scrollBeats = std::max (0.0, anchorBeat - (anchorX - keyboardWidth) / pixelsPerBeat);
+    updateScrollBars();
+    repaint();
+}
+
+void PianoRoll::zoomVertically (double factor)
+{
+    setRowHeight (juce::roundToInt (rowHeight * factor), (float) getGridArea().getCentreY());
+}
+
+void PianoRoll::setRowHeight (int newHeight, float anchorY)
+{
+    // Keep the pitch under the anchor where it is.
+    auto anchorRow = ((double) anchorY - rulerHeight + scrollY) / rowHeight;
+    rowHeight = juce::jlimit (6, 40, newHeight);
+    scrollY = juce::roundToInt (anchorRow * rowHeight - (anchorY - rulerHeight));
+    updateScrollBars();
+    repaint();
+}
+
+void PianoRoll::previewNote (int pitch, int velocity)
+{
+    if (pitch == previewPitch)
+        return;
+
+    stopPreview();
+
+    if (! juce::isPositiveAndBelow (pitch, 128))
+        return;
+
+    if (auto clip = session.findClip (clipId))
+        if (auto track = dynamic_cast<te::AudioTrack*> (clip->getTrack()))
+        {
+            track->playGuideNote (pitch, te::MidiChannel (1), juce::jlimit (1, 127, velocity), true, true, false);
+            previewPitch = pitch;
+        }
+}
+
+void PianoRoll::stopPreview()
+{
+    if (previewPitch < 0)
+        return;
+
+    previewPitch = -1;
+
+    if (auto clip = session.findClip (clipId))
+        if (auto track = dynamic_cast<te::AudioTrack*> (clip->getTrack()))
+            track->turnOffGuideNotes();
 }
 
 void PianoRoll::resized()
@@ -775,6 +842,15 @@ void PianoRoll::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
+    // The keyboard on the left plays its keys (drag for a glissando).
+    if (e.position.x < (float) keyboardWidth && e.position.y >= (float) rulerHeight
+         && e.position.y < (float) getGridArea().getBottom() && ! e.mods.isPopupMenu())
+    {
+        playingKeys = true;
+        previewNote (yToPitch (e.position.y), juce::jlimit (30, 127, juce::roundToInt (40.0f + 87.0f * e.position.x / (float) keyboardWidth)));
+        return;
+    }
+
     if (getVelocityArea().contains (e.getPosition()))
     {
         drag.mode = DragMode::velocity;
@@ -790,16 +866,14 @@ void PianoRoll::mouseDown (const juce::MouseEvent& e)
     auto onEdge = false;
     auto index = noteAt (e.position, &onEdge);
 
+    // As on the timeline: right-click deletes the note under the mouse, and right-dragging
+    // deletes every note it passes over, in one undo step.
     if (e.mods.isPopupMenu())
     {
-        if (index >= 0)
-        {
-            if (! selected[index])
-                selectOnly (index);
-
-            deleteSelected();
-        }
-
+        drag.mode = DragMode::erase;
+        drag.original = notes;
+        drag.moved = true;
+        eraseNoteAt (e.position);
         return;
     }
 
@@ -821,6 +895,7 @@ void PianoRoll::mouseDown (const juce::MouseEvent& e)
         drag.mode = onEdge ? DragMode::resizeEnd : DragMode::move;
         drag.anchor = index;
         drag.original = notes;
+        previewNote (notes[index].pitch, notes[index].velocity);
         return;
     }
 
@@ -832,29 +907,62 @@ void PianoRoll::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    // Draw a new note in the grid cell that was clicked, as long as the last one drawn.
-    auto start = snapBeat (xToBeat (e.position.x), e.mods, true);
-    auto pitch = yToPitch (e.position.y);
+    // Draw a new note in the grid cell that was clicked, as long as the last one drawn; holding
+    // the button and dragging paints more along the way, as on the timeline.
+    drag.original = notes;
+    selected.clearQuick();
+    selected.insertMultiple (0, false, notes.size());
+
+    if (paintNoteAt (e.position, e.mods))
+    {
+        drag.mode = DragMode::paint;
+        drag.created = true;
+    }
+}
+
+bool PianoRoll::paintNoteAt (juce::Point<float> pos, const juce::ModifierKeys& mods)
+{
+    auto start = snapBeat (xToBeat (pos.x), mods, true);
+    auto pitch = yToPitch (pos.y);
 
     if (start < 0.0 || start >= clipLengthBeats || ! juce::isPositiveAndBelow (pitch, 128))
-        return;
+        return false;
 
-    notes.add ({ pitch, start, std::max (minLength (e.mods), std::min (lastLength, clipLengthBeats - start)), 100 });
-    selected.clearQuick();
-    selected.insertMultiple (0, false, notes.size() - 1);
+    auto length = std::max (minLength (mods), std::min (lastLength, clipLengthBeats - start));
+
+    // Not over a note already there on that key.
+    for (auto& n : notes)
+        if (n.pitch == pitch && n.start < start + length - 1.0e-6 && start < n.start + n.length - 1.0e-6)
+            return false;
+
+    notes.add ({ pitch, start, length, 100 });
     selected.add (true);
-
-    drag.mode = DragMode::resizeEnd;
     drag.anchor = notes.size() - 1;
-    drag.original = notes;
-    drag.created = true;
+    previewNote (pitch);
     repaint();
+    return true;
+}
+
+void PianoRoll::eraseNoteAt (juce::Point<float> pos)
+{
+    if (auto index = noteAt (pos, nullptr); index >= 0)
+    {
+        notes.remove (index);
+        selected.remove (index);
+        repaint();
+    }
 }
 
 void PianoRoll::mouseDrag (const juce::MouseEvent& e)
 {
     if (clipId.isEmpty())
         return;
+
+    if (playingKeys)
+    {
+        previewNote (yToPitch (juce::jlimit ((float) rulerHeight, (float) getGridArea().getBottom() - 1.0f, e.position.y)));
+        return;
+    }
 
     if (getRulerArea().contains (e.getMouseDownPosition()))
     {
@@ -873,6 +981,15 @@ void PianoRoll::mouseDrag (const juce::MouseEvent& e)
     {
         case DragMode::velocity:
             setVelocityAt (e.position);
+            break;
+
+        case DragMode::paint:
+            if (getGridArea().contains (e.getPosition()))
+                paintNoteAt (e.position, e.mods);
+            break;
+
+        case DragMode::erase:
+            eraseNoteAt (e.position);
             break;
 
         case DragMode::select:
@@ -913,6 +1030,8 @@ void PianoRoll::mouseDrag (const juce::MouseEvent& e)
                 }
             }
 
+            // Hear the note at its new pitch.
+            previewNote (notes[drag.anchor].pitch, notes[drag.anchor].velocity);
             break;
         }
 
@@ -944,6 +1063,8 @@ void PianoRoll::mouseDrag (const juce::MouseEvent& e)
 
 void PianoRoll::mouseUp (const juce::MouseEvent&)
 {
+    stopPreview();
+    playingKeys = false;
     auto finished = drag;
     drag = {};
 
@@ -983,6 +1104,12 @@ void PianoRoll::mouseMove (const juce::MouseEvent& e)
 
 void PianoRoll::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
+    if (e.mods.isAltDown())
+    {
+        setRowHeight (juce::roundToInt (rowHeight * std::pow (2.0, wheel.deltaY)) + (wheel.deltaY > 0 ? 1 : -1), e.position.y);
+        return;
+    }
+
     if (e.mods.isCommandDown())
     {
         auto anchorX = std::max ((float) keyboardWidth, e.position.x);
@@ -1006,7 +1133,7 @@ void PianoRoll::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWhee
 
 bool PianoRoll::keyPressed (const juce::KeyPress& key)
 {
-    if (clipId.isEmpty())
+    if (clipId.isEmpty() || typingKeyboard::isNoteKey (key))
         return false;
 
     if (key == juce::KeyPress ('q', juce::ModifierKeys::noModifiers, 0))
