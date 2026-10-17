@@ -67,9 +67,11 @@ void Session::adoptEdit (std::unique_ptr<te::Edit> newEdit, const juce::File& ne
             onEditAboutToChange();
 
         edit->getTransport().stop (false, true);
+        edit->state.removeListener (&changeListener);
     }
 
     edit = std::move (newEdit);
+    edit->state.addListener (&changeListener);
     file = newFile;
 
     // Tracktion creates the scene list lazily, inside the first track insertion. That
@@ -203,6 +205,7 @@ juce::String Session::recoverProject (const juce::File& copy, const juce::File& 
 
     adoptEdit (std::move (recovered), originalFile);
     savedState = {};   // so it counts as unsaved until it's saved again
+    unsavedChanges = true;
     return {};
 }
 
@@ -227,11 +230,56 @@ juce::String Session::getComparableState() const
 void Session::markAsSaved()
 {
     savedState = getComparableState();
+    unsavedChanges = false;
 }
 
-bool Session::hasUnsavedChanges() const
+void Session::checkUnsavedChanges()
 {
-    return getComparableState() != savedState;
+    unsavedChanges = getComparableState() != savedState;
+}
+
+namespace
+{
+    /** False for the changes getComparableState leaves out: the input devices Tracktion finds
+        when playback starts, and the playhead. */
+    bool isComparableChange (const juce::ValueTree& tree, const juce::Identifier* property)
+    {
+        for (auto t = tree; t.isValid(); t = t.getParent())
+            if (t.hasType (te::IDs::INPUTDEVICES))
+                return false;
+
+        if (property == nullptr)
+            return true;
+
+        if (tree.hasType (te::IDs::TRANSPORT) && (*property == te::IDs::position || *property == te::IDs::start))
+            return false;
+
+        return ! (tree.hasType (te::IDs::EDIT) && *property == te::IDs::lastSignificantChange);
+    }
+}
+
+void Session::ChangeListener::valueTreePropertyChanged (juce::ValueTree& tree, const juce::Identifier& property)
+{
+    if (isComparableChange (tree, &property))
+        session.unsavedChanges = true;
+}
+
+void Session::ChangeListener::valueTreeChildAdded (juce::ValueTree& parent, juce::ValueTree& child)
+{
+    if (isComparableChange (parent, nullptr) && ! child.hasType (te::IDs::INPUTDEVICES))
+        session.unsavedChanges = true;
+}
+
+void Session::ChangeListener::valueTreeChildRemoved (juce::ValueTree& parent, juce::ValueTree& child, int)
+{
+    if (isComparableChange (parent, nullptr) && ! child.hasType (te::IDs::INPUTDEVICES))
+        session.unsavedChanges = true;
+}
+
+void Session::ChangeListener::valueTreeChildOrderChanged (juce::ValueTree& parent, int, int)
+{
+    if (isComparableChange (parent, nullptr))
+        session.unsavedChanges = true;
 }
 
 Session::~Session()
@@ -1053,6 +1101,9 @@ void Session::refreshAfterHistoryChange()
             send->gain->updateFromAttachedValue();
 
     edit->updateMuteSoloStatuses();
+
+    // Undoing back to what was saved leaves nothing unsaved, which the flag alone can't tell.
+    checkUnsavedChanges();
 }
 
 void Session::forEachEffect (const std::function<void (te::Plugin&)>& fn) const

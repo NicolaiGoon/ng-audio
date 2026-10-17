@@ -121,6 +121,8 @@ CommandResult CommandDispatcher::execute (const juce::String& name, const juce::
     auto spec = registry.find (name);
     auto& um = session.getUndoManager();
 
+    auto wasUnsaved = session.hasUnsavedChanges();
+
     // Inside a gesture, every command joins the gesture's one undo step.
     auto ownsTransaction = spec != nullptr && spec->undoable && ! gestureOpen;
 
@@ -141,7 +143,7 @@ CommandResult CommandDispatcher::execute (const juce::String& name, const juce::
         um.beginNewTransaction();
     }
 
-    notify (name, result);
+    notify (name, result, ! wasUnsaved && ! madeUndoStep && ! gestureOpen);
 
     if (! isQuery (name))
         log (name, { name }, result, madeUndoStep);
@@ -155,6 +157,7 @@ CommandResult CommandDispatcher::executeBatch (const juce::String& undoLabel, co
         return CommandResult::failure ("Batch must be an array of commands");
 
     auto& um = session.getUndoManager();
+    auto wasUnsaved = session.hasUnsavedChanges();
     um.beginNewTransaction (undoLabel);
 
     juce::Array<juce::var> results;
@@ -188,7 +191,7 @@ CommandResult CommandDispatcher::executeBatch (const juce::String& undoLabel, co
 
     auto madeUndoStep = outcome.ok && um.getNumActionsInCurrentTransaction() > 0;
     um.beginNewTransaction();
-    notify (undoLabel, outcome);
+    notify (undoLabel, outcome, ! wasUnsaved && ! madeUndoStep);
     log (undoLabel, names, outcome, madeUndoStep);
     return outcome;
 }
@@ -277,9 +280,12 @@ void CommandDispatcher::log (const juce::String& label, juce::StringArray comman
     onLog (entry);
 }
 
-void CommandDispatcher::notify (const juce::String& name, const CommandResult& result)
+void CommandDispatcher::notify (const juce::String& name, const CommandResult& result, bool checkUnsaved)
 {
     session.updateLoopRange();
+
+    if (checkUnsaved && session.hasUnsavedChanges())
+        session.checkUnsavedChanges();
 
     if (onCommandExecuted != nullptr)
         onCommandExecuted (name, result);

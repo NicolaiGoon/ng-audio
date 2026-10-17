@@ -16,7 +16,8 @@ namespace ng
 */
 class ChannelRack  : public juce::Component,
                      public juce::DragAndDropTarget,
-                     public juce::FileDragAndDropTarget
+                     public juce::FileDragAndDropTarget,
+                     private juce::ChangeListener
 {
 public:
     ChannelRack (Session&, CommandDispatcher&);
@@ -50,6 +51,9 @@ private:
     juce::Array<juce::var> itemsForFiles (const juce::StringArray&) const;
     void setHighlight (bool);
 
+    /** A plugin scan changed the instruments to pick from. */
+    void changeListenerCallback (juce::ChangeBroadcaster*) override    { pluginsChanged = true; }
+
     Session& session;
     CommandDispatcher& dispatcher;
 
@@ -57,6 +61,11 @@ private:
     juce::Component holder;
     juce::OwnedArray<juce::Component> rows;
     juce::String key;
+
+    /** The scanned plugin instruments as (id, name), sorted by name; re-read after a scan. */
+    juce::Array<std::pair<juce::String, juce::String>> pluginInstruments;
+    bool pluginsChanged = true;
+
     int playStep = -1;
     bool highlight = false;
 
