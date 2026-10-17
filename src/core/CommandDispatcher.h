@@ -86,7 +86,9 @@ public:
 
 private:
     CommandResult run (const juce::String& name, const juce::var& params);
-    void notify (const juce::String&, const CommandResult&);
+    /** checkUnsaved: the command made no undo step, so if it left the project looking changed,
+        compare it with the saved one to be sure (e.g. arming may touch state and put it back). */
+    void notify (const juce::String&, const CommandResult&, bool checkUnsaved = false);
     void log (const juce::String& label, juce::StringArray commands, const CommandResult&, bool madeUndoStep);
 
     Session& session;

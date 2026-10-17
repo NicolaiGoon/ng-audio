@@ -59,9 +59,9 @@ namespace
 }
 
 //==============================================================================
-/** A stereo peak meter fed by a Tracktion level meter plugin. */
-class MixerView::Meter  : public juce::Component,
-                          private juce::Timer
+/** A stereo peak meter fed by a Tracktion level meter plugin. The mixer's timer calls tick(),
+    so every meter shares one timer. */
+class MixerView::Meter  : public juce::Component
 {
 public:
     explicit Meter (te::LevelMeterPlugin* plugin)
@@ -69,8 +69,6 @@ public:
     {
         if (meterPlugin != nullptr)
             meterPlugin->measurer.addClient (client);
-
-        startTimerHz (30);
     }
 
     ~Meter() override
@@ -101,8 +99,8 @@ public:
         }
     }
 
-private:
-    void timerCallback() override
+    /** Reads the latest levels, letting them fall back slowly, and repaints if they moved. */
+    void tick()
     {
         bool changed = false;
 
@@ -123,6 +121,7 @@ private:
             repaint();
     }
 
+private:
     te::LevelMeterPlugin* meterPlugin;
     te::Plugin::Ptr keepAlive;   // the strip can be deleted before this meter is
     te::LevelMeasurer::Client client;
@@ -699,9 +698,12 @@ public:
         setValues (strip);
     }
 
-    /** Follows the fader and pan as they play (automation moves them) unless they're being dragged. */
+    /** Follows the fader and pan as they play (automation moves them) unless they're being
+        dragged, and updates the meter. */
     void refreshLive()
     {
+        meter.tick();
+
         if (volume == nullptr)
             return;
 
@@ -906,7 +908,7 @@ MixerView::MixerView (Session& s, CommandDispatcher& d)
 
 void MixerView::timerCallback()
 {
-    // Automation moves faders and pan as the song plays; the controls follow.
+    // Automation moves faders and pan as the song plays; the controls (and meters) follow.
     for (auto* column : columns)
         column->refreshLive();
 
