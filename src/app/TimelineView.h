@@ -124,6 +124,14 @@ public:
     bool isShowingAutomation (const juce::String& channelId) const     { return automationLanes.count (channelId) > 0; }
 
 private:
+    /** A note of a MIDI clip, for the small picture of its notes: its start in beats from where
+        the clip's content starts (the clip's start, unless its front is trimmed), and length. */
+    struct NoteBar
+    {
+        double start = 0.0, length = 0.0;
+        int pitch = 60;
+    };
+
     struct Clip
     {
         juce::String id, name;
@@ -132,6 +140,12 @@ private:
         double maxEndBeat = -1.0;   // for an audio clip, where its file runs out
         double gainDb = 0.0, fadeInBeats = 0.0, fadeOutBeats = 0.0, sourceBpm = 0.0;   // audio only
         bool followTempo = false, muted = false;
+
+        te::EditItemID itemID;
+
+        // A MIDI clip's notes, read once per update() rather than on every repaint.
+        juce::Array<NoteBar> notes;
+        int lowestNote = 127, highestNote = 0;
     };
 
     struct Lane
