@@ -81,8 +81,17 @@ public:
     juce::File getFile() const                      { return file; }
     juce::String getProjectName() const;
 
-    /** True when the project differs from what was last saved, opened or created. */
-    bool hasUnsavedChanges() const;
+    /** True when the project differs from what was last saved, opened or created. It's a flag
+        that any change to the project sets (ignoring what getComparableState leaves out), so it
+        is cheap enough to ask after every command; checkUnsavedChanges() corrects it when a
+        change may have been put back, e.g. by undo. */
+    bool hasUnsavedChanges() const                  { return unsavedChanges; }
+
+    /** Compares the project with what was last saved, opened or created, and corrects
+        hasUnsavedChanges() to match. Slow on big projects (it writes the project out as text),
+        so it's called after undo, redo and rollback, and when a command that isn't an edit may
+        have touched the project. */
+    void checkUnsavedChanges();
 
     /** The project as text, leaving out what isn't a change the user made (like the playhead),
         to tell whether it has changed. */
@@ -390,12 +399,28 @@ private:
     std::unique_ptr<te::Edit> createNewEdit();
     void adoptEdit (std::unique_ptr<te::Edit>, const juce::File&);
 
+    /** Sets the unsaved-changes flag when the project's state changes in a way
+        getComparableState counts (not the playhead or the input devices). */
+    struct ChangeListener  : public juce::ValueTree::Listener
+    {
+        explicit ChangeListener (Session& s) : session (s) {}
+
+        void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override;
+        void valueTreeChildAdded (juce::ValueTree& parent, juce::ValueTree&) override;
+        void valueTreeChildRemoved (juce::ValueTree& parent, juce::ValueTree&, int) override;
+        void valueTreeChildOrderChanged (juce::ValueTree& parent, int, int) override;
+
+        Session& session;
+    };
+
     te::Engine& engine;
     std::unique_ptr<te::Edit> edit;
     te::EditItemID armedChannel;
     juce::Array<te::EditItemID> armedAudio;
     juce::File file, defaultFolder;
     juce::String savedState;
+    std::atomic<bool> unsavedChanges { false };
+    ChangeListener changeListener { *this };
     bool exporting = false;
 
     JUCE_DECLARE_NON_COPYABLE (Session)
