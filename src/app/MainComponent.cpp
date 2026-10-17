@@ -431,6 +431,7 @@ void MainComponent::setUpPanels()
         else
             openPianoRoll (clipId);
     };
+    browserPanel.onOpenClip = [this] (const juce::String& clipId) { timeline.onOpenClip (clipId); };
     addAudioButton.onClick = [this] { showAudioMenu (&addAudioButton); };
     timelineZoomOut.onClick = [this] { timeline.zoomHorizontally (0.7); };
     timelineZoomIn.onClick = [this] { timeline.zoomHorizontally (1.0 / 0.7); };
