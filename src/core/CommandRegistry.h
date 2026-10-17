@@ -54,10 +54,20 @@ private:
 };
 
 /** Registers create_track, route, rename_track, set_track_colour, delete_track, set_instrument, show_plugin_window,
-    set_mixer_strip, set_steps, set_tempo, set_time_signature, set_loop, add_midi_clip, move_clip, resize_clip, split_clip,
-    duplicate_clip, delete_clip, get_notes, set_notes, quantize_notes, play, stop, record, arm_channel, set_metronome, set_position, new_project,
-    open_project, save_project and get_state, plus the plugin, effect, bus, output, sampler, library, audio, automation and export commands below. */
+    set_mixer_strip, new_project, open_project, save_project and get_state, plus every other group of commands below
+    (ProjectCommands.cpp). This is the one to call. */
 void registerProjectCommands (CommandRegistry&);
+
+/** Registers add_midi_clip, set_steps, move_clip, resize_clip, split_clip, mute_clip, duplicate_clip, delete_clip,
+    get_notes, set_notes and quantize_notes (ClipCommands.cpp). */
+void registerClipCommands (CommandRegistry&);
+
+/** A clip's notes as get_notes returns them: [{pitch, start, length, velocity}] (ClipCommands.cpp). */
+juce::var notesToVar (const juce::Array<ClipNote>&);
+
+/** Registers play, stop, record, arm_channel, set_position, set_metronome, set_tempo, set_time_signature and
+    set_loop (TransportCommands.cpp). */
+void registerTransportCommands (CommandRegistry&);
 
 /** Registers list_plugins and scan_plugins (PluginCommands.cpp). */
 void registerPluginCommands (CommandRegistry&);
@@ -140,6 +150,15 @@ namespace params
 
     juce::String getString (const juce::var& params, const juce::Identifier&, const juce::String& fallback = {});
     double getDouble (const juce::var& params, const juce::Identifier&, double fallback);
+
+    /** An object with these properties, e.g. a command's result: object ({ { "id", id } }). */
+    juce::var object (std::initializer_list<std::pair<const char*, juce::var>> properties);
+
+    /** True for a JSON number (not a string that looks like one). */
+    bool isNumber (const juce::var&);
+
+    /** A time in beats rounded to a millionth, tidying float noise like 6.000000000000001. */
+    double roundBeats (double beats);
 }
 
 } // namespace ng

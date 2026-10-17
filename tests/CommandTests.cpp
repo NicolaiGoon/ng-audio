@@ -3462,9 +3462,16 @@ int main (int argc, char* argv[])
     {
         tracktion::Engine engine ("NgDawTests", nullptr, std::make_unique<HeadlessBehaviour>());
 
-        // `NgDawTests Bridge` runs only the tests with "Bridge" in their names.
+        // `NgDawTests Bridge` runs only the tests with "Bridge" in their names, and
+        // `NgDawTests =testLibrary` only that one test (ctest runs each test like this).
         auto only = juce::String (argc > 1 ? argv[1] : "");
-        #define RUN(test) if (only.isEmpty() || juce::String (#test).containsIgnoreCase (only)) test (engine)
+        auto exact = only.startsWithChar ('=');
+        auto matches = [&] (const juce::String& name)
+        {
+            return only.isEmpty() || (exact ? name == only.substring (1) : name.containsIgnoreCase (only));
+        };
+        auto ran = 0;
+        #define RUN(test) if (matches (#test)) { ++ran; test (engine); }
 
         RUN (testCreateTrackLinksAStrip);
         RUN (testUndoAfterTracktionTidiesUp);
@@ -3511,6 +3518,12 @@ int main (int argc, char* argv[])
         RUN (testBridgeAndMcpServer);
         RUN (testRendersAudio);
         RUN (testRecordingAudio);
+
+        if (ran == 0)
+        {
+            std::cout << "No test is called '" << only << "'\n";
+            ++failures;
+        }
     }
 
     std::cout << (failures == 0 ? "\nAll checks passed\n" : "\nSome checks failed\n");

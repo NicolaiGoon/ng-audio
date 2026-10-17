@@ -299,7 +299,10 @@ Linux, build it from source (see *Building*).
 src/core/Session.*            the open project: Tracktion Edit + channel/strip model
 src/core/CommandRegistry.*    command specs (name, description, JSON schema, handler)
 src/core/CommandDispatcher.*  runs commands, batches, JSON requests, undo/redo
-src/core/ProjectCommands.cpp  create_track, route, set_steps, add_midi_clip, play, stop, projects, get_state
+src/core/ProjectCommands.cpp  create_track, route, the mixer strip, projects, get_state (and registering every command)
+src/core/ClipCommands.cpp     MIDI clips, step patterns and notes: add_midi_clip, set_steps, move_clip ... quantize_notes
+src/core/TransportCommands.cpp  play, stop, record, arming, the playhead, metronome, tempo, time signature and loop
+src/core/SampleIndex.*        the kept list of files in the sample folders that find_samples searches
 src/core/PluginCommands.cpp   scan_plugins, list_plugins
 src/core/EffectCommands.cpp   insert effects on mixer strips
 src/core/BusCommands.cpp      buses and sends
