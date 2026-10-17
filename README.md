@@ -86,7 +86,8 @@ Linux, build it from source (see *Building*).
   paste it at the playhead, the left and right arrows move it by a beat (Shift: a bar), up and
   down move it to the next channel, and Esc deselects. In the piano roll, Ctrl+C, Ctrl+X and
   Ctrl+V copy, cut and paste notes at the playhead, Ctrl+D duplicates them, and Esc closes it.
-  F1 or the ? button lists them all.
+  F1 or the ? button lists them all, and Ctrl+Shift+P opens a command palette: type a few
+  words to find any action, see its keys, and press Enter to run it.
 - **A layout you can arrange.** The top bar holds the menus (File, Edit, View, Options, Help),
   the transport and the buttons for settings, export, history and the browser. The timeline,
   channel rack, mixer and piano roll are panels: drag the bars between them to give each more
