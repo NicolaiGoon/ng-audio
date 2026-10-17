@@ -326,7 +326,7 @@ bool TimelineView::automationMouseDown (const juce::MouseEvent& e)
     if (lane < 0)
         return false;
 
-    selectedClip = {};
+    selectOnly ({});
     auto automation = getAutomation (lane);
 
     if (automation == nullptr || ! automation->valid)

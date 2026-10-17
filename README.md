@@ -52,6 +52,11 @@ Linux, build it from source (see *Building*).
   pattern can be copied along the timeline, and every copy follows the channel's steps; drag a
   copy's edge to resize it: making it longer adds empty steps to the channel's step row, as in
   FL Studio, and making it shorter cuts off the steps past its end.
+- **Selecting several clips.** Ctrl+click clips to add them to the selection, Ctrl+drag across
+  the lanes to select every clip in a box, or press Ctrl+A for all of them. Dragging one moves
+  them all (onto other lanes too, when every clip fits there), and Del, Ctrl+D, Ctrl+C and
+  Ctrl+V, S and the arrow keys act on the whole selection as one undo step. A Ctrl+click on an
+  empty spot still fits the song in view.
 - **A piano roll.** Double-click a clip (or select it and press Enter) to edit its notes in
   place of the rack and mixer. Click to draw a note, or hold and drag to paint more along the
   way, as on the timeline; each is as long as the last note drawn or resized. Drag a note to

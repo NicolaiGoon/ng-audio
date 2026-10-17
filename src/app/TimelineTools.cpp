@@ -58,7 +58,7 @@ void TimelineView::paintAt (int lane, double beat, bool forceNew)
                                                                          { "length_beats", barLength } }));
         if (result.ok)
         {
-            selectedClip = lastPainted = brushes[channelId] = result.value["clip"].toString();
+            selectOnly (lastPainted = brushes[channelId] = result.value["clip"].toString());
             paintNextBeat = beat + barLength;
         }
 
@@ -79,7 +79,7 @@ void TimelineView::paintAt (int lane, double beat, bool forceNew)
     if (result.ok)
     {
         brushes[channelId] = brushId;
-        selectedClip = lastPainted = result.value["clip"].toString();
+        selectOnly (lastPainted = result.value["clip"].toString());
     }
 }
 
@@ -97,8 +97,8 @@ void TimelineView::eraseAt (juce::Point<float> pos)
 
     erased.add (id);
 
-    if (dispatcher.execute ("delete_clip", makeObject ({ { "clip", id } })).ok && selectedClip == id)
-        selectedClip = {};
+    if (dispatcher.execute ("delete_clip", makeObject ({ { "clip", id } })).ok && isSelected (id))
+        toggleSelected (id);
 
     repaint();
 }
@@ -135,7 +135,7 @@ void TimelineView::sliceAt (juce::Point<float> pos, const juce::ModifierKeys& mo
     auto result = dispatcher.execute ("split_clip", makeObject ({ { "clip", clip.id }, { "beat", snap (xToBeat (pos.x), mods) } }));
 
     if (result.ok)
-        selectedClip = result.value[1]["clip"].toString();
+        selectOnly (result.value[1]["clip"].toString());
 }
 
 void TimelineView::setTool (Tool newTool)

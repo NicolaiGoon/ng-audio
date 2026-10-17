@@ -26,6 +26,11 @@ namespace ng
     when zoomed in); hold Alt to place freely. Each edit (and each paint or delete drag) is
     one undo step.
 
+    Several clips can be selected: Ctrl+click adds or removes one, Ctrl+drag on the lanes
+    selects those in a box and Ctrl+A selects all (a Ctrl+click that doesn't drag fits the song
+    in view). Dragging a selected clip moves them all, and the keys above act on all of them,
+    still one undo step.
+
     Audio channels show their clips' waveforms. Drop audio files (from the browser or the
     desktop) on an audio channel's lane to add them there, one after another, or anywhere else
     for a new audio channel each; a folder brings in the audio files in it. Double-click an
@@ -90,8 +95,11 @@ public:
         Step patterns are edited in the rack instead. */
     std::function<void (const juce::String& clipId)> onOpenClip;
 
-    /** The selected clip's id, or empty. */
+    /** The clip picked last (what Enter, F2 and its menu act on), or empty. */
     juce::String getSelectedClip() const        { return selectedClip; }
+
+    /** Every selected clip, including the one picked last. */
+    const juce::StringArray& getSelectedClips() const noexcept   { return selection; }
 
     /** Horizontal zoom, in pixels per beat. */
     double getPixelsPerBeat() const noexcept    { return pixelsPerBeat; }
@@ -172,7 +180,7 @@ private:
         juce::Array<juce::Point<double>> points;   // beat, value
     };
 
-    enum class DragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut, paint, erase, mute, laneHeight };
+    enum class DragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut, paint, erase, mute, laneHeight, select };
     enum class RulerDrag { none, playhead, loopStart, loopEnd, newLoop };
 
     /** What's under the mouse in the lanes: a lane, maybe a clip, and which part of it. */
@@ -191,6 +199,8 @@ private:
         double fadeIn = 0.0, fadeOut = 0.0;   // an audio clip's fades as they would be, in beats
         bool moved = false;
         bool stretch = false;   // Shift-dragging an audio clip's end stretches it instead of trimming
+        bool group = false;     // moving the whole selection, by as much as this clip moves
+        juce::Rectangle<float> box;   // for DragMode::select
     };
 
     Hit hitTestLanes (juce::Point<float>) const;
@@ -240,6 +250,19 @@ private:
     void pasteAtPlayhead();
     void moveSelected (double beats, int lanesDown);
 
+    // The selection: one clip or several, each command on it one undo step.
+    void selectOnly (const juce::String& clipId);
+    void toggleSelected (const juce::String& clipId);
+    void selectInBox (juce::Rectangle<float>);
+    void selectAll();
+    bool isSelected (const juce::String& clipId) const      { return selection.contains (clipId); }
+    std::vector<std::pair<int, const Clip*>> getSelectionWithLanes() const;   // lane index and clip
+    juce::Range<double> getSelectionRange() const;
+    bool canMoveSelectionByLanes (int lanesDown) const;
+    void moveSelection (double beats, int lanesDown);
+    juce::Array<juce::var> runCommands (const juce::String& undoLabel, const juce::Array<juce::var>& commands);
+    bool selectResults (const juce::Array<juce::var>& results, int primary, const std::function<juce::String (const juce::var&)>& clipOf);
+
     juce::Array<juce::var> itemsForFiles (const juce::StringArray&) const;
     void showDropTarget (juce::Point<float>);
     void dropItems (const juce::Array<juce::var>&, juce::Point<float>);
@@ -285,7 +308,8 @@ private:
     std::map<juce::String, int> laneHeights;   // by channel id, for lanes dragged to their own height
     int laneHeightDragStart = 0;
 
-    juce::String selectedClip, copiedClip;
+    juce::String selectedClip;
+    juce::StringArray selection, copiedClips;
     Drag drag;
 
     /** The last clip picked on each lane (by channel id): what clicking that lane paints. */
