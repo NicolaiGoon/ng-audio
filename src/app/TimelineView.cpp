@@ -57,6 +57,7 @@ void TimelineView::update (const juce::var& state)
             clip.fadeInBeats = c.getProperty ("fade_in_beats", 0.0);
             clip.fadeOutBeats = c.getProperty ("fade_out_beats", 0.0);
             clip.followTempo = c.getProperty ("follow_tempo", false);
+            clip.muted = c.getProperty ("muted", false);
             clip.sourceBpm = c.getProperty ("source_bpm", 0.0);
             lane.clips.add (clip);
 
@@ -462,6 +463,16 @@ void TimelineView::paintLanes (juce::Graphics& g)
                 if (clip.audio)
                     paintFades (g, clip, area, clip.id == selectedClip);
 
+                // A muted clip is greyed out.
+                if (clip.muted)
+                {
+                    g.setColour (juce::Colour (0xff1d2025).withAlpha (0.7f));
+                    g.fillRoundedRectangle (area, 3.0f);
+                    g.setColour (juce::Colours::white.withAlpha (0.6f));
+                    g.setFont (juce::FontOptions (10.0f));
+                    g.drawText ("muted", area.reduced (4.0f, 1.0f), juce::Justification::bottomRight, false);
+                }
+
                 if (clip.id == selectedClip)
                 {
                     g.setColour (juce::Colours::white);
@@ -708,13 +719,15 @@ void TimelineView::paintWaveform (juce::Graphics& g, const Lane& lane, const Cli
     auto sourceStart = tempo.toTime (te::BeatPosition::fromBeats (sourceStartBeat));
 
     // A clip that follows the tempo plays its file at a steady rate of beats; otherwise it plays
-    // in real time.
+    // in real time, at its own speed (faster when resampled up or squeezed).
+    auto speed = wave->getAutoTempo() ? 1.0 : wave->getSpeedRatio();
+    auto reversed = wave->getIsReversed();
     auto timeAt = [&] (float x)
     {
         if (clip.followTempo && clip.sourceBpm > 0.0)
             return te::TimeDuration::fromSeconds ((xToBeat (x) - sourceStartBeat) * 60.0 / clip.sourceBpm);
 
-        return tempo.toTime (te::BeatPosition::fromBeats (xToBeat (x))) - sourceStart;
+        return (tempo.toTime (te::BeatPosition::fromBeats (xToBeat (x))) - sourceStart) * speed;
     };
 
     if (auto thumb = getThumbnail (wave->getOriginalFile().getFullPathName()))
@@ -723,6 +736,15 @@ void TimelineView::paintWaveform (juce::Graphics& g, const Lane& lane, const Cli
         auto zoom = juce::jlimit (0.05f, 4.0f, juce::Decibels::decibelsToGain ((float) clip.gainDb));
         te::TimeRange range { te::TimePosition() + timeAt (visible.getX()), te::TimePosition() + timeAt (visible.getRight()) };
         auto drawArea = visible.toNearestInt();
+        juce::Graphics::ScopedSaveState saved (g);
+
+        // Played backwards, the file is drawn from its end, mirrored.
+        if (reversed)
+        {
+            auto end = te::TimePosition() + te::TimeDuration::fromSeconds (thumb->getTotalLength());
+            range = { te::TimePosition() + (end - range.getEnd()), te::TimePosition() + (end - range.getStart()) };
+            g.addTransform (juce::AffineTransform::scale (-1.0f, 1.0f, visible.getCentreX(), 0.0f));
+        }
 
         // A centre line, then the waveform bright on the dark clip.
         g.setColour (lane.colour.brighter (0.6f).withAlpha (0.35f));
@@ -1482,6 +1504,54 @@ void TimelineView::eraseAt (juce::Point<float> pos)
     repaint();
 }
 
+void TimelineView::muteAt (juce::Point<float> pos)
+{
+    auto hit = hitTestLanes (pos);
+
+    if (hit.clip < 0)
+        return;
+
+    auto id = lanes[hit.lane].clips[hit.clip].id;
+
+    if (toggled.contains (id))
+        return;
+
+    toggled.add (id);
+    dispatcher.execute ("mute_clip", makeObject ({ { "clip", id } }));
+    repaint();
+}
+
+void TimelineView::sliceAt (juce::Point<float> pos, const juce::ModifierKeys& mods)
+{
+    auto hit = hitTestLanes (pos);
+
+    if (hit.clip < 0)
+        return;
+
+    auto& clip = lanes[hit.lane].clips.getReference (hit.clip);
+
+    if (clip.pattern)
+        return;
+
+    auto result = dispatcher.execute ("split_clip", makeObject ({ { "clip", clip.id }, { "beat", snap (xToBeat (pos.x), mods) } }));
+
+    if (result.ok)
+        selectedClip = result.value[1]["clip"].toString();
+}
+
+void TimelineView::setTool (Tool newTool)
+{
+    if (tool == newTool)
+        return;
+
+    tool = newTool;
+
+    if (onToolChanged != nullptr)
+        onToolChanged();
+
+    repaint();
+}
+
 void TimelineView::mouseDown (const juce::MouseEvent& e)
 {
     grabKeyboardFocus();
@@ -1552,6 +1622,31 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
             drag.mode = DragMode::erase;
             erased.clear();
             eraseAt (e.position);
+        }
+
+        return;
+    }
+
+    // The slice, delete and mute tools.
+    if (tool == Tool::slice)
+    {
+        sliceAt (e.position, e.mods);
+        return;
+    }
+
+    if (tool == Tool::erase || tool == Tool::mute)
+    {
+        if (hit.lane >= 0)
+        {
+            dispatcher.beginGesture (tool == Tool::erase ? "Delete clips" : "Mute clips");
+            drag.mode = tool == Tool::erase ? DragMode::erase : DragMode::mute;
+            erased.clear();
+            toggled.clear();
+
+            if (tool == Tool::erase)
+                eraseAt (e.position);
+            else
+                muteAt (e.position);
         }
 
         return;
@@ -1659,6 +1754,12 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
         return;
     }
 
+    if (drag.mode == DragMode::mute)
+    {
+        muteAt (e.position);
+        return;
+    }
+
     if (drag.mode == DragMode::paint)
     {
         // Copies go one after another as the mouse moves right.
@@ -1722,7 +1823,13 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
         case DragMode::trimEnd:
             drag.end = std::max (originalStart + minLength, snap (originalEnd + delta, e.mods));
 
-            if (drag.clip.maxEndBeat > 0.0)
+            // Shift-dragging an audio clip's end stretches it (FL Studio style); otherwise it trims,
+            // as far as its file goes.
+            drag.stretch = drag.clip.audio && e.mods.isShiftDown();
+
+            if (drag.stretch)
+                drag.end = juce::jlimit (originalStart + drag.clip.lengthBeats / 4.0, originalStart + drag.clip.lengthBeats * 4.0, drag.end);
+            else if (drag.clip.maxEndBeat > 0.0)
                 drag.end = std::min (drag.end, drag.clip.maxEndBeat);
             break;
 
@@ -1740,6 +1847,7 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
         case DragMode::none:
         case DragMode::paint:
         case DragMode::erase:
+        case DragMode::mute:
         case DragMode::laneHeight:
             break;
     }
@@ -1790,7 +1898,7 @@ void TimelineView::finishMouseDrag()
     auto finished = drag;
     drag = {};
 
-    if (finished.mode == DragMode::paint || finished.mode == DragMode::erase)
+    if (finished.mode == DragMode::paint || finished.mode == DragMode::erase || finished.mode == DragMode::mute)
     {
         dispatcher.endGesture();
         repaint();
@@ -1817,6 +1925,10 @@ void TimelineView::finishMouseDrag()
     else if (finished.mode == DragMode::trimStart && changedStart)
     {
         dispatcher.execute ("resize_clip", makeObject ({ { "clip", clipId }, { "start_beat", finished.start } }));
+    }
+    else if (finished.mode == DragMode::trimEnd && changedEnd && finished.stretch)
+    {
+        dispatcher.execute ("set_audio_clip", makeObject ({ { "clip", clipId }, { "stretch_to_beats", finished.end - finished.start } }));
     }
     else if (finished.mode == DragMode::trimEnd && changedEnd)
     {
@@ -1851,6 +1963,14 @@ void TimelineView::mouseMove (const juce::MouseEvent& e)
 
     auto hit = hitTestLanes (e.position);
 
+    if (tool != Tool::paint)
+    {
+        setMouseCursor (hit.clip < 0 ? juce::MouseCursor::NormalCursor
+                                     : tool == Tool::slice ? juce::MouseCursor::IBeamCursor
+                                                           : juce::MouseCursor::PointingHandCursor);
+        return;
+    }
+
     if (hit.clip >= 0 && hit.mode != DragMode::fadeIn && hit.mode != DragMode::fadeOut)
     {
         auto& clip = lanes.getReference (hit.lane).clips.getReference (hit.clip);
@@ -1872,6 +1992,7 @@ void TimelineView::mouseMove (const juce::MouseEvent& e)
         case DragMode::none:     setMouseCursor (hit.lane >= 0 ? juce::MouseCursor::CopyingCursor : juce::MouseCursor::NormalCursor); break;
         case DragMode::paint:
         case DragMode::erase:
+        case DragMode::mute:
         case DragMode::laneHeight: break;
     }
 }
@@ -1907,7 +2028,8 @@ void TimelineView::mouseDoubleClick (const juce::MouseEvent& e)
         auto id = lanes[hit.lane].clips[hit.clip].id;
 
         // The first click just painted this one; a double-click there isn't meant to open it.
-        if (id == lastPainted)
+        // The other tools act on each click instead.
+        if (id == lastPainted || tool != Tool::paint)
             return;
 
         selectedClip = id;
@@ -2008,6 +2130,8 @@ void TimelineView::showClipMenu()
     juce::PopupMenu menu;
     if (! clip->audio)
         menu.addItem ("Edit notes (Enter)", ! clip->pattern, false, [this] { openSelected(); });
+    else
+        menu.addItem ("Edit sample: pitch, stretch, tempo (Enter)", ! clip->missing, false, [this] { openSelected(); });
 
     if (clip->audio && ! clip->missing)
     {
@@ -2048,7 +2172,7 @@ void TimelineView::openSelected()
 {
     auto clip = findSelectedClip();
 
-    if (clip != nullptr && ! clip->pattern && ! clip->audio && onOpenClip != nullptr)
+    if (clip != nullptr && ! clip->pattern && onOpenClip != nullptr)
         onOpenClip (clip->id);
 }
 

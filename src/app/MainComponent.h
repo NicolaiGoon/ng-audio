@@ -11,6 +11,7 @@
 #include "MixerView.h"
 #include "PianoRoll.h"
 #include "PreferencesPanel.h"
+#include "SampleEditor.h"
 #include "TimelineView.h"
 
 namespace ng
@@ -19,7 +20,8 @@ namespace ng
 /**
     The main window: a top bar (menus, file buttons, the transport and view switches), the
     browser down the left, and the timeline over the channel rack and mixer. Opening a clip
-    shows the piano roll in place of the rack and mixer until it's closed.
+    shows the piano roll (or, for an audio clip, the sample editor) in place of the rack and
+    mixer until it's closed.
 
     The timeline, rack, mixer and piano roll are panels that can each be detached into a
     window of their own (and attached again); the bars between panels can be dragged to give
@@ -126,6 +128,9 @@ private:
     void openPianoRoll (const juce::String& clipId);
     void closePianoRoll();
     void updatePianoRollTitle();
+    void openSampleEditor (const juce::String& clipId);
+    void closeSampleEditor();
+    void updateSampleEditorTitle();
     void layOutTopBar (juce::Rectangle<int>);
     void layOutPanels (juce::Rectangle<int>);
 
@@ -155,7 +160,7 @@ private:
                recordButton { "Record into the armed channels from the playhead (MIDI or audio); click again (or Stop) to finish (R)",
                               icons::Icon::record },
                loopButton { "Loop playback: the loop region, or the whole project if none is drawn (Ctrl+L)", icons::Icon::loop },
-               metronomeButton { "Metronome: a click on every beat while playing, louder on the bar (C)", icons::Icon::metronome },
+               metronomeButton { "Metronome: a click on every beat while playing, louder on the bar (Ctrl+M)", icons::Icon::metronome },
                typingKeysButton { "Typing keyboard: play the armed channel from the computer keyboard, as in FL Studio "
                                   "(Z S X D C... and Q 2 W 3 E...). While it's on, those keys play notes instead of their shortcuts (Ctrl+K)",
                                   icons::Icon::typingKeys },
@@ -183,6 +188,7 @@ private:
     ChannelRack rack { session, dispatcher };
     MixerView mixer { session, dispatcher };
     PianoRoll pianoRoll { session, dispatcher };
+    SampleEditor sampleEditor { session, dispatcher };
     BrowserPanel browserPanel { session, dispatcher };
     CommandLogPanel commandLog { dispatcher };
     ChatPanel chatPanel { session, dispatcher };
@@ -199,10 +205,13 @@ private:
                rollZoomIn { "Zoom in in time (Ctrl + wheel)", icons::Icon::zoomIn },
                rollShorter { "Smaller rows (Alt + wheel)", icons::Icon::zoomOutVertical },
                rollTaller { "Bigger rows (Alt + wheel)", icons::Icon::zoomInVertical },
-               closePianoRollButton { "Close the piano roll (Esc)", icons::Icon::close };
-    juce::TextButton quantizeButton { "Quantize" };
+               closePianoRollButton { "Close the piano roll (Esc)", icons::Icon::close },
+               closeSampleEditorButton { "Close the sample editor (Esc)", icons::Icon::close };
+    juce::TextButton quantizeButton { "Quantize" }, paintToolButton { "Paint" }, sliceToolButton { "Slice" },
+                     deleteToolButton { "Delete" }, muteToolButton { "Mute" };
     juce::Label timelineHint { {}, "Click a clip, then click its lane to paint copies. Right-click deletes. Drag in the ruler for a loop." },
                 pianoRollHint { {}, "Click or drag to draw notes, drag a note to move it, its right edge to resize. Right-click or right-drag deletes." },
+                sampleEditorHint { {}, "Drag the lit part's edges to trim. Knobs apply when let go; double-click one to reset it." },
                 snapLabel { {}, "Snap" };
 
     //==============================================================================
@@ -210,7 +219,8 @@ private:
     DockPanel timelinePanel { "timeline", "Timeline", icons::Icon::timeline, timeline, getProperties(), this },
               rackPanel { "rack", "Channel rack", icons::Icon::rack, rack, getProperties(), this },
               mixerPanel { "mixer", "Mixer", icons::Icon::mixer, mixer, getProperties(), this },
-              pianoRollPanel { "pianoroll", "Piano roll", icons::Icon::piano, pianoRoll, getProperties(), this };
+              pianoRollPanel { "pianoroll", "Piano roll", icons::Icon::piano, pianoRoll, getProperties(), this },
+              sampleEditorPanel { "sampleeditor", "Sample editor", icons::Icon::audio, sampleEditor, getProperties(), this };
     SplitterBar browserSplitter { true }, chatSplitter { true }, timelineSplitter { false }, rackSplitter { true };
 
     int browserWidth = 240, chatWidth = 360;
