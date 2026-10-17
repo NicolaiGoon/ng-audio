@@ -64,6 +64,9 @@ Linux, build it from source (see *Building*).
   Under the notes, the velocity lane shows how hard each one plays: click or drag across it to
   set the velocity of the notes there (only the selected ones, if any are). Quantize (or Q)
   moves the selected notes, or all of them, onto the grid. Each edit is one undo step.
+  Ghosts shows the song's other MIDI clips faintly behind the notes, in their channel's colour,
+  so a part can be written against what plays with it. Pick a key and scale (major, minor, the
+  modes, pentatonics or blues) to dim the rows outside it and mark the root.
 - **A step sequencer.** Each channel has a row of 16 steps (16th notes) under its name; click a
   step to turn it on or off, or drag across steps to paint them (right-click clears). The − and + beside the row take away
   or add a bar of steps (4 to 64). The step under the playhead is outlined while playing.

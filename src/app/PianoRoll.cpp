@@ -124,6 +124,7 @@ bool PianoRoll::update()
 
     toSelect.reset();
     notes = Session::getNotes (*midi);
+    readGhostNotes (*midi);
     selected.clearQuick();
 
     for (auto& n : notes)
@@ -142,6 +143,71 @@ void PianoRoll::clear()
     selected.clear();
     toSelect.reset();
     drag = {};
+    repaint();
+}
+
+void PianoRoll::readGhostNotes (te::MidiClip& midi)
+{
+    // Every other MIDI clip in the song, wherever it overlaps this one's view. Step patterns
+    // are left out: they're usually drums, which would only clutter the rows.
+    ghostNotes.clearQuick();
+    auto& tempo = session.getEdit().tempoSequence;
+
+    for (auto* track : te::getAudioTracks (session.getEdit()))
+    {
+        for (auto* clip : track->getClips())
+        {
+            auto other = dynamic_cast<te::MidiClip*> (clip);
+
+            if (other == nullptr || other == &midi || Session::isPatternClip (*other))
+                continue;
+
+            auto offset = tempo.toBeats (other->getPosition().getStart()).inBeats() - clipStartBeat;
+
+            for (auto n : Session::getNotes (*other))
+            {
+                n.start += offset;
+                ghostNotes.add ({ n, track->getColour() });
+            }
+        }
+    }
+}
+
+void PianoRoll::setShowGhostNotes (bool show)
+{
+    showGhostNotes = show;
+    repaint();
+}
+
+juce::StringArray PianoRoll::getScaleNames()
+{
+    return { "No scale", "Major", "Minor", "Dorian", "Phrygian", "Lydian", "Mixolydian",
+             "Harmonic minor", "Major pentatonic", "Minor pentatonic", "Blues" };
+}
+
+int PianoRoll::getScaleMask (int scaleIndex)
+{
+    static const std::vector<std::vector<int>> scales {
+        {}, { 0, 2, 4, 5, 7, 9, 11 }, { 0, 2, 3, 5, 7, 8, 10 }, { 0, 2, 3, 5, 7, 9, 10 }, { 0, 1, 3, 5, 7, 8, 10 },
+        { 0, 2, 4, 6, 7, 9, 11 }, { 0, 2, 4, 5, 7, 9, 10 }, { 0, 2, 3, 5, 7, 8, 11 }, { 0, 2, 4, 7, 9 },
+        { 0, 3, 5, 7, 10 }, { 0, 3, 5, 6, 7, 10 }
+    };
+
+    if (scaleIndex <= 0 || scaleIndex >= (int) scales.size())
+        return 0xfff;
+
+    int mask = 0;
+
+    for (auto step : scales[(size_t) scaleIndex])
+        mask |= 1 << step;
+
+    return mask;
+}
+
+void PianoRoll::setScale (int root, int scaleIndex)
+{
+    scaleRoot = ((root % 12) + 12) % 12;
+    scaleMask = getScaleMask (scaleIndex);
     repaint();
 }
 
@@ -605,7 +671,14 @@ void PianoRoll::paintGrid (juce::Graphics& g)
     for (int pitch = top; pitch >= bottom; --pitch)
     {
         auto y = pitchToY (pitch);
-        g.setColour (isBlackKey (pitch) ? blackRow : whiteRow);
+        auto row = isBlackKey (pitch) ? blackRow : whiteRow;
+
+        // With a scale picked, rows outside it go dark and the root's rows take the accent.
+        if (hasScale())
+            row = ! isInScale (pitch) ? blackRow.darker (0.45f)
+                                      : (pitch % 12 == scaleRoot ? whiteRow.interpolatedWith (colour, 0.18f) : whiteRow);
+
+        g.setColour (row);
         g.fillRect ((float) area.getX(), y, (float) area.getWidth(), (float) rowHeight);
 
         g.setColour (juce::Colours::black.withAlpha (pitch % 12 == 0 ? 0.45f : 0.12f));
@@ -651,6 +724,23 @@ void PianoRoll::paintGrid (juce::Graphics& g)
         g.fillRect (juce::Rectangle<float> (endX, (float) area.getY(), (float) area.getRight() - endX, (float) area.getHeight()));
         g.setColour (juce::Colours::white.withAlpha (0.5f));
         g.drawVerticalLine ((int) endX, (float) area.getY(), (float) area.getBottom());
+    }
+
+    // The channel's other clips, faintly, behind this one's notes.
+    if (showGhostNotes)
+    {
+        for (auto& ghost : ghostNotes)
+        {
+            auto bounds = getNoteBounds (ghost.note);
+
+            if (! bounds.intersects (area.toFloat()))
+                continue;
+
+            g.setColour (ghost.colour.withAlpha (0.14f));
+            g.fillRoundedRectangle (bounds, 2.0f);
+            g.setColour (ghost.colour.withAlpha (0.4f));
+            g.drawRoundedRectangle (bounds.reduced (0.5f), 2.0f, 1.0f);
+        }
     }
 
     // The notes.
@@ -778,6 +868,13 @@ void PianoRoll::paintKeyboard (juce::Graphics& g)
         {
             g.setColour (juce::Colour (0xffe8e8e8));
             g.fillRect (key.reduced (0.0f, 0.5f));
+        }
+
+        // The scale's keys get a stripe in the channel's colour, brighter on the root.
+        if (hasScale() && isInScale (pitch))
+        {
+            g.setColour (colour.withAlpha (pitch % 12 == scaleRoot ? 1.0f : 0.55f));
+            g.fillRect (key.removeFromRight (4.0f).reduced (0.0f, 1.0f));
         }
 
         if (pitch % 12 == 0)

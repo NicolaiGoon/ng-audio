@@ -503,11 +503,46 @@ void MainComponent::setUpPanels()
     snapBox.setTooltip ("Grid the piano roll snaps to (hold Alt to place freely)");
     snapBox.onChange = [this] { pianoRoll.setGrid (1.0 / std::pow (2.0, snapBox.getSelectedId() - 1)); };
 
+    // Ghost notes and the scale, remembered between sessions.
+    ghostNotesButton.setClickingTogglesState (true);
+    ghostNotesButton.setTooltip ("Show the notes of the song's other clips faintly behind this one's");
+    ghostNotesButton.onClick = [this]
+    {
+        pianoRoll.setShowGhostNotes (ghostNotesButton.getToggleState());
+        getProperties().setValue ("ngRollGhosts", ghostNotesButton.getToggleState());
+    };
+    ghostNotesButton.setToggleState (getProperties().getBoolValue ("ngRollGhosts", true), juce::dontSendNotification);
+    pianoRoll.setShowGhostNotes (ghostNotesButton.getToggleState());
+
+    for (int i = 0; i < 12; ++i)
+        rollKeyBox.addItem (juce::MidiMessage::getMidiNoteName (i, true, false, 4), i + 1);
+
+    rollScaleBox.addItemList (PianoRoll::getScaleNames(), 1);
+    rollKeyBox.setTooltip ("The key whose scale the piano roll highlights");
+    rollScaleBox.setTooltip ("Dim the rows outside this scale");
+    auto applyScale = [this]
+    {
+        auto root = rollKeyBox.getSelectedId() - 1, scale = rollScaleBox.getSelectedId() - 1;
+        pianoRoll.setScale (root, scale);
+        rollKeyBox.setEnabled (scale > 0);
+        getProperties().setValue ("ngRollKey", root);
+        getProperties().setValue ("ngRollScale", scale);
+    };
+    rollKeyBox.setSelectedId (juce::jlimit (0, 11, getProperties().getIntValue ("ngRollKey", 0)) + 1, juce::dontSendNotification);
+    rollScaleBox.setSelectedId (juce::jlimit (0, PianoRoll::getScaleNames().size() - 1, getProperties().getIntValue ("ngRollScale", 0)) + 1,
+                                juce::dontSendNotification);
+    rollKeyBox.onChange = applyScale;
+    rollScaleBox.onChange = applyScale;
+    applyScale();
+
     pianoRollPanel.addHeaderItem (pianoRollHint, 600);
     pianoRollPanel.addHeaderItem (closePianoRollButton, 24, true);
     pianoRollPanel.addHeaderItem (snapBox, 64, true);
     pianoRollPanel.addHeaderItem (snapLabel, 36, true);
     pianoRollPanel.addHeaderItem (quantizeButton, 72, true);
+    pianoRollPanel.addHeaderItem (rollScaleBox, 124, true);
+    pianoRollPanel.addHeaderItem (rollKeyBox, 52, true);
+    pianoRollPanel.addHeaderItem (ghostNotesButton, 56, true);
     pianoRollPanel.addHeaderItem (rollTaller, 24, true);
     pianoRollPanel.addHeaderItem (rollShorter, 24, true);
     pianoRollPanel.addHeaderItem (rollZoomIn, 24, true);

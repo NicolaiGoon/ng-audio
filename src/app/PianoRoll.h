@@ -25,6 +25,10 @@ namespace ng
     Notes sound as they're drawn, clicked or dragged to a new pitch (on the clip's own
     channel), and clicking the keyboard on the left plays its keys.
 
+    Ghost notes show the song's other MIDI clips faintly behind this one, in their channel's
+    colour, so a part can be written against what plays with it (step patterns are left out). Picking a key and
+    scale dims the rows outside it and marks the key's root.
+
     Every edit replaces the clip's notes with one set_notes command, so it's one undo step.
     Mouse wheel scrolls pitch, Shift + wheel scrolls time, Ctrl + wheel zooms in time and
     Alt + wheel zooms the pitch rows.
@@ -51,6 +55,19 @@ public:
     double getGrid() const noexcept             { return grid; }
 
     const juce::Array<ClipNote>& getNotes() const noexcept    { return notes; }
+
+    /** The scales setScale() can highlight, by index; the first is "No scale". */
+    static juce::StringArray getScaleNames();
+
+    /** The pitch classes (0 is the root) in a scale, as bits; all twelve for "No scale". */
+    static int getScaleMask (int scaleIndex);
+
+    /** Dims the rows outside the scale on the root (0 is C, 11 is B); scale 0 turns it off. */
+    void setScale (int root, int scaleIndex);
+
+    /** Shows or hides the other clips' notes behind this one's. */
+    void setShowGhostNotes (bool);
+    bool getShowGhostNotes() const noexcept     { return showGhostNotes; }
 
     /** Moves the selected notes, or every note if none is selected, onto the grid. */
     void quantize();
@@ -134,6 +151,8 @@ private:
     juce::Colour colour { 0xff4a90e2 };
     double clipStartBeat = 0.0, clipLengthBeats = 4.0;
     juce::Array<ClipNote> notes;
+    struct GhostNote { ClipNote note; juce::Colour colour; };
+    juce::Array<GhostNote> ghostNotes;  // starts are in this clip's beats, so they may be negative
     juce::Array<bool> selected;
     juce::Array<ClipNote> clipboard;    // starts are from the first copied note
     double clipboardNext = 0.0;         // where a paste goes when the playhead is outside the clip
@@ -150,6 +169,12 @@ private:
     int rowHeight = 14;
     int previewPitch = -1;
     bool playingKeys = false;   // while the mouse plays the keyboard on the left
+    bool showGhostNotes = true;
+    int scaleRoot = 0, scaleMask = 0xfff;
+
+    bool isInScale (int pitch) const        { return (scaleMask >> ((pitch - scaleRoot + 120) % 12)) & 1; }
+    bool hasScale() const noexcept          { return scaleMask != 0xfff; }
+    void readGhostNotes (te::MidiClip&);
 
     juce::ScrollBar horizontal { false }, vertical { true };
     juce::VBlankAttachment vblank { this, [this] { onVBlank(); } };
