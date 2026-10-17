@@ -178,6 +178,7 @@ juce_add_gui_app(NgDaw
     MICROPHONE_PERMISSION_TEXT "Audio recording")
 
 target_sources(NgDaw PRIVATE
+    src/app/AppActions.cpp
     src/app/Main.cpp
     src/app/MainComponent.cpp
     src/app/MixerView.cpp

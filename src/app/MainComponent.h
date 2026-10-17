@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AppActions.h"
 #include "BrowserPanel.h"
 #include "ChannelRack.h"
 #include "ChatPanel.h"
@@ -30,8 +31,9 @@ namespace ng
     Every button here calls the command layer rather than touching the Edit directly,
     so the UI does exactly what an AI client or macro could do.
 
-    The shortcuts that work everywhere live in keyPressed() (detached windows send their keys
-    here too); the timeline and piano roll handle their own and pass on the rest. With the
+    The shortcuts that work everywhere are the actions set up in setUpActions(), which also
+    fill the menus and the shortcuts list; keyPressed() runs them (detached windows send their
+    keys here too); the timeline and piano roll handle their own and pass on the rest. With the
     typing keyboard on, letter keys play the armed channel instead, as in FL Studio.
 */
 class MainComponent  : public juce::Component,
@@ -78,6 +80,9 @@ private:
     };
 
     juce::PopupMenu getMenu (int menuIndex);
+
+    /** Defines the app-wide actions: their names, keys and what they do. */
+    void setUpActions();
 
     void timerCallback() override;
     void handleAsyncUpdate() override;
@@ -148,6 +153,7 @@ private:
 
     //==============================================================================
     // The top bar.
+    AppActions actions;
     Menus menus { *this };
     juce::MenuBarComponent menuBar { &menus };
     IconButton newButton { "New project (Ctrl+N)", icons::Icon::newFile },
