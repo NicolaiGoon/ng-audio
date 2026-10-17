@@ -421,6 +421,49 @@ namespace
         return CommandResult::success (describeClip (session, *found.clip));
     }
 
+    CommandResult setClip (Session& session, const juce::var& p)
+    {
+        FoundClip found;
+
+        if (auto error = requireClip (session, "set_clip", p, found))
+            return *error;
+
+        if (! p.hasProperty ("name") && ! p.hasProperty ("colour"))
+            return CommandResult::failure ("set_clip: give a name, a colour, or both");
+
+        std::optional<juce::Colour> colour;
+        auto colourText = params::getString (p, "colour").trim();
+
+        if (colourText.isNotEmpty())
+        {
+            colour = parseColour (colourText);
+
+            if (! colour)
+                return CommandResult::failure ("set_clip: colour is a hex colour like \"#3c8ce0\", or \"\" for the channel's");
+        }
+
+        if (p.hasProperty ("name"))
+        {
+            auto name = params::getString (p, "name").trim();
+
+            if (name.isEmpty())
+                return CommandResult::failure ("set_clip: the name can't be empty");
+
+            found.clip->setName (name);
+        }
+
+        if (p.hasProperty ("colour"))
+            session.setClipColour (*found.clip, colour);
+
+        auto result = describeClip (session, *found.clip);
+        result.getDynamicObject()->setProperty ("name", found.clip->getName());
+
+        if (colour)
+            result.getDynamicObject()->setProperty ("colour", "#" + colour->toDisplayString (false));
+
+        return CommandResult::success (result);
+    }
+
     CommandResult duplicateClip (Session& session, const juce::var& p)
     {
         FoundClip found;
@@ -712,6 +755,15 @@ void registerClipCommands (CommandRegistry& registry)
                               { "muted", prop ("boolean", "True to mute, false to unmute; leave out to toggle") } },
                             { "clip" }),
                     true, muteClip });
+
+    registry.add ({ "set_clip",
+                    "Renames a clip or gives it a colour of its own. A clip shows in its channel's colour unless it has "
+                    "one; give colour \"\" to go back to the channel's.",
+                    schema ({ { "clip", prop ("string", "Clip id, from get_state") },
+                              { "name", prop ("string", "The clip's new name") },
+                              { "colour", prop ("string", "A hex colour like \"#3c8ce0\", or \"\" for the channel's colour") } },
+                            { "clip" }),
+                    true, setClip });
 
     registry.add ({ "duplicate_clip",
                     "Copies a clip, by default to just after itself. A copied step pattern keeps following the channel's steps.",

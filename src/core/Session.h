@@ -309,6 +309,12 @@ public:
     /** True for the clip set_steps keeps in sync with a channel's step pattern. */
     static bool isPatternClip (const te::Clip&);
 
+    /** A clip's own colour, set with set_clip, or a transparent colour if it shows in its
+        channel's colour (the default). Tracktion gives every clip a colour of its own when it's
+        made, so Ng keeps this one separately. */
+    static juce::Colour getClipColour (const te::Clip&);
+    void setClipColour (te::Clip&, std::optional<juce::Colour>);
+
     /** A clip on any channel, by its id. */
     te::Clip* findClip (const juce::String& id) const;
 

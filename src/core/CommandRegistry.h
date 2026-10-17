@@ -58,7 +58,7 @@ private:
     (ProjectCommands.cpp). This is the one to call. */
 void registerProjectCommands (CommandRegistry&);
 
-/** Registers add_midi_clip, set_steps, move_clip, resize_clip, split_clip, mute_clip, duplicate_clip, delete_clip,
+/** Registers add_midi_clip, set_steps, move_clip, resize_clip, split_clip, mute_clip, set_clip, duplicate_clip, delete_clip,
     get_notes, set_notes and quantize_notes (ClipCommands.cpp). */
 void registerClipCommands (CommandRegistry&);
 

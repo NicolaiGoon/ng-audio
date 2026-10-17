@@ -119,6 +119,12 @@ public:
     /** Called when the tool changes, so the header's buttons can follow. */
     std::function<void()> onToolChanged;
 
+    /** What clip drags, painting, slicing and drops snap to: automatic (beats, or 16ths when
+        zoomed in far enough), bars, beats, 8ths, 16ths, or off. Alt places freely whatever it is. */
+    enum class Snap { automatic, bar, beat, eighth, sixteenth, off };
+    void setSnap (Snap newSnap)                 { snapTo = newSnap; }
+    Snap getSnap() const noexcept               { return snapTo; }
+
     /** Shows or hides a channel's automation lane. */
     void showAutomation (const juce::String& channelId, bool shouldShow);
     bool isShowingAutomation (const juce::String& channelId) const     { return automationLanes.count (channelId) > 0; }
@@ -142,6 +148,7 @@ private:
         bool followTempo = false, muted = false;
 
         te::EditItemID itemID;
+        juce::Colour colour;   // the clip's own colour, or transparent for its channel's
 
         // A MIDI clip's notes, read once per update() rather than on every repaint.
         juce::Array<NoteBar> notes;
@@ -216,6 +223,7 @@ private:
     void showAutomationMenu (int lane);
     void showChannelMenu (int lane);
     void renameChannel (const juce::String& channelId, const juce::String& name);
+    void renameSelected();
     void paintAutomation (juce::Graphics&, int lane);
     bool automationMouseDown (const juce::MouseEvent&);
     juce::Rectangle<float> getClipArea (int lane, double startBeat, double lengthBeats) const;
@@ -286,6 +294,7 @@ private:
     juce::StringArray erased;          // clips a right-drag has deleted, until the lanes catch up
     juce::StringArray toggled;         // clips a mute-tool drag has muted or unmuted
     Tool tool = Tool::paint;
+    Snap snapTo = Snap::automatic;
     juce::String lastPainted;          // so a double-click on a clip just painted doesn't open it
 
     RulerDrag rulerDrag = RulerDrag::none;

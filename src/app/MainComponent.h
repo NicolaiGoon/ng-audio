@@ -181,7 +181,7 @@ private:
                helpButton { "Keyboard shortcuts (F1)", icons::Icon::help };
 
     juce::Slider tempo;
-    juce::ComboBox timeSignature, snapBox;
+    juce::ComboBox timeSignature, snapBox, timelineSnapBox;
     juce::Label positionDisplay;
 
     /** How hard the audio engine is working, with advice when it struggles. */
@@ -218,7 +218,7 @@ private:
     juce::Label timelineHint { {}, "Click a clip, then click its lane to paint copies. Right-click deletes. Drag in the ruler for a loop." },
                 pianoRollHint { {}, "Click or drag to draw notes, drag a note to move it, its right edge to resize. Right-click or right-drag deletes." },
                 sampleEditorHint { {}, "Drag the lit part's edges to trim. Knobs apply when let go; double-click one to reset it." },
-                snapLabel { {}, "Snap" };
+                snapLabel { {}, "Snap" }, timelineSnapLabel { {}, "Snap" };
 
     //==============================================================================
     // The panels and the bars between them. They come after their contents, so they go first.

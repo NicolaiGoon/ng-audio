@@ -69,6 +69,9 @@ void TimelineView::update (const juce::var& state)
             clip.sourceBpm = c.getProperty ("source_bpm", 0.0);
             clip.itemID = te::EditItemID::fromString (clip.id);
 
+            if (c.hasProperty ("colour"))
+                clip.colour = colourFrom (c["colour"]);
+
             if (auto found = midiClips.find (clip.id); found != midiClips.end())
             {
                 auto midi = found->second;
@@ -620,19 +623,22 @@ juce::Rectangle<float> TimelineView::getClipMenuButton (juce::Rectangle<float> c
 void TimelineView::paintClip (juce::Graphics& g, const Lane& lane, const Clip& clip, juce::Rectangle<float> area,
                               double extraOffsetBeats)
 {
+    // A clip shows in its channel's colour unless it has one of its own.
+    auto colour = clip.colour.isTransparent() ? lane.colour : clip.colour;
+
     // Audio clips are darker, so their waveform stands out.
-    g.setColour (clip.audio ? lane.colour.darker (0.9f).withAlpha (0.92f) : lane.colour.withAlpha (0.35f));
+    g.setColour (clip.audio ? colour.darker (0.9f).withAlpha (0.92f) : colour.withAlpha (0.35f));
     g.fillRoundedRectangle (area, 3.0f);
 
     auto title = area.removeFromTop (14.0f);
     {
         juce::Graphics::ScopedSaveState save (g);
         g.reduceClipRegion (title.toNearestInt());
-        g.setColour (lane.colour.withAlpha (clip.audio ? 0.75f : 0.55f));
+        g.setColour (colour.withAlpha (clip.audio ? 0.75f : 0.55f));
         g.fillRoundedRectangle (title.withHeight (title.getHeight() + 4.0f), 3.0f);
     }
 
-    g.setColour (lane.colour);
+    g.setColour (colour);
     g.drawRoundedRectangle (area.getUnion (title).reduced (0.5f), 3.0f, 1.0f);
 
     if (title.getWidth() > 24.0f)
@@ -668,7 +674,7 @@ void TimelineView::paintClip (juce::Graphics& g, const Lane& lane, const Clip& c
     auto noteArea = area.reduced (2.0f, 3.0f);
     auto rows = (float) std::max (highest - lowest + 1, 6);
     auto rowHeight = noteArea.getHeight() / rows;
-    g.setColour (lane.colour.brighter (0.4f));
+    g.setColour (colour.brighter (0.4f));
 
     for (auto& n : clip.notes)
     {
@@ -756,9 +762,10 @@ void TimelineView::paintWaveform (juce::Graphics& g, const Lane& lane, const Cli
         }
 
         // A centre line, then the waveform bright on the dark clip.
-        g.setColour (lane.colour.brighter (0.6f).withAlpha (0.35f));
+        auto colour = clip.colour.isTransparent() ? lane.colour : clip.colour;
+        g.setColour (colour.brighter (0.6f).withAlpha (0.35f));
         g.fillRect (visible.withSizeKeepingCentre (visible.getWidth(), 1.0f));
-        g.setColour (lane.colour.brighter (1.2f).interpolatedWith (juce::Colours::white, 0.35f));
+        g.setColour (colour.brighter (1.2f).interpolatedWith (juce::Colours::white, 0.35f));
 
         // In a short lane both channels share the whole height, so the shape is big enough to read.
         if (drawArea.getHeight() < 70 || thumb->getNumChannels() < 2)
@@ -1111,6 +1118,27 @@ void TimelineView::renameChannel (const juce::String& channelId, const juce::Str
     }), true);
 }
 
+void TimelineView::renameSelected()
+{
+    auto clip = findSelectedClip();
+
+    if (clip == nullptr)
+        return;
+
+    auto* window = new juce::AlertWindow ("Rename clip", {}, juce::MessageBoxIconType::NoIcon, this);
+    window->addTextEditor ("name", clip->name);
+    window->addButton ("Rename", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    window->enterModalState (true, juce::ModalCallbackFunction::create ([window, &d = dispatcher, id = clip->id, name = clip->name] (int button)
+    {
+        auto newName = window->getTextEditorContents ("name").trim();
+
+        if (button == 1 && newName.isNotEmpty() && newName != name)
+            d.execute ("set_clip", makeObject ({ { "clip", id }, { "name", newName } }));
+    }), true);
+}
+
 bool TimelineView::automationMouseDown (const juce::MouseEvent& e)
 {
     // In the lane names: the A buttons, and the automation lanes' parameter names.
@@ -1430,8 +1458,23 @@ TimelineView::Hit TimelineView::hitTestLanes (juce::Point<float> pos) const
 
 double TimelineView::snap (double beat, const juce::ModifierKeys& mods) const
 {
-    // Alt places freely (to a 64th); otherwise beats, or 16ths once there's room for them.
-    auto grid = mods.isAltDown() ? 1.0 / 16.0 : (pixelsPerBeat >= 60.0 ? 0.25 : 1.0);
+    // Alt (or snap off) places freely, to a 64th.
+    if (mods.isAltDown() || snapTo == Snap::off)
+        return std::round (beat * 16.0) / 16.0;
+
+    if (snapTo == Snap::bar)
+    {
+        // Bars follow the time signature, so find the bar starts either side.
+        auto& tempo = session.getEdit().tempoSequence;
+        auto bar = tempo.toBarsAndBeats (tempo.toTime (te::BeatPosition::fromBeats (std::max (0.0, beat)))).bars;
+        auto before = tempo.toBeats (te::tempo::BarsAndBeats { bar, {} }).inBeats();
+        auto after = tempo.toBeats (te::tempo::BarsAndBeats { bar + 1, {} }).inBeats();
+        return beat - before <= after - beat ? before : after;
+    }
+
+    // Otherwise beats, or 16ths once there's room for them, unless a grid is picked.
+    auto grid = snapTo == Snap::beat ? 1.0 : snapTo == Snap::eighth ? 0.5 : snapTo == Snap::sixteenth ? 0.25
+              : (pixelsPerBeat >= 60.0 ? 0.25 : 1.0);
     return std::round (beat / grid) * grid;
 }
 
@@ -2141,6 +2184,12 @@ bool TimelineView::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
+    if (key == juce::KeyPress::F2Key)
+    {
+        renameSelected();
+        return true;
+    }
+
     if (key == juce::KeyPress ('d', command, 0))
     {
         duplicateSelected();
@@ -2218,6 +2267,26 @@ void TimelineView::showClipMenu()
         menu.addSeparator();
     }
 
+    juce::PopupMenu colours;
+    auto ownColour = clip->colour;
+    colours.addItem ("Channel's colour", true, ownColour.isTransparent(), [this]
+    {
+        dispatcher.execute ("set_clip", makeObject ({ { "clip", selectedClip }, { "colour", "" } }));
+    });
+
+    for (auto& c : Session::getPalette())
+    {
+        juce::PopupMenu::Item swatch (juce::String::fromUTF8 ("\xe2\x96\xa0  ") + "#" + c.toDisplayString (false));
+        swatch.setColour (c).setTicked (c == ownColour).setAction ([this, c]
+        {
+            dispatcher.execute ("set_clip", makeObject ({ { "clip", selectedClip }, { "colour", "#" + c.toDisplayString (false) } }));
+        });
+        colours.addItem (swatch);
+    }
+
+    menu.addItem ("Rename... (F2)", [this] { renameSelected(); });
+    menu.addSubMenu ("Colour", colours);
+    menu.addSeparator();
     menu.addItem ("Split at playhead (S)", canSplit, false, [this] { splitSelectedAtPlayhead(); });
     menu.addItem ("Duplicate (Ctrl+D)", [this] { duplicateSelected(); });
     menu.addItem ("Copy (Ctrl+C)", [this] { copiedClip = selectedClip; });

@@ -898,6 +898,33 @@ namespace
         return f.state()["channels"][channelIndex]["clips"];
     }
 
+    void testClipNamesAndColours (tracktion::Engine& engine)
+    {
+        std::cout << "clips can be renamed and given a colour of their own\n";
+        Fixture f (engine);
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } }));
+        auto id = f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "start_beat", 0 } })).value["clip"].toString();
+        auto clip = [&] { return f.state()["channels"][0]["clips"][0]; };
+
+        CHECK (! clip().hasProperty ("colour"));   // shows in the channel's colour
+        CHECK (! f.dispatcher.execute ("set_clip", obj ({ { "clip", id } })).ok);
+        CHECK (! f.dispatcher.execute ("set_clip", obj ({ { "clip", id }, { "name", " " } })).ok);
+        CHECK (! f.dispatcher.execute ("set_clip", obj ({ { "clip", id }, { "colour", "blue" } })).ok);
+        CHECK (! f.dispatcher.execute ("set_clip", obj ({ { "clip", "nope" }, { "name", "Verse" } })).ok);
+
+        auto r = f.dispatcher.execute ("set_clip", obj ({ { "clip", id }, { "name", "Verse" }, { "colour", "#3c8ce0" } }));
+        CHECK (r.ok && r.value["name"] == "Verse" && r.value["colour"] == "#3C8CE0");
+        CHECK (clip()["name"] == "Verse" && clip()["colour"] == "#3C8CE0");
+
+        // A copy keeps both; "" goes back to the channel's colour; each change is one undo step.
+        auto copy = f.dispatcher.execute ("duplicate_clip", obj ({ { "clip", id } }));
+        CHECK (copy.ok && f.state()["channels"][0]["clips"][1]["colour"] == "#3C8CE0");
+        CHECK (f.dispatcher.execute ("set_clip", obj ({ { "clip", id }, { "colour", "" } })).ok);
+        CHECK (! clip().hasProperty ("colour") && clip()["name"] == "Verse");
+        CHECK (f.dispatcher.undo());
+        CHECK (clip()["colour"] == "#3C8CE0");
+    }
+
     void testClipEditing (tracktion::Engine& engine)
     {
         std::cout << "clips move, resize, split, duplicate and delete\n";
@@ -3493,6 +3520,7 @@ int main (int argc, char* argv[])
         RUN (testSaveAndOpen);
         RUN (testClipsAndPlayheadInState);
         RUN (testClipEditing);
+        RUN (testClipNamesAndColours);
         RUN (testPatternCopiesFollowSteps);
         RUN (testEditingNotes);
         RUN (testQuantizeAndVelocity);
