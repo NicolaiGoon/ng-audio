@@ -184,6 +184,8 @@ target_sources(NgDaw PRIVATE
     src/app/MainComponent.cpp
     src/app/MixerView.cpp
     src/app/TimelineView.cpp
+    src/app/TimelineAutomation.cpp
+    src/app/TimelineTools.cpp
     src/app/PianoRoll.cpp
     src/app/PluginWindow.cpp
     src/app/SamplerEditor.cpp
