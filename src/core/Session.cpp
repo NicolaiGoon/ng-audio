@@ -325,13 +325,24 @@ juce::Array<te::AudioTrack*> Session::getStrips() const
     return result;
 }
 
+namespace
+{
+    /** The id a string spells, or an invalid one if it isn't exactly an id (so a track named
+        "808" isn't mistaken for the item with id 808). */
+    te::EditItemID parseItemID (const juce::String& text)
+    {
+        auto id = te::EditItemID::fromString (text);
+        return id.isValid() && id.toString() == text ? id : te::EditItemID();
+    }
+}
+
 te::AudioTrack* Session::findTrack (const juce::String& idOrName, Role role) const
 {
-    auto tracks = role == Role::channel ? getChannels() : getStrips();
-
-    for (auto t : tracks)
-        if (t->itemID.toString() == idOrName)
+    if (auto id = parseItemID (idOrName); id.isValid())
+        if (auto t = dynamic_cast<te::AudioTrack*> (te::findTrackForID (*edit, id)); t != nullptr && getRole (*t) == role)
             return t;
+
+    auto tracks = role == Role::channel ? getChannels() : getStrips();
 
     for (auto t : tracks)
         if (t->getName() == idOrName)
@@ -957,9 +968,9 @@ juce::String Session::getPositionText() const
 
 te::Clip* Session::findClip (const juce::String& id) const
 {
-    for (auto channel : getChannels())
-        for (auto clip : channel->getClips())
-            if (clip->itemID.toString() == id)
+    if (auto itemID = parseItemID (id); itemID.isValid())
+        if (auto clip = te::findClipForID (*edit, itemID))
+            if (auto track = clip->getTrack(); track != nullptr && getRole (*track) == Role::channel)
                 return clip;
 
     return nullptr;
