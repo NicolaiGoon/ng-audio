@@ -40,6 +40,14 @@ void TimelineView::update (const juce::var& state)
     erased.clear();
     juce::StringArray files;
 
+    // The MIDI clips, to read their notes from (looked up once here, not on every repaint).
+    std::map<juce::String, te::MidiClip*> midiClips;
+
+    for (auto channel : session.getChannels())
+        for (auto c : channel->getClips())
+            if (auto midi = dynamic_cast<te::MidiClip*> (c))
+                midiClips[midi->itemID.toString()] = midi;
+
     for (auto& channel : *state["channels"].getArray())
     {
         Lane lane { channel["id"].toString(), channel["name"].toString(), channel["output"].toString(),
@@ -59,6 +67,21 @@ void TimelineView::update (const juce::var& state)
             clip.followTempo = c.getProperty ("follow_tempo", false);
             clip.muted = c.getProperty ("muted", false);
             clip.sourceBpm = c.getProperty ("source_bpm", 0.0);
+            clip.itemID = te::EditItemID::fromString (clip.id);
+
+            if (auto found = midiClips.find (clip.id); found != midiClips.end())
+            {
+                auto midi = found->second;
+                auto offset = midi->getOffsetInBeats().inBeats();
+
+                for (auto n : midi->getSequence().getNotes())
+                {
+                    clip.notes.add ({ n->getStartBeat().inBeats() - offset, n->getLengthBeats().inBeats(), n->getNoteNumber() });
+                    clip.lowestNote = std::min (clip.lowestNote, n->getNoteNumber());
+                    clip.highestNote = std::max (clip.highestNote, n->getNoteNumber());
+                }
+            }
+
             lane.clips.add (clip);
 
             if (clip.audio)
@@ -638,53 +661,28 @@ void TimelineView::paintClip (juce::Graphics& g, const Lane& lane, const Clip& c
     }
 
     // A small picture of the notes, scaled to the clip's pitch range.
-    auto channel = session.findTrack (lane.channelId, Session::Role::channel);
-
-    if (channel == nullptr)
+    if (clip.notes.isEmpty())
         return;
 
-    for (auto c : channel->getClips())
-    {
-        auto midi = dynamic_cast<te::MidiClip*> (c);
+    auto lowest = clip.lowestNote, highest = clip.highestNote;
+    auto noteArea = area.reduced (2.0f, 3.0f);
+    auto rows = (float) std::max (highest - lowest + 1, 6);
+    auto rowHeight = noteArea.getHeight() / rows;
+    g.setColour (lane.colour.brighter (0.4f));
 
-        if (midi == nullptr || c->itemID.toString() != clip.id)
+    for (auto& n : clip.notes)
+    {
+        auto start = n.start - extraOffsetBeats;
+
+        if (start >= clip.lengthBeats || start + n.length <= 0.0)
             continue;
 
-        auto& notes = midi->getSequence().getNotes();
-
-        if (notes.isEmpty())
-            return;
-
-        int lowest = 127, highest = 0;
-
-        for (auto n : notes)
-        {
-            lowest = std::min (lowest, n->getNoteNumber());
-            highest = std::max (highest, n->getNoteNumber());
-        }
-
-        auto noteArea = area.reduced (2.0f, 3.0f);
-        auto rows = (float) std::max (highest - lowest + 1, 6);
-        auto rowHeight = noteArea.getHeight() / rows;
-        auto offset = midi->getOffsetInBeats().inBeats() + extraOffsetBeats;
-        g.setColour (lane.colour.brighter (0.4f));
-
-        for (auto n : notes)
-        {
-            auto start = n->getStartBeat().inBeats() - offset;
-
-            if (start >= clip.lengthBeats || start + n->getLengthBeats().inBeats() <= 0.0)
-                continue;
-
-            auto row = (float) (highest - n->getNoteNumber()) + (rows - (float) (highest - lowest + 1)) / 2.0f;
-            g.fillRect (juce::Rectangle<float> (noteArea.getX() + (float) (start * pixelsPerBeat),
-                                                noteArea.getY() + row * rowHeight,
-                                                std::max (1.5f, (float) (n->getLengthBeats().inBeats() * pixelsPerBeat) - 1.0f),
-                                                std::max (1.5f, rowHeight - 0.5f))
-                            .getIntersection (noteArea));
-        }
-
-        return;
+        auto row = (float) (highest - n.pitch) + (rows - (float) (highest - lowest + 1)) / 2.0f;
+        g.fillRect (juce::Rectangle<float> (noteArea.getX() + (float) (start * pixelsPerBeat),
+                                            noteArea.getY() + row * rowHeight,
+                                            std::max (1.5f, (float) (n.length * pixelsPerBeat) - 1.0f),
+                                            std::max (1.5f, rowHeight - 0.5f))
+                        .getIntersection (noteArea));
     }
 }
 
@@ -702,7 +700,7 @@ te::SmartThumbnail* TimelineView::getThumbnail (const juce::String& file)
 void TimelineView::paintWaveform (juce::Graphics& g, const Lane& lane, const Clip& clip, juce::Rectangle<float> area,
                                   double extraOffsetBeats)
 {
-    auto wave = dynamic_cast<te::WaveAudioClip*> (session.findClip (clip.id));
+    auto wave = dynamic_cast<te::WaveAudioClip*> (te::findClipForID (session.getEdit(), clip.itemID));
 
     if (wave == nullptr)
         return;

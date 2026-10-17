@@ -342,6 +342,31 @@ namespace
         CHECK (! f.dispatcher.execute ("create_track", obj ({ { "colour", "#12" } })).ok);
     }
 
+    void testFindByIdOrName (tracktion::Engine& engine)
+    {
+        std::cout << "tracks and clips are found by id, and tracks by a name that looks like an id\n";
+        Fixture f (engine);
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } }));
+        auto channelId = f.state()["channels"][0]["id"].toString();
+        auto stripId = f.state()["strips"][0]["id"].toString();
+
+        CHECK (f.session.findTrack (channelId, ng::Session::Role::channel) != nullptr);
+        CHECK (f.session.findTrack (channelId, ng::Session::Role::strip) == nullptr);   // a channel's id isn't a strip's
+        CHECK (f.session.findTrack (stripId, ng::Session::Role::strip) != nullptr);
+
+        // A channel named like a number is found by its name, not taken for an id.
+        f.dispatcher.execute ("create_track", obj ({ { "name", stripId } }));
+        auto numbered = f.session.findTrack (stripId, ng::Session::Role::channel);
+        CHECK (numbered != nullptr && numbered->getName() == stripId);
+
+        auto clip = f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "start_beat", 0 }, { "length_beats", 4 } }));
+        CHECK (clip.ok);
+        auto clipId = f.state()["channels"][0]["clips"][0]["id"].toString();
+        CHECK (f.session.findClip (clipId) != nullptr);
+        CHECK (f.session.findClip (channelId) == nullptr);   // a track isn't a clip
+        CHECK (f.session.findClip ("nonsense") == nullptr);
+    }
+
     void testDeleteTrack (tracktion::Engine& engine)
     {
         std::cout << "delete_track removes channels and strips and fixes up routing\n";
@@ -3440,6 +3465,7 @@ int main (int argc, char* argv[])
         RUN (testFailuresRollBack);
         RUN (testJsonBridgeAndToolList);
         RUN (testRenameAndRecolourStayInSyncWhileLinked);
+        RUN (testFindByIdOrName);
         RUN (testDeleteTrack);
         RUN (testSetInstrument);
         RUN (testMixerStripSettings);
