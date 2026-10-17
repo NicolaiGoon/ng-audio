@@ -536,10 +536,21 @@ void TimelineView::paintLanes (juce::Graphics& g)
     g.fillRect (0, lanesArea.getY(), headerWidth, lanesArea.getHeight());
     g.setFont (juce::FontOptions (13.0f));
 
+    auto armed = session.getArmedChannel();
+    auto armedId = armed != nullptr ? armed->itemID.toString() : juce::String();
+
     for (int i = 0; i < lanes.size(); ++i)
     {
         auto row = juce::Rectangle<int> (0, getLaneTop (i), headerWidth, getLaneSpan (i));
         auto shown = isShowingAutomation (lanes[i].channelId);
+
+        // The picked channel (the one the keys play) is lit, as in the channel rack.
+        if (lanes[i].channelId == armedId)
+        {
+            g.setColour (lanes[i].colour.withAlpha (0.16f));
+            g.fillRect (row.withHeight (getLaneHeight (i)));
+        }
+
         g.setColour (lanes[i].colour);
         g.fillRect (row.getX(), row.getY() + 2, 4, row.getHeight() - 4);
 
@@ -1056,6 +1067,52 @@ void TimelineView::showAutomationMenu (int lane)
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition());
 }
 
+void TimelineView::showChannelMenu (int lane)
+{
+    auto channelId = lanes[lane].channelId, name = lanes[lane].name;
+    auto colour = lanes[lane].colour;
+    dispatcher.execute ("arm_channel", makeObject ({ { "channel", channelId } }));
+
+    juce::PopupMenu colours;
+    auto palette = Session::getPalette();
+
+    for (auto& c : palette)
+    {
+        juce::PopupMenu::Item swatch (juce::String::fromUTF8 ("\xe2\x96\xa0  ") + "#" + c.toDisplayString (false));
+        swatch.setColour (c).setTicked (c == colour).setAction ([this, channelId, c]
+        {
+            dispatcher.execute ("set_track_colour", makeObject ({ { "track", channelId }, { "colour", "#" + c.toDisplayString (false) } }));
+        });
+        colours.addItem (swatch);
+    }
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader (name);
+    menu.addItem ("Rename...", [this, channelId, name] { renameChannel (channelId, name); });
+    menu.addSubMenu ("Colour", colours);
+    menu.addItem (isShowingAutomation (channelId) ? "Hide automation" : "Show automation",
+                  [this, channelId] { showAutomation (channelId, ! isShowingAutomation (channelId)); });
+    menu.addSeparator();
+    menu.addItem ("Delete channel", [this, channelId] { dispatcher.execute ("delete_track", makeObject ({ { "track", channelId } })); });
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition());
+}
+
+void TimelineView::renameChannel (const juce::String& channelId, const juce::String& name)
+{
+    auto* window = new juce::AlertWindow ("Rename channel", {}, juce::MessageBoxIconType::NoIcon, this);
+    window->addTextEditor ("name", name);
+    window->addButton ("Rename", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    window->enterModalState (true, juce::ModalCallbackFunction::create ([window, &d = dispatcher, channelId, name] (int button)
+    {
+        auto newName = window->getTextEditorContents ("name").trim();
+
+        if (button == 1 && newName.isNotEmpty() && newName != name)
+            d.execute ("rename_track", makeObject ({ { "track", channelId }, { "name", newName } }));
+    }), true);
+}
+
 bool TimelineView::automationMouseDown (const juce::MouseEvent& e)
 {
     // In the lane names: the A buttons, and the automation lanes' parameter names.
@@ -1078,7 +1135,17 @@ bool TimelineView::automationMouseDown (const juce::MouseEvent& e)
             return true;
         }
 
-        return false;
+        // The name: a click picks the channel (the keys play it), right-click opens its menu,
+        // double-click renames it.
+        if (e.mods.isPopupMenu())
+            showChannelMenu (lane);
+        else if (e.getNumberOfClicks() >= 2)
+            renameChannel (lanes[lane].channelId, lanes[lane].name);
+        else
+            dispatcher.execute ("arm_channel", makeObject ({ { "channel", lanes[lane].channelId } }));
+
+        repaint();
+        return true;
     }
 
     auto lane = automationLaneAt (e.position);

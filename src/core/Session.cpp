@@ -102,6 +102,13 @@ void Session::adoptEdit (std::unique_ptr<te::Edit> newEdit, const juce::File& ne
             racks.removeRackType (rack);
     }
 
+    // Audio clips are stretched as they play, not rendered to a file first (see
+    // useRealTimeStretching), including those in projects saved before that.
+    for (auto track : te::getAudioTracks (*edit))
+        for (auto clip : track->getClips())
+            if (auto wave = dynamic_cast<te::WaveAudioClip*> (clip))
+                useRealTimeStretching (*wave);
+
     armedChannel = {};
     armedAudio.clear();
     updateLoopRange();
@@ -357,6 +364,12 @@ void Session::describeAudioClip (te::WaveAudioClip& clip, juce::DynamicObject& o
     obj.setProperty ("pitch_semitones", std::round (getPitchChange (clip) * 100.0) / 100.0);
     obj.setProperty ("speed", std::round (getPlaybackSpeed (clip) * 10000.0) / 10000.0);
     obj.setProperty ("reversed", clip.getIsReversed());
+}
+
+void Session::useRealTimeStretching (te::WaveAudioClip& clip)
+{
+    if (clip.state.getProperty (te::IDs::proxyAllowed, true))
+        clip.state.setProperty (te::IDs::proxyAllowed, false, nullptr);
 }
 
 juce::String Session::getStretchMode (const te::WaveAudioClip& clip)

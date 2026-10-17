@@ -14,8 +14,39 @@ namespace
         return std::round (beats * 1.0e6) / 1.0e6;
     }
 
-    /** Puts an audio file on an audio channel as a clip, or on a new audio channel named after
-        the file. The clip plays the whole file from start_beat; trim it with resize_clip. */
+    /** An audio channel that already plays this file and has room for it at startBeat, so
+        dropping the same sample again doesn't make another channel. */
+    te::AudioTrack* findChannelPlaying (Session& session, const juce::File& file, double startBeat, double seconds)
+    {
+        auto& tempo = session.getEdit().tempoSequence;
+        auto start = tempo.toTime (te::BeatPosition::fromBeats (startBeat));
+        te::TimeRange range { start, start + te::TimeDuration::fromSeconds (seconds) };
+
+        for (auto channel : session.getChannels())
+        {
+            if (! Session::isAudioChannel (*channel))
+                continue;
+
+            bool playsFile = false, free = true;
+
+            for (auto clip : channel->getClips())
+            {
+                if (auto wave = dynamic_cast<te::WaveAudioClip*> (clip))
+                    playsFile = playsFile || wave->getOriginalFile() == file;
+
+                free = free && ! clip->getPosition().time.overlaps (range);
+            }
+
+            if (playsFile && free)
+                return channel;
+        }
+
+        return nullptr;
+    }
+
+    /** Puts an audio file on an audio channel as a clip. Without a channel it goes on the audio
+        channel already playing that file, if it has room there, or else on a new audio channel
+        named after the file. The clip plays the whole file from start_beat; trim it with resize_clip. */
     CommandResult importAudio (const CommandRegistry& registry, Session& session, const juce::var& p)
     {
         auto path = params::getString (p, "file");
@@ -58,6 +89,12 @@ namespace
         }
         else
         {
+            if (! p.hasProperty ("name"))
+                channel = findChannelPlaying (session, file, startBeat, audio.getLength());
+        }
+
+        if (channel == nullptr)
+        {
             auto name = params::getString (p, "name", file.getFileNameWithoutExtension());
             auto trackParams = new juce::DynamicObject();
             trackParams->setProperty ("name", name);
@@ -81,6 +118,8 @@ namespace
 
         if (clip == nullptr)
             return CommandResult::failure ("import_audio: couldn't add '" + file.getFileName() + "'");
+
+        Session::useRealTimeStretching (*clip);
 
         auto pos = clip->getPosition();
         auto clipStart = tempo.toBeats (pos.getStart()).inBeats();
@@ -183,6 +222,7 @@ namespace
         auto& clip = *wave;
         auto& tempo = session.getEdit().tempoSequence;
         auto* um = &session.getEdit().getUndoManager();
+        Session::useRealTimeStretching (clip);
         auto mode = Session::getStretchMode (clip);
 
         if (p.hasProperty ("stretch_mode"))
@@ -564,12 +604,13 @@ void registerAudioCommands (CommandRegistry& registry)
 {
     registry.add ({ "import_audio",
                     "Puts an audio file (WAV, AIFF, FLAC, Ogg or MP3) on the timeline as a clip that plays the whole file. "
-                    "It goes on the audio channel you name, or on a new audio channel (and mixer strip) named after the file. "
+                    "It goes on the audio channel you name; left out, it goes on the audio channel already playing that file if it has room "
+                    "there, or else on a new audio channel (and mixer strip) named after the file. "
                     "Move and trim it like any clip.",
                     schema ({ { "file", prop ("string", "Path to the audio file") },
-                              { "channel", prop ("string", "An audio channel's id or name; leave out for a new audio channel") },
+                              { "channel", prop ("string", "An audio channel's id or name; leave out for the channel already playing the file, or a new one") },
                               { "start_beat", prop ("number", "Where the clip starts, in beats (default 0)") },
-                              { "name", prop ("string", "Name for the new channel (default: the file's name)") } },
+                              { "name", prop ("string", "Name for a new channel (default: the file's name); giving one always makes a new channel") } },
                             { "file" }),
                     true, [&registry] (Session& session, const juce::var& p) { return importAudio (registry, session, p); } });
 

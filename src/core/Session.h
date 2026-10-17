@@ -163,6 +163,13 @@ public:
         pitch change together, like a record played faster or slower). */
     static juce::String getStretchMode (const te::WaveAudioClip&);
 
+    /** Makes an audio clip stretch and pitch-shift its file as it plays (on a read-ahead thread)
+        instead of Tracktion's default of rendering a stretched copy first. A rendered copy
+        leaves the clip silent from each change until the render is done, then restarts
+        playback; stretching as it plays changes the sound straight away, with no gap. Not
+        part of the undo history: it's how the clip plays, not a setting. */
+    static void useRealTimeStretching (te::WaveAudioClip&);
+
     /** An audio clip's pitch change in semitones (fractions are cents). In resample mode it
         comes from how fast the clip plays. */
     static double getPitchChange (const te::WaveAudioClip&);

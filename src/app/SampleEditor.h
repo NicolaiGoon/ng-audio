@@ -18,7 +18,7 @@ namespace ng
     - Length in beats: type a length, or halve or double it, to stretch the clip to fit.
     - Reverse, and Sampler, which makes a sampler channel playing the file across the keys.
 
-    Drag the edges of the lit part to trim the clip. Every change runs a command, so it's one
+    Click or drag in the lit part to move the song there; drag its edges to trim the clip. Every change runs a command, so it's one
     undo step, and the AI can do all of it too (set_audio_clip, analyze_audio).
 */
 class SampleEditor  : public juce::Component
@@ -53,6 +53,7 @@ private:
     void apply (const juce::String& property, const juce::var& value);
     void detectTempo();
     void makeSamplerChannel();
+    void moveSongTo (float x);
 
     /** Where a point in the file (in seconds, as the clip plays it) falls in the song, in beats. */
     double fileSecondsToBeat (double seconds) const;
@@ -89,6 +90,7 @@ private:
 
     Edge dragEdge = Edge::none;
     double dragBeat = 0.0;
+    bool scrubbing = false;
     float playheadX = -1.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SampleEditor)
