@@ -336,6 +336,8 @@ src/app/ChatPanel.*           the AI chat panel
 src/app/AppSettings.h         the app's preferences: theme, project folder, autosave
 src/app/CommandLogPanel.*     the AI command log, with undo for each entry
 src/app/TimelineView.*        the arrangement timeline: lanes, clips and waveforms, ruler, playhead, zoom, audio drops
+src/app/TimelineAutomation.cpp the timeline's automation lanes
+src/app/TimelineTools.cpp     the timeline's paint, delete, mute and slice tools
 src/app/PianoRoll.*           the piano roll: keyboard, note grid, drawing and editing notes
 tests/CommandTests.cpp        headless tests, including an offline render that checks for sound
 tests/TestSynth, TestGain,    tiny VST3 plugins the tests load: an instrument, an effect
