@@ -757,6 +757,20 @@ namespace
             CHECK (! f.session.hasUnsavedChanges());
             CHECK (f.state()["project"]["name"] == temp.getFile().getFileNameWithoutExtension());
 
+            // Moving the playhead, playing and stopping aren't changes to the song.
+            CHECK (f.dispatcher.execute ("set_position", obj ({ { "beat", 4 } })).ok);
+            CHECK (f.dispatcher.execute ("play").ok);
+            CHECK (f.dispatcher.execute ("stop").ok);
+            CHECK (! f.session.hasUnsavedChanges());
+            CHECK (f.state()["project"]["unsaved_changes"] == juce::var (false));
+
+            // A change made straight to the project, not through a command, still counts.
+            f.session.getEdit().state.setProperty ("ngTestChange", 1, nullptr);
+            CHECK (f.session.hasUnsavedChanges());
+            f.session.getEdit().state.removeProperty ("ngTestChange", nullptr);
+            f.session.checkUnsavedChanges();
+            CHECK (! f.session.hasUnsavedChanges());
+
             // Undo marks it changed again; Save (no path) goes back to the same file.
             f.dispatcher.undo();
             CHECK (f.session.hasUnsavedChanges());

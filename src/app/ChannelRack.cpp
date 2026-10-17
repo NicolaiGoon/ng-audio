@@ -485,10 +485,12 @@ ChannelRack::ChannelRack (Session& s, CommandDispatcher& d)
     viewport.setScrollBarsShown (true, false);
     viewport.setScrollBarThickness (10);
     addAndMakeVisible (viewport);
+    session.getEngine().getPluginManager().knownPluginList.addChangeListener (this);
 }
 
 ChannelRack::~ChannelRack()
 {
+    session.getEngine().getPluginManager().knownPluginList.removeChangeListener (this);
     rows.clear();
 }
 
@@ -501,18 +503,32 @@ void ChannelRack::clear()
 void ChannelRack::update (const juce::var& state)
 {
     auto strips = state["strips"];
-    juce::Array<std::pair<juce::String, juce::String>> pluginInstruments;
 
-    for (auto& d : session.getEngine().getPluginManager().knownPluginList.getTypes())
-        if (d.isInstrument)
-            pluginInstruments.add ({ d.createIdentifierString(), d.name });
+    if (std::exchange (pluginsChanged, false))
+    {
+        pluginInstruments.clearQuick();
 
-    std::sort (pluginInstruments.begin(), pluginInstruments.end(),
-               [] (auto& a, auto& b) { return a.second.compareNatural (b.second) < 0; });
+        for (auto& d : session.getEngine().getPluginManager().knownPluginList.getTypes())
+            if (d.isInstrument)
+                pluginInstruments.add ({ d.createIdentifierString(), d.name });
 
-    // The rack shows channels, the strip names they can route to and the instruments they
-    // can pick; fader moves don't change it.
-    juce::String newKey = juce::JSON::toString (state["channels"], true);
+        std::sort (pluginInstruments.begin(), pluginInstruments.end(),
+                   [] (auto& a, auto& b) { return a.second.compareNatural (b.second) < 0; });
+    }
+
+    // The rack shows channels (but not their clips), the strip names they can route to and the
+    // instruments they can pick; fader moves and clip edits don't change it.
+    juce::String newKey;
+
+    for (auto& c : *state["channels"].getArray())
+    {
+        auto shown = c.clone();
+
+        if (auto obj = shown.getDynamicObject())
+            obj->removeProperty ("clips");
+
+        newKey << juce::JSON::toString (shown, true) << "\n";
+    }
 
     for (auto& s : *strips.getArray())
         newKey << "|" << s["id"].toString() << ":" << s["name"].toString();
