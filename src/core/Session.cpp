@@ -352,6 +352,36 @@ void Session::describeAudioClip (te::WaveAudioClip& clip, juce::DynamicObject& o
 
     if (clip.getAutoTempo())
         obj.setProperty ("source_bpm", std::round (clip.getLoopInfo().getBpm (clip.getAudioFile().getInfo()) * 100.0) / 100.0);
+
+    obj.setProperty ("stretch_mode", getStretchMode (clip));
+    obj.setProperty ("pitch_semitones", std::round (getPitchChange (clip) * 100.0) / 100.0);
+    obj.setProperty ("speed", std::round (getPlaybackSpeed (clip) * 10000.0) / 10000.0);
+    obj.setProperty ("reversed", clip.getIsReversed());
+}
+
+juce::String Session::getStretchMode (const te::WaveAudioClip& clip)
+{
+    if (clip.state.getProperty ("ngResample", false))
+        return "resample";
+
+    return clip.getTimeStretchMode() == te::TimeStretcher::rubberbandPercussive ? "beats" : "stretch";
+}
+
+double Session::getPitchChange (const te::WaveAudioClip& clip)
+{
+    if (getStretchMode (clip) == "resample")
+        return 12.0 * std::log2 (clip.getSpeedRatio());
+
+    return clip.getPitchChange();
+}
+
+double Session::getPlaybackSpeed (te::WaveAudioClip& clip) const
+{
+    if (! clip.getAutoTempo())
+        return clip.getSpeedRatio();
+
+    auto bpm = clip.getLoopInfo().getBpm (clip.getAudioFile().getInfo());
+    return bpm > 0.0 ? edit->tempoSequence.getBpmAt (clip.getPosition().getStart()) / bpm : 1.0;
 }
 
 double Session::getSourceStartBeat (te::WaveAudioClip& clip) const
@@ -1337,6 +1367,9 @@ juce::var Session::toVar() const
             clipObj->setProperty ("start_beat", std::round (startBeat * 1.0e6) / 1.0e6);
             clipObj->setProperty ("length_beats", std::round ((endBeat - startBeat) * 1.0e6) / 1.0e6);
             clipObj->setProperty ("pattern", isPatternClip (*clip));
+
+            if (clip->isMuted())
+                clipObj->setProperty ("muted", true);
 
             clipObj->setProperty ("type", dynamic_cast<te::WaveAudioClip*> (clip) != nullptr ? "audio" : "midi");
 

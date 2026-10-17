@@ -35,7 +35,7 @@ namespace
                 { "Space", "Play or stop" },
                 { "Home", "Back to the start" },
                 { "R", "Record into the armed channel, again to stop" },
-                { "C", "Metronome on or off" },
+                { "Ctrl+M", "Metronome on or off" },
                 { "Ctrl+L", "Looping on or off" },
                 { "Ctrl+Z", "Undo" },
                 { "Ctrl+Y, Ctrl+Shift+Z", "Redo" },
@@ -70,7 +70,9 @@ namespace
                 { "Drag in the ruler", "Draw a loop" },
                 { "Alt + wheel", "Taller or shorter lanes" },
                 { "Ctrl + left click", "Fit the whole song in view" },
-                { "Enter", "Edit the clip's notes" },
+                { "B, C, D, T", "Paint, slice, delete or mute tool" },
+                { "Shift + drag an audio clip's end", "Stretch it" },
+                { "Enter, double-click", "Edit the clip (notes or sample)" },
                 { "Del", "Delete the clip" },
                 { "Ctrl+D", "Duplicate it after itself" },
                 { "Ctrl+C", "Copy it" },
@@ -260,6 +262,7 @@ MainComponent::MainComponent (te::Engine& engine)
         mixer.clear();
         timeline.clear();
         closePianoRoll();
+        closeSampleEditor();
         rack.clear();
     };
 
@@ -329,6 +332,7 @@ MainComponent::~MainComponent()
     dispatcher.onCommandExecuted = nullptr;
     session.onEditAboutToChange = nullptr;
     pianoRoll.clear();
+    sampleEditor.clear();
 }
 
 //==============================================================================
@@ -420,7 +424,13 @@ void MainComponent::setUpPanels()
     rackProportion = juce::jlimit (0.1, 0.9, props.getDoubleValue ("ngRackProportion", 0.5));
 
     // The timeline.
-    timeline.onOpenClip = [this] (const juce::String& clipId) { openPianoRoll (clipId); };
+    timeline.onOpenClip = [this] (const juce::String& clipId)
+    {
+        if (dynamic_cast<te::WaveAudioClip*> (session.findClip (clipId)) != nullptr)
+            openSampleEditor (clipId);
+        else
+            openPianoRoll (clipId);
+    };
     addAudioButton.onClick = [this] { showAudioMenu (&addAudioButton); };
     timelineZoomOut.onClick = [this] { timeline.zoomHorizontally (0.7); };
     timelineZoomIn.onClick = [this] { timeline.zoomHorizontally (1.0 / 0.7); };
@@ -436,6 +446,38 @@ void MainComponent::setUpPanels()
     snapLabel.setJustificationType (juce::Justification::centredRight);
     timelinePanel.addHeaderItem (timelineHint, 700);
     timelinePanel.addHeaderItem (addAudioButton, 78, true);
+
+    // The tools, FL Studio style.
+    struct ToolInfo { juce::TextButton* button; TimelineView::Tool tool; const char* tip; };
+    for (auto info : { ToolInfo { &paintToolButton, TimelineView::Tool::paint, "Paint (B): pick, move and trim clips, and click to paint copies" },
+                       ToolInfo { &sliceToolButton, TimelineView::Tool::slice, "Slice (C): click a clip to cut it in two there (Alt: off the grid)" },
+                       ToolInfo { &deleteToolButton, TimelineView::Tool::erase, "Delete (D): click or drag across clips to delete them" },
+                       ToolInfo { &muteToolButton, TimelineView::Tool::mute, "Mute (T): click or drag across clips to mute or unmute them" } })
+    {
+        info.button->setTooltip (info.tip);
+        info.button->setClickingTogglesState (true);
+        info.button->setRadioGroupId (1001);
+        info.button->onClick = [this, tool = info.tool] { timeline.setTool (tool); };
+    }
+
+    paintToolButton.setToggleState (true, juce::dontSendNotification);
+    timeline.onToolChanged = [this]
+    {
+        auto tool = timeline.getTool();
+        paintToolButton.setToggleState (tool == TimelineView::Tool::paint, juce::dontSendNotification);
+        sliceToolButton.setToggleState (tool == TimelineView::Tool::slice, juce::dontSendNotification);
+        deleteToolButton.setToggleState (tool == TimelineView::Tool::erase, juce::dontSendNotification);
+        muteToolButton.setToggleState (tool == TimelineView::Tool::mute, juce::dontSendNotification);
+
+        timelineHint.setText (tool == TimelineView::Tool::slice ? "Slice: click a clip to cut it there (Alt: off the grid). B goes back to painting."
+                              : tool == TimelineView::Tool::erase ? "Delete: click or drag across clips to delete them. B goes back to painting."
+                              : tool == TimelineView::Tool::mute ? "Mute: click or drag across clips to mute or unmute them. B goes back to painting."
+                              : "Click a clip, then click its lane to paint copies. Right-click deletes. Drag in the ruler for a loop.",
+                              juce::dontSendNotification);
+    };
+
+    for (auto* button : { &muteToolButton, &deleteToolButton, &sliceToolButton, &paintToolButton })
+        timelinePanel.addHeaderItem (*button, 52, true);
     timelinePanel.addHeaderItem (timelineTaller, 24, true);
     timelinePanel.addHeaderItem (timelineShorter, 24, true);
     timelinePanel.addHeaderItem (timelineZoomIn, 24, true);
@@ -473,7 +515,15 @@ void MainComponent::setUpPanels()
     pianoRollPanel.addHeaderItem (rollZoomOut, 24, true);
     pianoRollPanel.setActive (false);
 
-    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel })
+    // The sample editor, for audio clips.
+    closeSampleEditorButton.onClick = [this] { closeSampleEditor(); };
+    sampleEditorHint.setFont (juce::FontOptions (12.0f));
+    sampleEditorHint.setColour (juce::Label::textColourId, juce::Colours::grey);
+    sampleEditorPanel.addHeaderItem (sampleEditorHint, 600);
+    sampleEditorPanel.addHeaderItem (closeSampleEditorButton, 24, true);
+    sampleEditorPanel.setActive (false);
+
+    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
     {
         panel->onDetachChanged = [this] { resized(); };
         addChildComponent (panel);
@@ -529,14 +579,14 @@ void MainComponent::setUpPanels()
 
 void MainComponent::restoreDetachedPanels()
 {
-    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel })
+    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
         if (getProperties().getBoolValue ("ngPanelDetached_" + panel->getId()))
             panel->setDetached (true);
 }
 
 void MainComponent::resetLayout()
 {
-    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel })
+    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
         panel->setDetached (false);
 
     browserWidth = 240;
@@ -617,9 +667,10 @@ juce::PopupMenu MainComponent::getMenu (int menuIndex)
         menu.addItem (menuItem ("Command console", {}, [this] { showConsole (! consoleShown); }, true, consoleShown));
         menu.addSeparator();
 
-        for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel })
+        for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
         {
-            auto name = panel == &timelinePanel ? "Timeline" : panel == &rackPanel ? "Channel rack" : panel == &mixerPanel ? "Mixer" : "Piano roll";
+            auto name = panel == &timelinePanel ? "Timeline" : panel == &rackPanel ? "Channel rack" : panel == &mixerPanel ? "Mixer"
+                          : panel == &pianoRollPanel ? "Piano roll" : "Sample editor";
             menu.addItem (menuItem (juce::String (name) + " in its own window", {}, [this, panel] { panel->setDetached (! panel->isDetached()); },
                                     true, panel->isDetached()));
         }
@@ -1041,7 +1092,13 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress (juce::KeyPress::spaceKey))           { playButton.onClick(); return true; }
     if (key == juce::KeyPress (juce::KeyPress::homeKey))            { returnButton.onClick(); return true; }
     if (key == juce::KeyPress ('r', none, 0))                       { toggleRecording(); return true; }
-    if (key == juce::KeyPress ('c', none, 0))                       { dispatcher.execute ("set_metronome"); return true; }
+    if (key == juce::KeyPress ('m', command, 0))                    { dispatcher.execute ("set_metronome"); return true; }
+
+    // The timeline's tools, on FL Studio's keys.
+    if (key == juce::KeyPress ('b', none, 0))                       { timeline.setTool (TimelineView::Tool::paint); return true; }
+    if (key == juce::KeyPress ('c', none, 0))                       { timeline.setTool (TimelineView::Tool::slice); return true; }
+    if (key == juce::KeyPress ('d', none, 0))                       { timeline.setTool (TimelineView::Tool::erase); return true; }
+    if (key == juce::KeyPress ('t', none, 0))                       { timeline.setTool (TimelineView::Tool::mute); return true; }
 
     if (key == juce::KeyPress ('l', command, 0))
     {
@@ -1059,6 +1116,13 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress (juce::KeyPress::escapeKey) && pianoRoll.getClip().isNotEmpty())
     {
         closePianoRoll();
+        timeline.grabKeyboardFocus();
+        return true;
+    }
+
+    if (key == juce::KeyPress (juce::KeyPress::escapeKey) && sampleEditor.getClip().isNotEmpty())
+    {
+        closeSampleEditor();
         timeline.grabKeyboardFocus();
         return true;
     }
@@ -1147,7 +1211,7 @@ bool MainComponent::ownsComponent (juce::Component* c) const
     if (isParentOf (c))
         return true;
 
-    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel })
+    for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
         if (panel->isParentOf (c))
             return true;
 
@@ -1328,6 +1392,7 @@ void MainComponent::updatePlayStep()
     }
 
     rack.setPlayStep (step);
+    sampleEditor.updatePlayhead();
 }
 
 void MainComponent::updateButtons()
@@ -1357,12 +1422,20 @@ void MainComponent::refreshViews()
     if (pianoRoll.getClip().isNotEmpty() && ! pianoRoll.update())
         closePianoRoll();
 
+    if (sampleEditor.getClip().isNotEmpty() && ! sampleEditor.update())
+        closeSampleEditor();
+
     updatePianoRollTitle();
+    updateSampleEditorTitle();
     updateTransportControls (state);
 }
 
 void MainComponent::openPianoRoll (const juce::String& clipId)
 {
+    // One editor at a time takes the rack and mixer's place.
+    sampleEditor.clear();
+    sampleEditorPanel.setActive (false);
+
     pianoRoll.setClip (clipId);
     pianoRollPanel.setActive (true);
     updatePianoRollTitle();
@@ -1382,6 +1455,40 @@ void MainComponent::closePianoRoll()
     pianoRoll.clear();
     pianoRollPanel.setActive (false);
     resized();
+}
+
+void MainComponent::openSampleEditor (const juce::String& clipId)
+{
+    pianoRoll.clear();
+    pianoRollPanel.setActive (false);
+
+    sampleEditor.setClip (clipId);
+    sampleEditorPanel.setActive (true);
+    updateSampleEditorTitle();
+    resized();
+    sampleEditorPanel.toFront();
+}
+
+void MainComponent::closeSampleEditor()
+{
+    sampleEditor.clear();
+    sampleEditorPanel.setActive (false);
+    resized();
+}
+
+void MainComponent::updateSampleEditorTitle()
+{
+    auto clip = session.findClip (sampleEditor.getClip());
+
+    if (clip == nullptr)
+        return;
+
+    auto title = "Sample editor: " + clip->getName();
+
+    if (auto track = clip->getTrack())
+        title << " on " << track->getName();
+
+    sampleEditorPanel.setTitle (title);
 }
 
 void MainComponent::updatePianoRollTitle()
@@ -1414,7 +1521,8 @@ void MainComponent::paint (juce::Graphics& g)
         return;
 
     auto anyAttached = (! timelinePanel.isDetached()) || (! rackPanel.isDetached()) || (! mixerPanel.isDetached())
-                         || (pianoRollPanel.isActive() && ! pianoRollPanel.isDetached());
+                         || (pianoRollPanel.isActive() && ! pianoRollPanel.isDetached())
+                         || (sampleEditorPanel.isActive() && ! sampleEditorPanel.isDetached());
 
     if (! anyAttached)
     {
@@ -1546,9 +1654,10 @@ void MainComponent::layOutPanels (juce::Rectangle<int> r)
     centreArea = r;
     bottomArea = {};
 
-    // What's in the main window: the attached panels. The piano roll, while open, takes the
-    // rack and mixer's place.
-    auto rollHere = pianoRollPanel.isActive() && ! pianoRollPanel.isDetached();
+    // What's in the main window: the attached panels. The piano roll or the sample editor,
+    // while open, takes the rack and mixer's place.
+    auto* editorPanel = sampleEditorPanel.isActive() ? &sampleEditorPanel : &pianoRollPanel;
+    auto rollHere = editorPanel->isActive() && ! editorPanel->isDetached();
     auto timelineHere = ! timelinePanel.isDetached();
     auto rackHere = ! rackPanel.isDetached() && ! rollHere;
     auto mixerHere = ! mixerPanel.isDetached() && ! rollHere;
@@ -1558,6 +1667,7 @@ void MainComponent::layOutPanels (juce::Rectangle<int> r)
     rackPanel.setVisible (rackHere || rackPanel.isDetached());
     mixerPanel.setVisible (mixerHere || mixerPanel.isDetached());
     pianoRollPanel.setVisible (pianoRollPanel.isActive());
+    sampleEditorPanel.setVisible (sampleEditorPanel.isActive());
     timelineSplitter.setVisible (timelineHere && bottomHere);
     rackSplitter.setVisible (rackHere && mixerHere);
 
@@ -1580,7 +1690,7 @@ void MainComponent::layOutPanels (juce::Rectangle<int> r)
 
     if (rollHere)
     {
-        pianoRollPanel.setBounds (r);
+        editorPanel->setBounds (r);
         return;
     }
 

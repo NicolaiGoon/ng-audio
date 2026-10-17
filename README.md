@@ -33,6 +33,11 @@ Linux, build it from source (see *Building*).
   in view, as in FL Studio. Drag a lane's bottom edge (in
   the names on the left) to size just that lane; double-click the edge to reset it. The view
   glides along with the playhead while playing, and an automated value's dot rides its line.
+- **Playlist tools, FL Studio style.** The buttons in the timeline's header (or B, C, D and T)
+  pick what a left click does: **Paint** (the default, below), **Slice** (click a clip to cut it in
+  two there, on the grid unless Alt is held), **Delete** (click or drag across clips) and **Mute**
+  (click or drag across clips to mute or unmute them; a muted clip stays in place, greyed out,
+  and plays nothing). Right-click deletes with any tool.
 - **Clip editing, FL Studio style.** Click a clip to pick it, then click anywhere in its lane to
   place a copy there, or drag along the lane to paint copies one after another. Right-click a
   clip to delete it, or right-drag across clips to delete them all (one undo step). Shift+click
@@ -72,7 +77,7 @@ Linux, build it from source (see *Building*).
   the armed channel from the playhead; Rec again or Stop finishes, and the recording becomes a
   clip in one undo step.
 - **Keyboard shortcuts.** Space plays and stops, Ctrl+Z undoes, Ctrl+Y (or Ctrl+Shift+Z)
-  redoes, R records, C turns the metronome on or off, Ctrl+L looping, Ctrl+T adds an
+  redoes, R records, Ctrl+M turns the metronome on or off, Ctrl+L looping, Ctrl+T adds an
   instrument, Ctrl+K turns the typing keyboard on or off and Ctrl+Shift+K shows the piano. On the timeline, Ctrl+C and Ctrl+V copy a clip and
   paste it at the playhead, the left and right arrows move it by a beat (Shift: a bar), up and
   down move it to the next channel, and Esc deselects. In the piano roll, Ctrl+C, Ctrl+X and
@@ -138,9 +143,29 @@ Linux, build it from source (see *Building*).
   channel while it's armed; *Mon on* always and *Mon off* never. Takes are saved as WAV files in a
   *Recordings* folder beside the project (or in Music/Ng DAW/Recordings before it's saved).
 - **Editing audio clips.** Select an audio clip and drag the small handles in its top corners to
-  fade it in or out. Right-click it for its *Gain* (+6 to -12 dB; the waveform grows or shrinks
+  fade it in or out. Shift-drag its right edge to stretch it to a new length instead of trimming it.
+  Right-click it for its *Gain* (+6 to -12 dB; the waveform grows or shrinks
   with it), *Follow tempo*, which time-stretches the clip so it keeps its length in beats when the
   tempo changes, and *Remove fades*.
+- **The sample editor.** Double-click an audio clip (or select it and press Enter) to open it in
+  place of the rack and mixer: its whole file as a waveform, with the part the clip plays lit up
+  and the song's bars and beats laid over it. Drag the lit part's edges to trim the clip. Above it:
+  - *Stretch mode*: **Stretch** (the default) changes speed and pitch separately with
+    [Rubber Band](https://breakfastquay.com/rubberband/)'s R3 engine, its highest quality one, for
+    most sounds; **Beats** uses Rubber Band's percussive mode, which keeps drum hits crisp;
+    **Resample** changes speed and pitch together, like a record played faster, as FL Studio does.
+    Stretched audio is rendered once in the background and cached, so it costs nothing while the
+    song plays.
+  - *Pitch* (semitones) and *Fine* (cents). In Resample mode pitch also changes the speed.
+  - *Gain*, or *Normalize* to bring the file's loudest peak to 0 dB.
+  - *Follow tempo* with the file's own tempo: type it, or *Detect* it. A short loop's tempo is
+    matched to a whole number of bars, so loops line up exactly. *Song tempo* sets the song to
+    the file's tempo instead.
+  - *Length (beats)*: type a length, or use ÷2 and ×2, to stretch the clip to fit.
+  - *Reverse*, and *Sampler*, which makes a sampler channel playing the file across the keys.
+
+  Knobs apply when they're let go (or typed into); double-click one to reset it. Each change is
+  one undo step.
 - **Exporting.** *Export* above the timeline (or Ctrl+E) saves the whole song (to the end of the
   last clip, plus two seconds for tails) or the loop region as a WAV (16-bit, 24-bit or 32-bit
   float) or an MP3, at 44.1 to 96 kHz. Tick *stems* for one file per mixer strip instead, all the
@@ -184,12 +209,13 @@ Linux, build it from source (see *Building*).
   | `set_loop` | Loop on/off and the loop region in beats (default: the whole project, in whole bars) |
   | `set_steps` | Sets or toggles a channel's step pattern (`steps`, `step`, `length`, `pitch`) |
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
-  | `move_clip` / `resize_clip` / `split_clip` / `duplicate_clip` / `delete_clip` | Clip editing, by clip id from `get_state` |
+  | `move_clip` / `resize_clip` / `split_clip` / `duplicate_clip` / `delete_clip` / `mute_clip` | Clip editing, by clip id from `get_state` |
   | `get_notes` / `set_notes` | Reads or replaces a MIDI clip's notes (beats from the clip's start) |
   | `quantize_notes` | Moves a clip's notes (or some of them) onto a grid, optionally with their ends |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
   | `set_metronome` | Turns the metronome on or off |
-  | `set_audio_clip` | Sets an audio clip's gain, fade in and out, and whether it follows the tempo (time-stretched from its source tempo) |
+  | `set_audio_clip` | Sets an audio clip's gain (or normalizes it), fades, pitch, length (stretched), stretch mode (`stretch`, `beats` or `resample`), reverse, and whether it follows the tempo (time-stretched from its source tempo) |
+  | `analyze_audio` | Reads an audio clip's file (or any audio file): length, sample rate, channels, peak level and detected tempo |
   | `export_audio` | Exports the song or the loop region as a WAV or MP3 file, or as one file per mixer strip (stems) |
   | `set_audio_input` | Sets the audio input an audio channel records from, and how it's monitored |
   | `arm_channel` / `record` | Arms a channel for MIDI input (one at a time) or audio input (any number), and records into them until `stop` |

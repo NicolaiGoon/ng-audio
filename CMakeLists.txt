@@ -40,6 +40,38 @@ if (NOT juce_POPULATED)
     FetchContent_Populate(juce)
 endif()
 
+# ------------------------------------------------------------------------------
+# Rubber Band does the time-stretching and pitch-shifting of audio clips (GPL v2 or later, or
+# commercial: https://breakfastquay.com/rubberband/). Tracktion compiles it in as one file.
+# Tracktion asks Rubber Band for its older R2 engine; for melodic material we switch that to
+# R3, Rubber Band's highest quality engine. Clips are stretched into a cached file in the
+# background, so the extra CPU it costs isn't paid while the song plays.
+# ------------------------------------------------------------------------------
+FetchContent_Declare(rubberband
+    GIT_REPOSITORY https://github.com/breakfastquay/rubberband.git
+    GIT_TAG        v4.0.0
+    GIT_SHALLOW    TRUE)
+FetchContent_GetProperties(rubberband)
+if (NOT rubberband_POPULATED)
+    FetchContent_Populate(rubberband)
+endif()
+
+# Tracktion includes <rubberband/single/RubberBandSingle.cpp>; this points that at the download.
+set(NG_RUBBERBAND_INCLUDE ${CMAKE_BINARY_DIR}/rubberband_include)
+file(WRITE ${NG_RUBBERBAND_INCLUDE}/rubberband/single/RubberBandSingle.cpp
+     "#include \"${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp\"\n")
+
+set(NG_TIMESTRETCH_CPP ${tracktion_SOURCE_DIR}/modules/tracktion_engine/timestretch/tracktion_TimeStretch.cpp)
+file(READ ${NG_TIMESTRETCH_CPP} NG_TIMESTRETCH_SOURCE)
+string(REPLACE "| RubberBand::RubberBandStretcher::OptionWindowShort;"
+               "| RubberBand::RubberBandStretcher::OptionEngineFiner;"
+               NG_TIMESTRETCH_PATCHED "${NG_TIMESTRETCH_SOURCE}")
+if (NOT NG_TIMESTRETCH_PATCHED STREQUAL NG_TIMESTRETCH_SOURCE)
+    file(WRITE ${NG_TIMESTRETCH_CPP} "${NG_TIMESTRETCH_PATCHED}")
+elseif (NOT NG_TIMESTRETCH_SOURCE MATCHES "OptionEngineFiner")
+    message(WARNING "Couldn't switch Tracktion's Rubber Band stretcher to the R3 engine; clips will use R2")
+endif()
+
 add_subdirectory(${juce_SOURCE_DIR} ${CMAKE_BINARY_DIR}/juce EXCLUDE_FROM_ALL)
 add_subdirectory(${tracktion_SOURCE_DIR}/modules ${CMAKE_BINARY_DIR}/tracktion EXCLUDE_FROM_ALL)
 
@@ -67,6 +99,7 @@ add_library(ng_core STATIC
     src/core/AiChat.cpp)
 
 target_include_directories(ng_core PUBLIC src)
+target_include_directories(ng_core PRIVATE ${NG_RUBBERBAND_INCLUDE})
 
 target_compile_definitions(ng_core PUBLIC
     JUCE_PLUGINHOST_VST3=1
@@ -79,6 +112,8 @@ target_compile_definitions(ng_core PUBLIC
     JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_USE_MP3AUDIOFORMAT=1
     TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1
+    TRACKTION_ENABLE_TIMESTRETCH_RUBBERBAND=1
+    TRACKTION_BUILD_RUBBERBAND=1
     NG_VERSION="${PROJECT_VERSION}")
 
 if (APPLE)
@@ -134,6 +169,7 @@ target_sources(NgDaw PRIVATE
     src/app/PianoRoll.cpp
     src/app/PluginWindow.cpp
     src/app/SamplerEditor.cpp
+    src/app/SampleEditor.cpp
     src/app/BrowserPanel.cpp
     src/app/ExportPanel.cpp
     src/app/CommandLogPanel.cpp
