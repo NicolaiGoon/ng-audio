@@ -2742,6 +2742,22 @@ namespace
         CHECK (static_cast<double> (r.value["peak_db"]) < 0.0 && static_cast<double> (r.value["peak_db"]) > -6.0);
         CHECK (! f.dispatcher.execute ("analyze_audio", obj ({ { "file", folder.getChildFile ("Nope.wav").getFullPathName() } })).ok);
 
+        // Clips stretch as they play rather than waiting for a stretched copy, so changes never leave a gap.
+        f.dispatcher.execute ("new_project", obj ({ { "discard_changes", true } }));
+        r = f.dispatcher.execute ("import_audio", obj ({ { "file", tone.getFullPathName() } }));
+        CHECK (r.ok);
+        auto first = r.value["channel"].toString();
+        CHECK (! static_cast<bool> (f.session.findClip (r.value["clip"].toString())->state.getProperty (tracktion::IDs::proxyAllowed, true)));
+
+        // The same file again goes on its channel where there's room, and on a new channel where there isn't.
+        r = f.dispatcher.execute ("import_audio", obj ({ { "file", tone.getFullPathName() }, { "start_beat", 8 } }));
+        CHECK (r.ok && r.value["channel"].toString() == first);
+        r = f.dispatcher.execute ("import_audio", obj ({ { "file", tone.getFullPathName() }, { "start_beat", 2 } }));
+        CHECK (r.ok && r.value["channel"].toString() != first);
+        r = f.dispatcher.execute ("import_audio", obj ({ { "file", late.getFullPathName() }, { "start_beat", 16 } }));
+        CHECK (r.ok && r.value["channel"].toString() != first);
+        CHECK (f.state()["channels"].size() == 3 && f.state()["channels"][0]["clips"].size() == 2);
+
         f.dispatcher.execute ("new_project", obj ({ { "discard_changes", true } }));
         folder.deleteRecursively();
     }

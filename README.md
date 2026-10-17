@@ -31,7 +31,9 @@ Linux, build it from source (see *Building*).
   zooms in time, Alt + wheel makes the lanes taller or shorter, Shift + wheel scrolls through
   time, and the zoom buttons in the timeline's header do the same. Ctrl + left click fits the whole song
   in view, as in FL Studio. Drag a lane's bottom edge (in
-  the names on the left) to size just that lane; double-click the edge to reset it. The view
+  the names on the left) to size just that lane; double-click the edge to reset it. Click a lane's
+  name to pick that channel (the keys play it), double-click it to rename it, and right-click it to
+  rename, recolour, show its automation or delete the channel. The view
   glides along with the playhead while playing, and an automated value's dot rides its line.
 - **Playlist tools, FL Studio style.** The buttons in the timeline's header (or B, C, D and T)
   pick what a left click does: **Paint** (the default, below), **Slice** (click a clip to cut it in
@@ -124,14 +126,15 @@ Linux, build it from source (see *Building*).
 - **A browser.** The panel on the left (*Browser*, or Ctrl+B) lists instruments, effects,
   presets and your sample folders (*+ Folder* adds one), with a search box that finds samples by
   name. Drag an instrument, instrument preset, sample or kit folder onto the channel rack for a new
-  channel (or double-click it); drop an instrument or preset on a channel to swap its instrument,
+  channel (or double-click it; a loop goes on the timeline instead, on an audio channel of its own,
+  and opens in the sample editor); drop an instrument or preset on a channel to swap its instrument,
   and samples or a folder on a sampler channel to add them. Drag an effect or effect preset onto a
   mixer strip. Audio files and folders can also be dropped in from the desktop. Right-click an
   effect, or a channel's name, to save it as a preset; presets work in every project.
 - **Audio channels.** Drop WAV, AIFF, FLAC, Ogg or MP3 files on the timeline (from the browser
   or the desktop) and each gets an audio channel of its own, named after the file, with a mixer
   strip like any channel; drop them on an audio channel's lane to add them there, one after
-  another. *+ Audio* above the timeline (or Ctrl+I) imports files at the playhead or adds an
+  another. A file that's already on an audio channel goes back on that channel when it has room. *+ Audio* above the timeline (or Ctrl+I) imports files at the playhead or adds an
   empty audio channel, and double-clicking an empty spot on an audio lane picks files for it.
   Audio clips show their waveform and move, trim, split and copy like MIDI clips, but can't be
   trimmed past the end of their file. Audio and MIDI clips each stay on their own kind of channel.
@@ -149,20 +152,21 @@ Linux, build it from source (see *Building*).
   tempo changes, and *Remove fades*.
 - **The sample editor.** Double-click an audio clip (or select it and press Enter) to open it in
   place of the rack and mixer: its whole file as a waveform, with the part the clip plays lit up
-  and the song's bars and beats laid over it. Drag the lit part's edges to trim the clip. Above it:
+  and the song's bars and beats laid over it. Click or drag in the lit part to move the song there,
+  and drag its edges to trim the clip. Above it:
   - *Stretch mode*: **Stretch** (the default) changes speed and pitch separately with
     [Rubber Band](https://breakfastquay.com/rubberband/)'s R3 engine, its highest quality one, for
     most sounds; **Beats** uses Rubber Band's percussive mode, which keeps drum hits crisp;
     **Resample** changes speed and pitch together, like a record played faster, as FL Studio does.
-    Stretched audio is rendered once in the background and cached, so it costs nothing while the
-    song plays.
+    Clips are stretched as they play, so a change is heard straight away with no gap.
   - *Pitch* (semitones) and *Fine* (cents). In Resample mode pitch also changes the speed.
   - *Gain*, or *Normalize* to bring the file's loudest peak to 0 dB.
   - *Follow tempo* with the file's own tempo: type it, or *Detect* it. A short loop's tempo is
     matched to a whole number of bars, so loops line up exactly. *Song tempo* sets the song to
     the file's tempo instead.
   - *Length (beats)*: type a length, or use ÷2 and ×2, to stretch the clip to fit.
-  - *Reverse*, and *Sampler*, which makes a sampler channel playing the file across the keys.
+  - *Reverse*, and *Sampler*, which makes a sampler channel playing the file across the keys (or,
+    if one already plays it, picks that one).
 
   Knobs apply when they're let go (or typed into); double-click one to reset it. Each change is
   one undo step.
@@ -198,7 +202,7 @@ Linux, build it from source (see *Building*).
   | Command | What it does |
   | --- | --- |
   | `create_track` | Adds an instrument channel (or, with instrument `audio`, an audio channel) plus its linked mixer strip |
-  | `import_audio` | Puts an audio file on an audio channel as a clip, or on a new audio channel named after it |
+  | `import_audio` | Puts an audio file on an audio channel as a clip: the one named, the one already playing that file if it has room, or a new one named after it |
   | `route` | Sends a channel to a strip (or `master`); detaches it if it isn't its own strip |
   | `rename_track` | Renames a channel or strip; a linked pair is renamed together |
   | `set_track_colour` | Recolours a channel or strip; a linked pair changes together |

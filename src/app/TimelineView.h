@@ -200,6 +200,8 @@ private:
     int automationPointAt (int lane, juce::Point<float>) const;
     void setAutomationPoints (int lane, const juce::Array<juce::Point<double>>&);
     void showAutomationMenu (int lane);
+    void showChannelMenu (int lane);
+    void renameChannel (const juce::String& channelId, const juce::String& name);
     void paintAutomation (juce::Graphics&, int lane);
     bool automationMouseDown (const juce::MouseEvent&);
     juce::Rectangle<float> getClipArea (int lane, double startBeat, double lengthBeats) const;

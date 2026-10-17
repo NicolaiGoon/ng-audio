@@ -54,7 +54,7 @@ namespace browser
 /**
     The browser: instruments, effects, presets and sample folders in a tree, with a search
     box. Drag an item onto the channel rack, a channel or a mixer strip; double-click one to
-    make a new channel from it. "+ Folder" adds a sample folder (right-click one to remove it).
+    make a new channel from it (a loop goes on the timeline and opens in the sample editor). "+ Folder" adds a sample folder (right-click one to remove it).
     The folders and presets are the app's (set_library), so they're the same in every project.
 */
 class BrowserPanel  : public juce::Component,
@@ -68,6 +68,9 @@ public:
     /** Reads the plugins, presets and folders again, keeping what's open. */
     void refresh();
 
+    /** Called with an audio clip to show, after double-clicking a loop. */
+    std::function<void (const juce::String& clipId)> onOpenClip;
+
     void paint (juce::Graphics&) override;
     void resized() override;
 
@@ -79,6 +82,7 @@ private:
     void addFolder();
     void removeFolder (const juce::String& path);
     void activate (const juce::var& item);
+    bool isLoop (const juce::File&) const;
     void showMenu (Node&);
 
     Session& session;

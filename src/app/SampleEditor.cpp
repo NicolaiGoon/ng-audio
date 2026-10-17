@@ -277,6 +277,19 @@ void SampleEditor::detectTempo()
 
 void SampleEditor::makeSamplerChannel()
 {
+    // One sampler channel per file: a second click finds the one already made, rather than
+    // making another (the rack is hidden behind this editor, so a new channel isn't seen).
+    for (auto channel : session.getChannels())
+        if (auto sampler = Session::getSampler (*channel))
+            for (int i = 0; i < sampler->getNumSounds(); ++i)
+                if (sampler->getSoundFile (i).getFile().getFullPathName() == filePath)
+                {
+                    dispatcher.execute ("arm_channel", makeObject ({ { "channel", channel->itemID.toString() } }));
+                    info.setText ("'" + channel->getName() + "' already plays this file, and is armed: play it from the keys",
+                                  juce::dontSendNotification);
+                    return;
+                }
+
     juce::Array<juce::var> commands;
     commands.add (makeObject ({ { "command", "create_track" },
                                 { "params", makeObject ({ { "name", juce::File (filePath).getFileNameWithoutExtension() },
@@ -285,7 +298,20 @@ void SampleEditor::makeSamplerChannel()
                                 { "params", makeObject ({ { "channel", "$0.channel" }, { "file", filePath }, { "note", 60 },
                                                           { "min_note", 0 }, { "max_note", 127 }, { "one_shot", false } }) } }));
     auto result = dispatcher.executeBatch ("Sampler from " + fileName, commands);
-    info.setText (result.ok ? "Made a sampler channel: play it from the keys" : result.error, juce::dontSendNotification);
+
+    if (! result.ok)
+    {
+        info.setText (result.error, juce::dontSendNotification);
+        return;
+    }
+
+    // Armed, so the MIDI keyboard (or the typing keyboard) plays it straight away.
+    auto channelId = result.value[0]["channel"].toString();
+    dispatcher.execute ("arm_channel", makeObject ({ { "channel", channelId } }));
+    auto channel = session.findTrack (channelId, Session::Role::channel);
+    info.setText ("Made sampler channel '" + (channel != nullptr ? channel->getName() : fileName)
+                    + "', armed: play it from the keys (Esc shows it in the channel rack)",
+                  juce::dontSendNotification);
 }
 
 //==============================================================================
@@ -482,7 +508,7 @@ void SampleEditor::updatePlayhead()
         auto& edit = session.getEdit();
         auto beat = edit.tempoSequence.toBeats (edit.getTransport().getPosition()).inBeats();
 
-        if (edit.getTransport().isPlaying() && beat >= startBeat && beat <= startBeat + lengthBeats)
+        if (beat >= startBeat && beat <= startBeat + lengthBeats)
             x = secondsToX (beatToFileSeconds (beat));
     }
 
@@ -516,10 +542,28 @@ void SampleEditor::mouseDown (const juce::MouseEvent& e)
 {
     dragEdge = edgeAt (e.position);
     dragBeat = dragEdge == Edge::start ? startBeat : startBeat + lengthBeats;
+    scrubbing = dragEdge == Edge::none && ! missing && clipId.isNotEmpty() && getWaveArea().toFloat().contains (e.position);
+
+    if (scrubbing)
+        moveSongTo (e.position.x);
+}
+
+void SampleEditor::moveSongTo (float x)
+{
+    // Anywhere in the lit part puts the song there, like clicking the ruler; outside it, the nearest end.
+    auto beat = juce::jlimit (startBeat, startBeat + lengthBeats, fileSecondsToBeat (juce::jlimit (0.0, fileSeconds, xToSeconds (x))));
+    dispatcher.execute ("set_position", makeObject ({ { "beat", beat } }));
+    updatePlayhead();
 }
 
 void SampleEditor::mouseDrag (const juce::MouseEvent& e)
 {
+    if (scrubbing)
+    {
+        moveSongTo (e.position.x);
+        return;
+    }
+
     if (dragEdge == Edge::none)
         return;
 
@@ -537,6 +581,8 @@ void SampleEditor::mouseDrag (const juce::MouseEvent& e)
 
 void SampleEditor::mouseUp (const juce::MouseEvent&)
 {
+    scrubbing = false;
+
     if (dragEdge == Edge::none)
         return;
 

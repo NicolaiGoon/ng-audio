@@ -371,7 +371,8 @@ public:
 
         if (type == "instrument")   return "Drag onto the channel rack for a new channel, or onto a channel to swap its instrument";
         if (type == "effect")       return "Drag onto a mixer strip to add it";
-        if (type == "sample")       return item["path"].toString() + "\nDrag onto the rack for a sampler channel, or onto a sampler channel";
+        if (type == "sample")       return item["path"].toString() + "\nDouble-click: a loop goes on the timeline, a one-shot gets a sampler channel."
+                                                                     "\nOr drag it onto the timeline, the rack, or a sampler channel";
         if (type == "folder")       return item["path"].toString() + "\nDrag onto the rack to load it as a drum kit";
         if (type == "preset")       return item["kind"] == "instrument" ? "Drag onto a channel, or onto the rack for a new channel"
                                                                         : "Drag onto a mixer strip";
@@ -644,8 +645,50 @@ void BrowserPanel::removeFolder (const juce::String& path)
     refresh();
 }
 
+bool BrowserPanel::isLoop (const juce::File& file) const
+{
+    // Loops are named and filed as loops, or say their tempo; failing that, anything over a
+    // couple of bars at 120 is one. Shorter sounds are one-shots, for a sampler channel.
+    if (file.getFullPathName().containsIgnoreCase ("loop") || file.getFileName().containsIgnoreCase ("bpm"))
+        return true;
+
+    te::AudioFile audio (session.getEngine(), file);
+    return audio.isValid() && audio.getLength() >= 4.0;
+}
+
 void BrowserPanel::activate (const juce::var& item)
 {
+    // A loop goes on the timeline as a clip, on its own audio channel, and opens in the sample
+    // editor; if it's there already, that clip opens.
+    if (browser::typeOf (item) == "sample" && isLoop (juce::File (item["path"].toString())))
+    {
+        juce::File file (item["path"].toString());
+
+        for (auto channel : session.getChannels())
+            for (auto clip : channel->getClips())
+                if (auto wave = dynamic_cast<te::WaveAudioClip*> (clip); wave != nullptr && wave->getOriginalFile() == file)
+                {
+                    if (onOpenClip != nullptr)
+                        onOpenClip (wave->itemID.toString());
+                    return;
+                }
+
+        // At the start of the bar the playhead is in.
+        auto& edit = session.getEdit();
+        auto& tempo = edit.tempoSequence;
+        auto bar = tempo.toBarsAndBeats (edit.getTransport().getPosition()).bars;
+        auto beat = std::max (0.0, tempo.toBeats (te::tempo::BarsAndBeats { bar, {} }).inBeats());
+
+        auto result = dispatcher.execute ("import_audio", makeObject ({ { "file", file.getFullPathName() }, { "start_beat", beat } }));
+
+        if (! result.ok)
+            browser::showDropError (this, result.error);
+        else if (onOpenClip != nullptr)
+            onOpenClip (result.value["clip"].toString());
+
+        return;
+    }
+
     if (browser::canDropOnRack (item))
         browser::showDropError (this, browser::dropOnRack (dispatcher, { item }));
 }
