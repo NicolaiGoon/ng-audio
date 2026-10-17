@@ -72,6 +72,18 @@ elseif (NOT NG_TIMESTRETCH_SOURCE MATCHES "OptionEngineFiner")
     message(WARNING "Couldn't switch Tracktion's Rubber Band stretcher to the R3 engine; clips will use R2")
 endif()
 
+# R3 can ask for more input at once than the real-time reader's buffers hold (8192 frames),
+# which overruns them; ask for at most that and Rubber Band takes the rest next time.
+file(READ ${NG_TIMESTRETCH_CPP} NG_TIMESTRETCH_SOURCE)
+string(REPLACE "                                    : numFramesRequired;"
+               "                                    : std::min (numFramesRequired, getMaxFramesNeeded());"
+               NG_TIMESTRETCH_PATCHED "${NG_TIMESTRETCH_SOURCE}")
+if (NOT NG_TIMESTRETCH_PATCHED STREQUAL NG_TIMESTRETCH_SOURCE)
+    file(WRITE ${NG_TIMESTRETCH_CPP} "${NG_TIMESTRETCH_PATCHED}")
+elseif (NOT NG_TIMESTRETCH_SOURCE MATCHES "std::min \\(numFramesRequired, getMaxFramesNeeded\\(\\)\\)")
+    message(WARNING "Couldn't cap Rubber Band's input request; real-time stretching may overrun")
+endif()
+
 add_subdirectory(${juce_SOURCE_DIR} ${CMAKE_BINARY_DIR}/juce EXCLUDE_FROM_ALL)
 add_subdirectory(${tracktion_SOURCE_DIR}/modules ${CMAKE_BINARY_DIR}/tracktion EXCLUDE_FROM_ALL)
 
