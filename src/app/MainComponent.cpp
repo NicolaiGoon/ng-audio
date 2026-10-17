@@ -61,6 +61,7 @@ namespace
                 { "S", "Split it at the playhead" },
                 { "Left, Right", "Move it by a beat (Shift: a bar)" },
                 { "Up, Down", "Move it to the channel above or below" },
+                { "F2", "Rename it" },
                 { "Esc", "Deselect it" },
                 { "Piano roll", {} },
                 { "Click, drag", "Draw notes (as long as the last one)" },
@@ -420,13 +421,14 @@ void MainComponent::setUpPanels()
     timelineShorter.onClick = [this] { timeline.zoomVertically (0.8); };
     timelineTaller.onClick = [this] { timeline.zoomVertically (1.25); };
 
-    for (auto* hint : { &timelineHint, &pianoRollHint, &snapLabel })
+    for (auto* hint : { &timelineHint, &pianoRollHint, &snapLabel, &timelineSnapLabel })
     {
         hint->setFont (juce::FontOptions (12.0f));
         hint->setColour (juce::Label::textColourId, juce::Colours::grey);
     }
 
     snapLabel.setJustificationType (juce::Justification::centredRight);
+    timelineSnapLabel.setJustificationType (juce::Justification::centredRight);
     timelinePanel.addHeaderItem (timelineHint, 700);
     timelinePanel.addHeaderItem (addAudioButton, 78, true);
 
@@ -461,6 +463,19 @@ void MainComponent::setUpPanels()
 
     for (auto* button : { &muteToolButton, &deleteToolButton, &sliceToolButton, &paintToolButton })
         timelinePanel.addHeaderItem (*button, 52, true);
+    // What clip edits snap to; remembered with the layout.
+    timelineSnapBox.addItemList ({ "Auto", "Bar", "Beat", "1/8", "1/16", "Off" }, 1);
+    timelineSnapBox.setTooltip ("What clips snap to as they're moved, trimmed, painted and sliced (hold Alt to place freely). "
+                                "Auto: beats, or 16ths when zoomed in");
+    timelineSnapBox.onChange = [this]
+    {
+        auto id = timelineSnapBox.getSelectedId();
+        timeline.setSnap ((TimelineView::Snap) (id - 1));
+        getProperties().setValue ("ngTimelineSnap", id);
+    };
+    timelineSnapBox.setSelectedId (juce::jlimit (1, 6, getProperties().getIntValue ("ngTimelineSnap", 1)));
+    timelinePanel.addHeaderItem (timelineSnapBox, 64, true);
+    timelinePanel.addHeaderItem (timelineSnapLabel, 36, true);
     timelinePanel.addHeaderItem (timelineTaller, 24, true);
     timelinePanel.addHeaderItem (timelineShorter, 24, true);
     timelinePanel.addHeaderItem (timelineZoomIn, 24, true);

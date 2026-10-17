@@ -46,7 +46,9 @@ Linux, build it from source (see *Building*).
   an empty spot makes a new one-bar clip; the ▾ on a clip, or Shift+right-click, opens its menu
   (split, duplicate, delete, open in the piano roll). Drag a clip to move it (onto another
   channel's lane too) and drag its edges to trim it. Del deletes the selected clip, Ctrl+D
-  duplicates it and S splits it at the playhead. Drags snap to the beat (16ths when zoomed in); hold Alt to place freely. A step
+  duplicates it and S splits it at the playhead. Drags snap to the beat (16ths when zoomed in), or to what *Snap* in the timeline's
+  header picks (bar, beat, 1/8, 1/16 or off); hold Alt to place freely. *Rename* (or F2) and *Colour*
+  in a clip's menu name it and colour it apart from its channel. A step
   pattern can be copied along the timeline, and every copy follows the channel's steps; drag a
   copy's edge to resize it: making it longer adds empty steps to the channel's step row, as in
   FL Studio, and making it shorter cuts off the steps past its end.
@@ -214,6 +216,7 @@ Linux, build it from source (see *Building*).
   | `set_steps` | Sets or toggles a channel's step pattern (`steps`, `step`, `length`, `pitch`) |
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
   | `move_clip` / `resize_clip` / `split_clip` / `duplicate_clip` / `delete_clip` / `mute_clip` | Clip editing, by clip id from `get_state` |
+| `set_clip` | Renames a clip, or gives it a colour of its own (`""` goes back to its channel's) |
   | `get_notes` / `set_notes` | Reads or replaces a MIDI clip's notes (beats from the clip's start) |
   | `quantize_notes` | Moves a clip's notes (or some of them) onto a grid, optionally with their ends |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |

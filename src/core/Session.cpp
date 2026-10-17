@@ -10,6 +10,7 @@ namespace
     const juce::Identifier audioChannelProp ("ngAudio");
     const juce::Identifier audioInputProp ("ngInput"), monitorProp ("ngMonitor");
     const juce::Identifier tagProp ("ngTag"), tagBusProp ("ngTagBus");
+    const juce::Identifier clipColourProp ("ngColour");
 
     juce::String colourToString (juce::Colour c)
     {
@@ -686,6 +687,20 @@ int Session::getEffectInsertIndex (const te::PluginList& list, int effectIndex)
 bool Session::isPatternClip (const te::Clip& clip)
 {
     return clip.state["ngPattern"];
+}
+
+juce::Colour Session::getClipColour (const te::Clip& clip)
+{
+    return clip.state.hasProperty (clipColourProp) ? parseColour (clip.state[clipColourProp].toString()).value_or (juce::Colour())
+                                                   : juce::Colour();
+}
+
+void Session::setClipColour (te::Clip& clip, std::optional<juce::Colour> colour)
+{
+    if (colour)
+        clip.state.setProperty (clipColourProp, colourToString (*colour), &getUndoManager());
+    else
+        clip.state.removeProperty (clipColourProp, &getUndoManager());
 }
 
 //==============================================================================
@@ -1445,6 +1460,9 @@ juce::var Session::toVar() const
 
             if (clip->isMuted())
                 clipObj->setProperty ("muted", true);
+
+            if (auto colour = getClipColour (*clip); ! colour.isTransparent())
+                clipObj->setProperty ("colour", colourToString (colour));
 
             clipObj->setProperty ("type", dynamic_cast<te::WaveAudioClip*> (clip) != nullptr ? "audio" : "midi");
 
