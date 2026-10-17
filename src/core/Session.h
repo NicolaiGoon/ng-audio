@@ -1,6 +1,7 @@
 #pragma once
 
 #include <tracktion_engine/tracktion_engine.h>
+#include "SampleIndex.h"
 
 #include <atomic>
 #include <optional>
@@ -381,6 +382,9 @@ public:
     /** Where the playhead is, as bar.beat.sixteenth counting from 1 (e.g. "3.2.1"). */
     juce::String getPositionText() const;
 
+    /** The list of files in the sample folders find_samples searches. */
+    SampleIndex& getSampleIndex() noexcept          { return sampleIndex; }
+
     /** The level meter on the master output, for the mixer's master strip. */
     te::LevelMeterPlugin* getMasterMeter() const;
 
@@ -422,6 +426,7 @@ private:
     std::atomic<bool> unsavedChanges { false };
     ChangeListener changeListener { *this };
     bool exporting = false;
+    SampleIndex sampleIndex;
 
     JUCE_DECLARE_NON_COPYABLE (Session)
 };

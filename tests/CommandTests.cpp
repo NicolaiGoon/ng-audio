@@ -1968,6 +1968,14 @@ namespace
         r = f.dispatcher.execute ("find_samples", obj ({ { "limit", 1 } }));
         CHECK (r.ok && r.value["samples"].size() == 1 && static_cast<bool> (r.value["truncated"]));
 
+        // Searches use the folder's list; a file added later shows up once it's listed again.
+        auto added = writeSample (samples.getChildFile ("Loops"), "Hat Loop.wav", 0.0, 0.2);
+        f.session.getSampleIndex().clear();
+        CHECK (find ("hat").size() == 1 && find ("hat")[0]["path"] == added.getFullPathName());
+        added.deleteFile();
+        f.session.getSampleIndex().clear();
+        CHECK (find ("hat").size() == 0);
+
         // An effect preset, loaded onto another strip, brings its settings.
         CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } })).ok);
         CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Pad" } })).ok);
