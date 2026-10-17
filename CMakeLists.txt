@@ -109,6 +109,7 @@ add_library(ng_core STATIC
     src/core/Bridge.cpp
     src/core/McpServer.cpp
     src/core/Autosave.cpp
+    src/core/SampleIndex.cpp
     src/core/AiChat.cpp)
 
 target_include_directories(ng_core PUBLIC src)

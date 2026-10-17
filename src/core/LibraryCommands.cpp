@@ -66,6 +66,8 @@ namespace
     //==============================================================================
     CommandResult getLibrary (Session& session, const juce::var&)
     {
+        // Whoever asks is likely to search next (the browser does); list the folders meanwhile.
+        session.getSampleIndex().warmUp (getSampleFolders (session), session.getAudioFileWildcard());
         return CommandResult::success (describeLibrary (session));
     }
 
@@ -89,6 +91,8 @@ namespace
             }
 
             settings (session).setValue (sampleFoldersKey, folders.joinIntoString ("\n"));
+            session.getSampleIndex().clear();
+            session.getSampleIndex().warmUp (folders, session.getAudioFileWildcard());
         }
 
         if (p.hasProperty ("preset_folder"))
@@ -152,12 +156,10 @@ namespace
         for (auto& folderPath : folders)
         {
             juce::File folder (folderPath);
+            auto files = session.getSampleIndex().getFiles (folder, wildcard);
 
-            for (const auto& entry : juce::RangedDirectoryIterator (folder, true, wildcard, juce::File::findFiles))
+            for (auto& [file, relative] : *files)
             {
-                auto file = entry.getFile();
-                auto relative = file.getRelativePathFrom (folder).toLowerCase();
-
                 if (! std::all_of (words.begin(), words.end(), [&] (const juce::String& w) { return relative.contains (w); }))
                     continue;
 
