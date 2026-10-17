@@ -179,6 +179,7 @@ juce_add_gui_app(NgDaw
 
 target_sources(NgDaw PRIVATE
     src/app/AppActions.cpp
+    src/app/CommandPalette.cpp
     src/app/Main.cpp
     src/app/MainComponent.cpp
     src/app/MixerView.cpp

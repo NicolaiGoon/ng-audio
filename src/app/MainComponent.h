@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AppActions.h"
+#include "CommandPalette.h"
 #include "BrowserPanel.h"
 #include "ChannelRack.h"
 #include "ChatPanel.h"
@@ -154,6 +155,7 @@ private:
     //==============================================================================
     // The top bar.
     AppActions actions;
+    CommandPalette palette { actions };
     Menus menus { *this };
     juce::MenuBarComponent menuBar { &menus };
     IconButton newButton { "New project (Ctrl+N)", icons::Icon::newFile },

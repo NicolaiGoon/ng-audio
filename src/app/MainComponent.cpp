@@ -249,6 +249,7 @@ MainComponent::MainComponent (te::Engine& engine)
     };
 
     setUpActions();
+    addChildComponent (palette);
     setUpTopBar();
     setUpPanels();
 
@@ -650,6 +651,8 @@ void MainComponent::setUpActions()
     add ("history", "History...", "The undo history", { KeyPress ('h', command, 0) }, [this] { showHistory(); });
     add ("settings", "Settings...", "Settings", { KeyPress (',', command, 0) }, [this] { showPreferences(); });
     add ("shortcuts", "Keyboard shortcuts", "This list", { KeyPress (KeyPress::F1Key) }, [this] { showShortcuts(); });
+    add ("commandPalette", "Command palette", "Search every action by name", { KeyPress ('p', command | shift, 0) },
+         [this] { palette.open(); });
 
     // The timeline's tools, on FL Studio's keys (the shortcuts list shows them with the timeline's).
     auto tool = [this] (const char* id, const char* name, juce::juce_wchar key, TimelineView::Tool t)
@@ -745,7 +748,7 @@ juce::PopupMenu MainComponent::getMenu (int menuIndex)
     }
     else if (menuIndex == 4)
     {
-        add ({ "shortcuts", "about" });
+        add ({ "commandPalette", "shortcuts", "about" });
     }
 
     return menu;
@@ -1604,6 +1607,11 @@ void MainComponent::resized()
     }
 
     layOutPanels (r);
+
+    // The palette floats over the top of the panels.
+    auto paletteHeight = juce::jmin (440, getHeight() - topBarHeight - 40);
+    palette.setBounds ((getWidth() - juce::jmin (620, getWidth() - 40)) / 2, topBarHeight + 4,
+                       juce::jmin (620, getWidth() - 40), paletteHeight);
     repaint();
 }
 
