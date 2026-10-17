@@ -55,9 +55,12 @@ void TimelineView::update (const juce::var& state)
 
         for (auto& c : *channel["clips"].getArray())
         {
-            Clip clip { c["id"].toString(), c["name"].toString(),
-                        static_cast<double> (c["start_beat"]), static_cast<double> (c["length_beats"]),
-                        static_cast<bool> (c["pattern"]) };
+            Clip clip;
+            clip.id = c["id"].toString();
+            clip.name = c["name"].toString();
+            clip.startBeat = c["start_beat"];
+            clip.lengthBeats = c["length_beats"];
+            clip.pattern = c["pattern"];
             clip.audio = c["type"] == "audio";
             clip.missing = c["missing"];
             clip.maxEndBeat = c.hasProperty ("max_end_beat") ? static_cast<double> (c["max_end_beat"]) : -1.0;
@@ -93,6 +96,22 @@ void TimelineView::update (const juce::var& state)
 
         lanes.add (lane);
     }
+
+    // Selected clips that are gone are forgotten.
+    auto exists = [this] (const juce::String& id)
+    {
+        return std::any_of (lanes.begin(), lanes.end(), [&id] (const Lane& l)
+        {
+            return std::any_of (l.clips.begin(), l.clips.end(), [&id] (const Clip& c) { return c.id == id; });
+        });
+    };
+
+    for (int i = selection.size(); --i >= 0;)
+        if (! exists (selection[i]))
+            selection.remove (i);
+
+    if (! selection.contains (selectedClip))
+        selectedClip = selection.isEmpty() ? juce::String() : selection[0];
 
     // Lane heights and brushes of channels that are gone go too.
     for (auto it = laneHeights.begin(); it != laneHeights.end();)
@@ -139,7 +158,8 @@ void TimelineView::clear()
     laneHeights.clear();
     brushes.clear();
     erased.clear();
-    selectedClip = {};
+    selectOnly ({});
+    copiedClips.clear();
     drag = {};
     rulerDrag = RulerDrag::none;
     repaint();
@@ -476,8 +496,8 @@ void TimelineView::paintLanes (juce::Graphics& g)
                 if (area.getRight() < lanesArea.getX() || area.getX() > lanesArea.getRight())
                     continue;
 
-                // While dragging, the clip's old place is only a faint outline.
-                if (drag.moved && clip.id == drag.clip.id)
+                // While dragging, the clip's old place (or the group's) is only a faint outline.
+                if (drag.moved && (clip.id == drag.clip.id || (drag.group && isSelected (clip.id))))
                 {
                     g.setColour (lanes[i].colour.withAlpha (0.5f));
                     g.drawRoundedRectangle (area.reduced (0.5f), 3.0f, 1.0f);
@@ -499,12 +519,40 @@ void TimelineView::paintLanes (juce::Graphics& g)
                     g.drawText ("muted", area.reduced (4.0f, 1.0f), juce::Justification::bottomRight, false);
                 }
 
-                if (clip.id == selectedClip)
+                if (isSelected (clip.id))
                 {
                     g.setColour (juce::Colours::white);
                     g.drawRoundedRectangle (area.reduced (0.5f), 3.0f, 2.0f);
                 }
             }
+        }
+
+        // The rest of a group being dragged, where it would go.
+        if (drag.moved && drag.group)
+        {
+            auto beats = drag.start - drag.clip.startBeat;
+            auto lanesDown = drag.targetLane - drag.lane;
+
+            for (auto [lane, clip] : getSelectionWithLanes())
+            {
+                if (clip->id == drag.clip.id || ! juce::isPositiveAndBelow (lane + lanesDown, lanes.size()))
+                    continue;
+
+                auto preview = *clip;
+                preview.startBeat += beats;
+                auto area = getClipArea (lane + lanesDown, preview.startBeat, preview.lengthBeats);
+                paintClip (g, lanes[lane], preview, area);
+                g.setColour (juce::Colours::white);
+                g.drawRoundedRectangle (area.reduced (0.5f), 3.0f, 2.0f);
+            }
+        }
+
+        if (drag.mode == DragMode::select && ! fitOnClick)
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.1f));
+            g.fillRect (drag.box);
+            g.setColour (juce::Colours::white.withAlpha (0.7f));
+            g.drawRect (drag.box, 1.0f);
         }
 
         if (drag.moved && juce::isPositiveAndBelow (drag.targetLane, lanes.size()))
@@ -1061,12 +1109,30 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
     rulerDrag = RulerDrag::none;
     glideTarget = -1.0;
 
-    // Ctrl + left click fits the whole song in view, as in FL Studio, and does nothing else.
-    fitOnClick = e.mods.isCommandDown() && e.mods.isLeftButtonDown();
+    // Ctrl + left click on a clip adds it to the selection (or takes it out). Anywhere else,
+    // Ctrl + drag selects the clips in a box, and a Ctrl + click that doesn't drag fits the
+    // whole song in view, as in FL Studio.
+    fitOnClick = false;
 
-    if (fitOnClick)
+    if (e.mods.isCommandDown() && e.mods.isLeftButtonDown())
     {
         drag = {};
+        auto hit = getRulerArea().contains (e.getPosition()) ? Hit() : hitTestLanes (e.position);
+
+        if (hit.clip >= 0)
+        {
+            toggleSelected (lanes[hit.lane].clips[hit.clip].id);
+            return;
+        }
+
+        fitOnClick = true;
+
+        if (getLanesArea().contains (e.getPosition()))
+        {
+            drag.mode = DragMode::select;
+            drag.box = { e.position, e.position };
+        }
+
         return;
     }
 
@@ -1112,7 +1178,7 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
     {
         if (hit.clip >= 0 && e.mods.isShiftDown())
         {
-            selectedClip = lanes[hit.lane].clips[hit.clip].id;
+            selectOnly (lanes[hit.lane].clips[hit.clip].id);
             repaint();
             showClipMenu();
             return;
@@ -1158,7 +1224,7 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
     {
         if (hit.lane < 0)
         {
-            selectedClip = {};
+            selectOnly ({});
             repaint();
             return;
         }
@@ -1186,7 +1252,16 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
     }
 
     auto& clip = lanes.getReference (hit.lane).clips.getReference (hit.clip);
-    selectedClip = clip.id;
+
+    // Dragging one of several selected clips moves them all; a click that doesn't drag picks
+    // just that one (see finishMouseDrag).
+    drag.group = selection.size() > 1 && isSelected (clip.id) && hit.mode == DragMode::move;
+
+    if (drag.group)
+        selectedClip = clip.id;
+    else
+        selectOnly (clip.id);
+
     brushes[lanes[hit.lane].channelId] = clip.id;
 
     // Picking a clip on its own (not the second click on one just painted) means a double-click can open it.
@@ -1235,6 +1310,20 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
         }
 
         repaint();
+        return;
+    }
+
+    if (drag.mode == DragMode::select)
+    {
+        if (e.getDistanceFromDragStart() > 4)
+            fitOnClick = false;
+
+        if (! fitOnClick)
+        {
+            drag.box = juce::Rectangle<float> (e.mouseDownPosition, e.position);
+            selectInBox (drag.box);
+        }
+
         return;
     }
 
@@ -1304,6 +1393,11 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
         case DragMode::move:
         {
             drag.start = std::max (0.0, snap (originalStart + delta, e.mods));
+
+            // A group moves together, so none of it can go before the start.
+            if (drag.group)
+                drag.start = std::max (drag.start, originalStart - getSelectionRange().getStart());
+
             drag.end = drag.start + drag.clip.lengthBeats;
 
             // Step patterns stay on their own channel, and audio and MIDI clips on their own kind.
@@ -1311,7 +1405,7 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
             {
                 auto lane = juce::jlimit (0, lanes.size() - 1, laneAt (e.position.y));
 
-                if (lanes[lane].audio == drag.clip.audio)
+                if (lanes[lane].audio == drag.clip.audio && (! drag.group || canMoveSelectionByLanes (lane - drag.lane)))
                     drag.targetLane = lane;
             }
 
@@ -1347,6 +1441,7 @@ void TimelineView::mouseDrag (const juce::MouseEvent& e)
             break;
 
         case DragMode::none:
+        case DragMode::select:
         case DragMode::paint:
         case DragMode::erase:
         case DragMode::mute:
@@ -1361,6 +1456,7 @@ void TimelineView::mouseUp (const juce::MouseEvent&)
 {
     if (std::exchange (fitOnClick, false))
     {
+        drag = {};
         zoomToFit();
         return;
     }
@@ -1407,8 +1503,26 @@ void TimelineView::finishMouseDrag()
         return;
     }
 
-    if (! finished.moved)
+    if (finished.mode == DragMode::select)
+    {
+        repaint();
         return;
+    }
+
+    if (! finished.moved)
+    {
+        if (finished.group)
+            selectOnly (finished.clip.id);
+
+        return;
+    }
+
+    if (finished.group && finished.mode == DragMode::move)
+    {
+        moveSelection (finished.start - finished.clip.startBeat, finished.targetLane - finished.lane);
+        repaint();
+        return;
+    }
 
     auto clipId = finished.clip.id;
     auto changedLane = finished.targetLane != finished.lane;
@@ -1495,7 +1609,8 @@ void TimelineView::mouseMove (const juce::MouseEvent& e)
         case DragMode::paint:
         case DragMode::erase:
         case DragMode::mute:
-        case DragMode::laneHeight: break;
+        case DragMode::laneHeight:
+        case DragMode::select:   break;
     }
 }
 
@@ -1534,7 +1649,7 @@ void TimelineView::mouseDoubleClick (const juce::MouseEvent& e)
         if (id == lastPainted || tool != Tool::paint)
             return;
 
-        selectedClip = id;
+        selectOnly (id);
         openSelected();
         return;
     }
@@ -1557,9 +1672,15 @@ bool TimelineView::keyPressed (const juce::KeyPress& key)
 
     auto command = juce::ModifierKeys::commandModifier;
 
-    if (key == juce::KeyPress ('v', command, 0) && copiedClip.isNotEmpty())
+    if (key == juce::KeyPress ('v', command, 0) && ! copiedClips.isEmpty())
     {
         pasteAtPlayhead();
+        return true;
+    }
+
+    if (key == juce::KeyPress ('a', command, 0))
+    {
+        selectAll();
         return true;
     }
 
@@ -1592,7 +1713,7 @@ bool TimelineView::keyPressed (const juce::KeyPress& key)
 
     if (key == juce::KeyPress ('c', command, 0))
     {
-        copiedClip = selectedClip;
+        copiedClips = selection;
         return true;
     }
 
@@ -1604,7 +1725,7 @@ bool TimelineView::keyPressed (const juce::KeyPress& key)
 
     if (key == juce::KeyPress::escapeKey)
     {
-        selectedClip = {};
+        selectOnly ({});
         repaint();
         return true;
     }
@@ -1683,7 +1804,7 @@ void TimelineView::showClipMenu()
     menu.addSeparator();
     menu.addItem ("Split at playhead (S)", canSplit, false, [this] { splitSelectedAtPlayhead(); });
     menu.addItem ("Duplicate (Ctrl+D)", [this] { duplicateSelected(); });
-    menu.addItem ("Copy (Ctrl+C)", [this] { copiedClip = selectedClip; });
+    menu.addItem ("Copy (Ctrl+C)", [this] { copiedClips = selection; });
     menu.addSeparator();
     menu.addItem ("Delete (Del)", [this] { deleteSelected(); });
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition());
@@ -1704,37 +1825,265 @@ void TimelineView::openSelected()
         onOpenClip (clip->id);
 }
 
+//==============================================================================
+// The selection: selectedClip is the clip picked last (what the menu, Enter, F2 and painting
+// act on), and selection holds it and every other selected clip.
+
+void TimelineView::selectOnly (const juce::String& clipId)
+{
+    selection.clearQuick();
+
+    if (clipId.isNotEmpty())
+        selection.add (clipId);
+
+    selectedClip = clipId;
+}
+
+void TimelineView::toggleSelected (const juce::String& clipId)
+{
+    if (isSelected (clipId))
+    {
+        selection.removeString (clipId);
+
+        if (selectedClip == clipId)
+            selectedClip = selection.isEmpty() ? juce::String() : selection[selection.size() - 1];
+    }
+    else
+    {
+        selection.add (clipId);
+        selectedClip = clipId;
+    }
+
+    repaint();
+}
+
+void TimelineView::selectInBox (juce::Rectangle<float> box)
+{
+    selection.clearQuick();
+
+    for (int i = 0; i < lanes.size(); ++i)
+        for (auto& clip : lanes.getReference (i).clips)
+            if (! erased.contains (clip.id) && getClipArea (i, clip.startBeat, clip.lengthBeats).intersects (box))
+                selection.add (clip.id);
+
+    if (! selection.contains (selectedClip))
+        selectedClip = selection.isEmpty() ? juce::String() : selection[0];
+
+    repaint();
+}
+
+void TimelineView::selectAll()
+{
+    selection.clearQuick();
+
+    for (auto& lane : lanes)
+        for (auto& clip : lane.clips)
+            selection.add (clip.id);
+
+    if (! selection.contains (selectedClip))
+        selectedClip = selection.isEmpty() ? juce::String() : selection[0];
+
+    repaint();
+}
+
+std::vector<std::pair<int, const TimelineView::Clip*>> TimelineView::getSelectionWithLanes() const
+{
+    std::vector<std::pair<int, const Clip*>> picked;
+
+    for (int i = 0; i < lanes.size(); ++i)
+        for (auto& clip : lanes.getReference (i).clips)
+            if (isSelected (clip.id) && ! erased.contains (clip.id))
+                picked.emplace_back (i, &clip);
+
+    return picked;
+}
+
+juce::Range<double> TimelineView::getSelectionRange() const
+{
+    auto picked = getSelectionWithLanes();
+
+    if (picked.empty())
+        return {};
+
+    auto start = picked.front().second->startBeat, end = start;
+
+    for (auto [lane, clip] : picked)
+    {
+        start = std::min (start, clip->startBeat);
+        end = std::max (end, clip->startBeat + clip->lengthBeats);
+    }
+
+    return { start, end };
+}
+
+bool TimelineView::canMoveSelectionByLanes (int lanesDown) const
+{
+    for (auto [lane, clip] : getSelectionWithLanes())
+    {
+        auto target = lane + lanesDown;
+
+        if (! juce::isPositiveAndBelow (target, lanes.size()) || lanes[target].audio != clip->audio
+             || (lanesDown != 0 && clip->pattern))
+            return false;
+    }
+
+    return true;
+}
+
+namespace
+{
+    juce::var commandFor (const char* name, const juce::var& params)
+    {
+        return makeObject ({ { "command", name }, { "params", params } });
+    }
+}
+
+juce::Array<juce::var> TimelineView::runCommands (const juce::String& undoLabel, const juce::Array<juce::var>& commands)
+{
+    if (commands.isEmpty())
+        return {};
+
+    // One command runs as itself, so its undo step keeps its name; several are one batch, and one undo step.
+    if (commands.size() == 1)
+    {
+        auto result = dispatcher.execute (commands[0]["command"].toString(), commands[0]["params"]);
+        return result.ok ? juce::Array<juce::var> { result.value } : juce::Array<juce::var>();
+    }
+
+    auto result = dispatcher.executeBatch (undoLabel, juce::var (commands));
+
+    if (! result.ok || ! result.value.isArray())
+        return {};
+
+    return *result.value.getArray();
+}
+
+bool TimelineView::selectResults (const juce::Array<juce::var>& results, int primary,
+                                  const std::function<juce::String (const juce::var&)>& clipOf)
+{
+    if (results.isEmpty())
+        return false;
+
+    selection.clearQuick();
+
+    for (auto& r : results)
+        if (auto id = clipOf (r); id.isNotEmpty())
+            selection.addIfNotAlreadyThere (id);
+
+    selectedClip = juce::isPositiveAndBelow (primary, results.size()) ? clipOf (results[primary]) : juce::String();
+
+    if (! selection.contains (selectedClip))
+        selectedClip = selection.isEmpty() ? juce::String() : selection[0];
+
+    repaint();
+    return true;
+}
+
+//==============================================================================
 void TimelineView::deleteSelected()
 {
-    if (dispatcher.execute ("delete_clip", makeObject ({ { "clip", selectedClip } })).ok)
-        selectedClip = {};
+    juce::Array<juce::var> commands;
+
+    for (auto [lane, clip] : getSelectionWithLanes())
+        commands.add (commandFor ("delete_clip", makeObject ({ { "clip", clip->id } })));
+
+    if (! runCommands ("Delete clips", commands).isEmpty())
+        selectOnly ({});
 }
 
 void TimelineView::duplicateSelected()
 {
-    auto result = dispatcher.execute ("duplicate_clip", makeObject ({ { "clip", selectedClip } }));
+    // The copies go straight after the selection, keeping their places relative to each other.
+    auto length = getSelectionRange().getLength();
+    juce::Array<juce::var> commands;
+    int primary = 0;
 
-    if (result.ok)
-        selectedClip = result.value["clip"].toString();
+    for (auto [lane, clip] : getSelectionWithLanes())
+    {
+        if (clip->id == selectedClip)
+            primary = commands.size();
+
+        commands.add (commandFor ("duplicate_clip", makeObject ({ { "clip", clip->id }, { "start_beat", clip->startBeat + length } })));
+    }
+
+    selectResults (runCommands ("Duplicate clips", commands), primary, [] (const juce::var& r) { return r["clip"].toString(); });
 }
 
 void TimelineView::splitSelectedAtPlayhead()
 {
-    auto result = dispatcher.execute ("split_clip", makeObject ({ { "clip", selectedClip }, { "beat", getPlayheadBeat() } }));
+    auto playhead = getPlayheadBeat();
+    juce::Array<juce::var> commands;
+    int primary = 0;
 
-    // Keep the right-hand half selected, so pressing S again keeps chopping forwards.
-    if (result.ok)
-        selectedClip = result.value[1]["clip"].toString();
+    for (auto [lane, clip] : getSelectionWithLanes())
+    {
+        if (clip->pattern || playhead <= clip->startBeat || playhead >= clip->startBeat + clip->lengthBeats)
+            continue;
+
+        if (clip->id == selectedClip)
+            primary = commands.size();
+
+        commands.add (commandFor ("split_clip", makeObject ({ { "clip", clip->id }, { "beat", playhead } })));
+    }
+
+    // Nothing to split: try the picked clip anyway, so its command says why not.
+    if (commands.isEmpty() && selectedClip.isNotEmpty())
+        commands.add (commandFor ("split_clip", makeObject ({ { "clip", selectedClip }, { "beat", playhead } })));
+
+    // Keep the right-hand halves selected, so pressing S again keeps chopping forwards.
+    selectResults (runCommands ("Split clips", commands), primary, [] (const juce::var& r) { return r[1]["clip"].toString(); });
 }
 
 void TimelineView::pasteAtPlayhead()
 {
-    auto result = dispatcher.execute ("duplicate_clip", makeObject ({ { "clip", copiedClip }, { "start_beat", getPlayheadBeat() } }));
+    // The earliest copied clip goes at the playhead and the rest keep their places after it,
+    // each on its own channel.
+    std::vector<const Clip*> copied;
 
-    if (result.ok)
-        selectedClip = result.value["clip"].toString();
-    else
-        copiedClip = {};   // it's been deleted since
+    for (auto& lane : lanes)
+        for (auto& clip : lane.clips)
+            if (copiedClips.contains (clip.id))
+                copied.push_back (&clip);
+
+    if (copied.empty())
+    {
+        copiedClips.clear();   // they've been deleted since
+        return;
+    }
+
+    auto first = copied.front()->startBeat;
+
+    for (auto* clip : copied)
+        first = std::min (first, clip->startBeat);
+
+    auto playhead = getPlayheadBeat();
+    juce::Array<juce::var> commands;
+
+    for (auto* clip : copied)
+        commands.add (commandFor ("duplicate_clip", makeObject ({ { "clip", clip->id }, { "start_beat", playhead + clip->startBeat - first } })));
+
+    selectResults (runCommands ("Paste clips", commands), 0, [] (const juce::var& r) { return r["clip"].toString(); });
+}
+
+void TimelineView::moveSelection (double beats, int lanesDown)
+{
+    juce::Array<juce::var> commands;
+    int primary = 0;
+
+    for (auto [lane, clip] : getSelectionWithLanes())
+    {
+        if (! juce::isPositiveAndBelow (lane + lanesDown, lanes.size()))
+            return;
+
+        if (clip->id == selectedClip)
+            primary = commands.size();
+
+        commands.add (commandFor ("move_clip", makeObject ({ { "clip", clip->id },
+                                                             { "start_beat", std::max (0.0, clip->startBeat + beats) },
+                                                             { "channel", lanes[lane + lanesDown].channelId } })));
+    }
+
+    selectResults (runCommands ("Move clips", commands), primary, [] (const juce::var& r) { return r["clip"].toString(); });
 }
 
 void TimelineView::moveSelected (double beats, int lanesDown)
@@ -1745,17 +2094,22 @@ void TimelineView::moveSelected (double beats, int lanesDown)
     if (clip == nullptr)
         return;
 
-    // Up and down skip lanes of the other kind (audio or instrument).
+    // Up and down skip lanes of the other kind (audio or instrument). A group moves a lane at
+    // a time, and only when all of it can.
+    auto group = selection.size() > 1;
     auto target = lane;
 
     if (lanesDown != 0)
     {
-        do
+        if (group)
             target += lanesDown > 0 ? 1 : -1;
-        while (juce::isPositiveAndBelow (target, lanes.size()) && lanes[target].audio != clip->audio);
+        else
+            do
+                target += lanesDown > 0 ? 1 : -1;
+            while (juce::isPositiveAndBelow (target, lanes.size()) && lanes[target].audio != clip->audio);
     }
 
-    if (! juce::isPositiveAndBelow (target, lanes.size()))
+    if (! juce::isPositiveAndBelow (target, lanes.size()) || (group && ! canMoveSelectionByLanes (target - lane)))
         return;
 
     // Step to the next beat (or bar) line that way, so a clip that's off the grid lands on it.
@@ -1766,11 +2120,16 @@ void TimelineView::moveSelected (double beats, int lanesDown)
     else if (beats < 0.0)
         start = std::max (0.0, std::ceil (start / -beats - 1.0 - 1.0e-6) * -beats);
 
-    auto result = dispatcher.execute ("move_clip", makeObject ({ { "clip", selectedClip },
-                                                                 { "start_beat", start },
-                                                                 { "channel", lanes[target].channelId } }));
-    if (result.ok)
-        selectedClip = result.value["clip"].toString();
+    // A group stops at the start of the song as a whole.
+    auto offset = start - clip->startBeat;
+
+    if (group)
+        offset = std::max (offset, -getSelectionRange().getStart());
+
+    if (std::abs (offset) < 1.0e-9 && target == lane)
+        return;
+
+    moveSelection (offset, target - lane);
 }
 
 void TimelineView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
