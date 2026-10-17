@@ -1077,12 +1077,14 @@ void TimelineView::showChannelMenu (int lane)
     auto palette = Session::getPalette();
 
     for (auto& c : palette)
-        colours.addColouredItem (-1, juce::String::fromUTF8 ("\xe2\x96\xa0  ") + "#" + c.toDisplayString (false), c, true, c == colour,
-                                 [this, channelId, c]
-                                 {
-                                     dispatcher.execute ("set_track_colour", makeObject ({ { "track", channelId },
-                                                                                          { "colour", "#" + c.toDisplayString (false) } }));
-                                 });
+    {
+        juce::PopupMenu::Item swatch (juce::String::fromUTF8 ("\xe2\x96\xa0  ") + "#" + c.toDisplayString (false));
+        swatch.setColour (c).setTicked (c == colour).setAction ([this, channelId, c]
+        {
+            dispatcher.execute ("set_track_colour", makeObject ({ { "track", channelId }, { "colour", "#" + c.toDisplayString (false) } }));
+        });
+        colours.addItem (swatch);
+    }
 
     juce::PopupMenu menu;
     menu.addSectionHeader (name);
