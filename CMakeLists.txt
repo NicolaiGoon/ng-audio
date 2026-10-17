@@ -97,6 +97,8 @@ add_library(ng_core STATIC
     src/core/CommandRegistry.cpp
     src/core/CommandDispatcher.cpp
     src/core/ProjectCommands.cpp
+    src/core/ClipCommands.cpp
+    src/core/TransportCommands.cpp
     src/core/PluginCommands.cpp
     src/core/EffectCommands.cpp
     src/core/BusCommands.cpp
@@ -267,5 +269,9 @@ if (BUILD_TESTING)
         NG_TEST_PLUGIN_FOLDER="${CMAKE_CURRENT_BINARY_DIR}/NgTestSynth_artefacts/$<CONFIG>/VST3"
         NG_TEST_EFFECT_FOLDER="${CMAKE_CURRENT_BINARY_DIR}/NgTestGain_artefacts/$<CONFIG>/VST3"
         NG_TEST_DRUMS_FOLDER="${CMAKE_CURRENT_BINARY_DIR}/NgTestDrums_artefacts/$<CONFIG>/VST3")
+    # One process for every test. Run one by itself with `NgDawTests =testName` (or every test
+    # with a word in its name, `NgDawTests Bridge`). Not one ctest test per function: tearing
+    # down the engine after a VST3 plugin has run sometimes crashes in JUCE's Linux run loop,
+    # and 45 teardowns instead of one turn that into a flaky CI.
     add_test(NAME command_layer COMMAND NgDawTests)
 endif()

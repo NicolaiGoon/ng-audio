@@ -4,6 +4,7 @@ namespace ng
 {
 namespace
 {
+    using params::object;
     const char* const serverVersion = NG_VERSION;
 
     const char* const instructions =
@@ -13,16 +14,6 @@ namespace
         "for, and so do names. Times are in beats from the start of the song. Use batch to make a change of several "
         "commands as one undo step, referring to earlier results with \"$<n>.<field>\". Each tool call or batch is one "
         "step in the app's undo history and appears in its command log, where the person can undo it.";
-
-    juce::var object (std::initializer_list<std::pair<const char*, juce::var>> properties)
-    {
-        auto obj = new juce::DynamicObject();
-
-        for (auto& [name, value] : properties)
-            obj->setProperty (name, value);
-
-        return juce::var (obj);
-    }
 
     juce::var tool (const juce::String& name, const juce::String& description, const juce::var& schema)
     {

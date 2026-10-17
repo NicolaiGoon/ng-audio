@@ -4,27 +4,14 @@ namespace ng
 {
 namespace
 {
+    using params::object;
+    using params::isNumber;
     using params::prop;
     using params::schema;
 
     // Tracktion numbers its aux buses; this many is plenty for one project.
     constexpr int maxBuses = 32;
     constexpr double minSendDb = -100.0, maxSendDb = 6.0;
-
-    juce::var object (std::initializer_list<std::pair<const char*, juce::var>> properties)
-    {
-        auto obj = new juce::DynamicObject();
-
-        for (auto& [name, value] : properties)
-            obj->setProperty (name, value);
-
-        return juce::var (obj);
-    }
-
-    bool isNumber (const juce::var& v)
-    {
-        return v.isDouble() || v.isInt() || v.isInt64();
-    }
 
     /** Sets a send's level as part of the undo step: the stored value first, then the live one. */
     void setSendLevel (te::AuxSendPlugin& send, double db)
