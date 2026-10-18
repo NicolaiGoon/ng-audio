@@ -88,6 +88,22 @@ endif()
 add_subdirectory(${juce_SOURCE_DIR} ${CMAKE_BINARY_DIR}/juce EXCLUDE_FROM_ALL)
 add_subdirectory(${tracktion_SOURCE_DIR}/modules ${CMAKE_BINARY_DIR}/tracktion EXCLUDE_FROM_ALL)
 
+# A compiler cache such as ccache or sccache (CI passes -DNG_COMPILER_LAUNCHER=...) for our targets,
+# which also compile JUCE's and Tracktion's modules. It's set after adding JUCE so that juceaide, the
+# helper JUCE builds while configuring, doesn't get it: that build uses MSVC's shared PDB (/Zi),
+# which sccache can't write to.
+if (NG_COMPILER_LAUNCHER)
+    set(CMAKE_C_COMPILER_LAUNCHER ${NG_COMPILER_LAUNCHER})
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${NG_COMPILER_LAUNCHER})
+
+    # JUCE's recommended flags ask MSVC for a shared PDB too; embedded debug info (/Z7) instead.
+    if (MSVC)
+        get_target_property(ng_juce_flags juce_recommended_config_flags INTERFACE_COMPILE_OPTIONS)
+        string(REPLACE "/Zi" "/Z7" ng_juce_flags "${ng_juce_flags}")
+        set_target_properties(juce_recommended_config_flags PROPERTIES INTERFACE_COMPILE_OPTIONS "${ng_juce_flags}")
+    endif()
+endif()
+
 # ------------------------------------------------------------------------------
 # ng_core: JUCE + Tracktion compiled once, plus the project model and the
 # command layer. The app, the tests and (later) the MCP server all link this.
