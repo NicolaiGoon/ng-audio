@@ -154,6 +154,7 @@ private:
         double maxEndBeat = -1.0;   // for an audio clip, where its file runs out
         double gainDb = 0.0, fadeInBeats = 0.0, fadeOutBeats = 0.0, sourceBpm = 0.0;   // audio only
         bool followTempo = false, muted = false;
+        int patternId = 0;     // for a step pattern's clip, the pattern it plays
 
         te::EditItemID itemID;
         juce::Colour colour;   // the clip's own colour, or transparent for its channel's
@@ -256,7 +257,9 @@ private:
     void selectInBox (juce::Rectangle<float>);
     void selectAll();
     bool isSelected (const juce::String& clipId) const      { return selection.contains (clipId); }
-    std::vector<std::pair<int, const Clip*>> getSelectionWithLanes() const;   // lane index and clip
+    /** The selected clips with their lane index. For commands, a step pattern's block counts
+        once: a command on any of its clips acts on all of it. */
+    std::vector<std::pair<int, const Clip*>> getSelectionWithLanes (bool onePerBlock = false) const;
     juce::Range<double> getSelectionRange() const;
     bool canMoveSelectionByLanes (int lanesDown) const;
     void moveSelection (double beats, int lanesDown);

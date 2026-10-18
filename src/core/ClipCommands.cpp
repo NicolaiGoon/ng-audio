@@ -59,72 +59,145 @@ namespace
 
 
     //==============================================================================
-    // Step patterns: each channel has a row of steps (16th notes) that plays one pitch.
-    // The steps are stored on the channel and turned into a MIDI clip at the start of the
-    // project, marked as the channel's pattern clip and rebuilt whenever the steps change.
-    const juce::Identifier stepsProp ("ngSteps"), stepPitchProp ("ngStepPitch"), patternClipProp ("ngPattern"),
-                          patternBeatsProp ("ngPatternBeats");
+    // Step patterns, as in FL Studio: a pattern holds a step row (16th notes, one pitch) for
+    // each channel. Placing it on the timeline puts a pattern clip on every channel with steps
+    // in it, all starting together: one block. The clips are marked with their pattern and
+    // rebuilt from the rows whenever the steps change, and moving, copying, resizing or
+    // deleting any clip of a block does the same to the whole block.
+    const juce::Identifier patternClipProp ("ngPattern"), patternBeatsProp ("ngPatternBeats");
     constexpr int maxStepCount = 64;
     constexpr double beatsPerStep = 0.25;
 
-    /** Brings a channel's pattern clips in line with its steps. A pattern can be placed on the
-        timeline several times (duplicate_clip); every copy plays the same steps, so each one is
-        refilled where it stands. A copy that was resized (resize_clip) keeps its own length, as in FL
-        Studio: the steps play once from its start, cut off if it's shorter (a longer one
-        first grows the step row, see resize_clip). The rest follow the steps' length.
-        With no copies left, the pattern goes back at the start. */
-    void rebuildPatternClip (Session& session, te::AudioTrack& channel)
+    double startBeatOf (Session& session, const te::Clip& clip)
     {
-        auto& edit = session.getEdit();
-        auto* um = &session.getUndoManager();
-        auto steps = Session::getSteps (channel);
+        auto beat = session.getEdit().tempoSequence.toBeats (clip.getPosition().getStart()).inBeats();
+        return std::round (beat * 1.0e6) / 1.0e6;
+    }
 
-        juce::Array<te::MidiClip*> instances;
+    juce::Array<te::MidiClip*> patternClipsOn (te::AudioTrack& channel, int pattern)
+    {
+        juce::Array<te::MidiClip*> clips;
 
         for (auto clip : channel.getClips())
-            if (Session::isPatternClip (*clip))
+            if (Session::getPatternOf (*clip) == pattern)
                 if (auto midi = dynamic_cast<te::MidiClip*> (clip))
-                    instances.add (midi);
+                    clips.add (midi);
 
-        if (! steps.containsChar ('x'))
+        return clips;
+    }
+
+    /** The pattern's clips on every channel. */
+    juce::Array<te::MidiClip*> patternClips (Session& session, int pattern)
+    {
+        juce::Array<te::MidiClip*> clips;
+
+        for (auto channel : session.getChannels())
+            clips.addArray (patternClipsOn (*channel, pattern));
+
+        return clips;
+    }
+
+    /** The block a pattern clip belongs to: its pattern's clips that start where it does. */
+    juce::Array<te::MidiClip*> blockOf (Session& session, const te::Clip& clip)
+    {
+        juce::Array<te::MidiClip*> block;
+        auto start = startBeatOf (session, clip);
+
+        for (auto c : patternClips (session, Session::getPatternOf (clip)))
+            if (startBeatOf (session, *c) == start)
+                block.add (c);
+
+        return block;
+    }
+
+    /** Where the pattern is placed: each block's start, and its own length if it was resized. */
+    std::map<double, juce::var> blocksOf (Session& session, int pattern)
+    {
+        std::map<double, juce::var> blocks;
+
+        for (auto clip : patternClips (session, pattern))
         {
-            for (auto clip : instances)
+            auto& length = blocks[startBeatOf (session, *clip)];
+
+            if (length.isVoid() && clip->state.hasProperty (patternBeatsProp))
+                length = clip->state[patternBeatsProp];
+        }
+
+        return blocks;
+    }
+
+    /** Fills a pattern clip from its channel's row: the steps play once from its start, cut off
+        if it was resized shorter; one that wasn't resized follows the row's length. */
+    void fillPatternClip (Session& session, te::MidiClip& clip, te::AudioTrack& channel)
+    {
+        auto& tempo = session.getEdit().tempoSequence;
+        auto* um = &session.getUndoManager();
+        auto pattern = Session::getPatternOf (clip);
+        auto steps = Session::getSteps (channel, pattern);
+        auto pitch = Session::getStepPitch (channel, pattern);
+        auto clipBeats = clip.state.hasProperty (patternBeatsProp) ? static_cast<double> (clip.state[patternBeatsProp])
+                                                                    : steps.length() * beatsPerStep;
+        auto startBeat = tempo.toBeats (clip.getPosition().getStart());
+        clip.setPosition ({ { clip.getPosition().getStart(), tempo.toTime (startBeat + te::BeatDuration::fromBeats (clipBeats)) },
+                            te::TimeDuration() });
+        clip.getSequence().clear (um);
+
+        for (int i = 0; i < steps.length(); ++i)
+            if (auto beat = i * beatsPerStep; steps[i] == 'x' && beat < clipBeats - 1.0e-6)
+                clip.getSequence().addNote (pitch, te::BeatPosition::fromBeats (beat),
+                                            te::BeatDuration::fromBeats (beatsPerStep), 100, 0, um);
+    }
+
+    /** The channel's clip of the pattern's block at a start, made if it isn't there yet. */
+    te::MidiClip* placeOn (Session& session, te::AudioTrack& channel, int pattern, double startBeat, const juce::var& ownLength)
+    {
+        for (auto clip : patternClipsOn (channel, pattern))
+            if (startBeatOf (session, *clip) == std::round (startBeat * 1.0e6) / 1.0e6)
+                return clip;
+
+        auto& tempo = session.getEdit().tempoSequence;
+        auto* um = &session.getUndoManager();
+        auto info = session.findPattern (pattern).value_or (Session::PatternInfo());
+        auto start = te::BeatPosition::fromBeats (startBeat);
+        auto clip = channel.insertMIDIClip (info.name, { tempo.toTime (start), tempo.toTime (start + te::BeatDuration::fromBeats (4.0)) }, nullptr);
+
+        if (clip == nullptr)
+            return nullptr;
+
+        clip->state.setProperty (patternClipProp, pattern, um);
+
+        if (! ownLength.isVoid())
+            clip->state.setProperty (patternBeatsProp, ownLength, um);
+
+        if (! info.colour.isTransparent())
+            session.setClipColour (*clip, info.colour);
+
+        return clip.get();
+    }
+
+    /** Brings a channel's clips of a pattern in line with its row in it: a clip in each of the
+        pattern's blocks while the row has steps, none when it's empty. Pattern 1, with no blocks
+        anywhere, goes back at the start of the project, as the single pattern always has. */
+    void rebuildPatternClip (Session& session, te::AudioTrack& channel, int pattern)
+    {
+        if (! Session::getSteps (channel, pattern).containsChar ('x'))
+        {
+            for (auto clip : patternClipsOn (channel, pattern))
                 clip->removeFromParent();
 
             return;
         }
 
-        auto& tempo = edit.tempoSequence;
-        auto patternBeats = steps.length() * beatsPerStep;
-        auto lengthBeats = te::BeatDuration::fromBeats (patternBeats);
+        auto blocks = blocksOf (session, pattern);
 
-        if (instances.isEmpty())
-        {
-            auto clip = channel.insertMIDIClip ("Pattern", { tempo.toTime (te::BeatPosition()), tempo.toTime (te::BeatPosition() + lengthBeats) }, nullptr);
+        if (blocks.empty() && pattern == 1)
+            blocks[0.0] = juce::var();
 
-            if (clip == nullptr)
-                return;
+        for (auto& [start, length] : blocks)
+            placeOn (session, channel, pattern, start, length);
 
-            clip->state.setProperty (patternClipProp, true, um);
-            instances.add (clip.get());
-        }
-
-        auto pitch = Session::getStepPitch (channel);
-
-        for (auto clip : instances)
-        {
-            auto startBeat = tempo.toBeats (clip->getPosition().getStart());
-            auto clipBeats = clip->state.hasProperty (patternBeatsProp) ? static_cast<double> (clip->state[patternBeatsProp])
-                                                                         : patternBeats;
-            clip->setPosition ({ { clip->getPosition().getStart(), tempo.toTime (startBeat + te::BeatDuration::fromBeats (clipBeats)) },
-                                 te::TimeDuration() });
-            clip->getSequence().clear (um);
-
-            for (int i = 0; i < steps.length(); ++i)
-                if (auto beat = i * beatsPerStep; steps[i] == 'x' && beat < clipBeats - 1.0e-6)
-                    clip->getSequence().addNote (pitch, te::BeatPosition::fromBeats (beat),
-                                                 te::BeatDuration::fromBeats (beatsPerStep), 100, 0, um);
-        }
+        for (auto clip : patternClipsOn (channel, pattern))
+            fillPatternClip (session, *clip, channel);
     }
 
     CommandResult setSteps (Session& session, const juce::var& p)
@@ -138,8 +211,13 @@ namespace
         if (Session::isAudioChannel (*channel))
             return CommandResult::failure ("set_steps: '" + channel->getName() + "' is an audio channel, which has no step pattern");
 
-        auto steps = Session::getSteps (*channel);
-        auto pitch = Session::getStepPitch (*channel);
+        auto pattern = p.hasProperty ("pattern") ? static_cast<int> (p["pattern"]) : session.getCurrentPattern();
+
+        if (! session.findPattern (pattern))
+            return CommandResult::failure ("set_steps: no pattern " + p["pattern"].toString() + " (get_state lists them)");
+
+        auto steps = Session::getSteps (*channel, pattern);
+        auto pitch = Session::getStepPitch (*channel, pattern);
 
         // The whole row, as a string ("x..." or "1000...") or an array of booleans.
         if (p.hasProperty ("steps"))
@@ -200,12 +278,12 @@ namespace
                 return CommandResult::failure ("set_steps: pitch must be a MIDI note from 0 to 127");
         }
 
-        channel->state.setProperty (stepsProp, steps, &session.getUndoManager());
-        channel->state.setProperty (stepPitchProp, pitch, &session.getUndoManager());
-        rebuildPatternClip (session, *channel);
+        session.setSteps (*channel, pattern, steps, pitch);
+        rebuildPatternClip (session, *channel, pattern);
 
         auto obj = new juce::DynamicObject();
         obj->setProperty ("channel", channel->itemID.toString());
+        obj->setProperty ("pattern", pattern);
         obj->setProperty ("steps", steps);
         obj->setProperty ("pitch", pitch);
         return CommandResult::success (juce::var (obj));
@@ -303,7 +381,15 @@ namespace
             }
         }
 
-        found.clip->setStart (tempo.toTime (te::BeatPosition::fromBeats (startBeat)), false, true);
+        // A pattern clip takes its whole block along.
+        auto moving = Session::isPatternClip (*found.clip) ? blockOf (session, *found.clip) : juce::Array<te::MidiClip*>();
+
+        if (moving.isEmpty())
+            found.clip->setStart (tempo.toTime (te::BeatPosition::fromBeats (startBeat)), false, true);
+
+        for (auto clip : moving)
+            clip->setStart (tempo.toTime (te::BeatPosition::fromBeats (startBeat)), false, true);
+
         return CommandResult::success (describeClip (session, *found.clip));
     }
 
@@ -322,7 +408,7 @@ namespace
         auto start = tempo.toBeats (clip.getPosition().getStart()).inBeats();
         auto end = tempo.toBeats (clip.getPosition().getEnd()).inBeats();
 
-        // A step pattern copy gets its own length; its steps play once from its start.
+        // A pattern block gets its own length; its steps play once from its start.
         if (Session::isPatternClip (clip))
         {
             auto newStart = params::getDouble (p, "start_beat", start);
@@ -331,30 +417,40 @@ namespace
             if (newStart < 0.0 || newEnd - newStart < beatsPerStep - 1.0e-6)
                 return CommandResult::failure ("resize_clip: a step pattern can't be shorter than one step or start before the project");
 
-            auto* channel = dynamic_cast<te::AudioTrack*> (clip.getTrack());
-
-            if (channel == nullptr)
-                return CommandResult::failure ("resize_clip: the pattern isn't on a channel");
-
             auto* um = &session.getUndoManager();
+            auto pattern = Session::getPatternOf (clip);
+            juce::Array<te::AudioTrack*> channels;
 
-            // Longer than the steps adds empty steps to the channel's row (up to the most it
-            // can have), as FL Studio's pattern grows; past that, the rest is silence.
-            auto steps = Session::getSteps (*channel);
-            auto wantedSteps = juce::jmin (maxStepCount, (int) std::ceil ((newEnd - newStart) / beatsPerStep - 1.0e-6));
+            for (auto c : blockOf (session, clip))
+            {
+                auto* channel = dynamic_cast<te::AudioTrack*> (c->getTrack());
 
-            if (wantedSteps > steps.length())
-                channel->state.setProperty (stepsProp, steps.paddedRight ('.', wantedSteps), um);
+                if (channel == nullptr)
+                    continue;
 
-            auto stepsBeats = Session::getSteps (*channel).length() * beatsPerStep;
+                // Longer than a row adds empty steps to it (up to the most it can have), as FL
+                // Studio's pattern grows; past that, the rest is silence.
+                auto steps = Session::getSteps (*channel, pattern);
+                auto wantedSteps = juce::jmin (maxStepCount, (int) std::ceil ((newEnd - newStart) / beatsPerStep - 1.0e-6));
 
-            if (std::abs ((newEnd - newStart) - stepsBeats) < 1.0e-6)
-                clip.state.removeProperty (patternBeatsProp, um);
-            else
-                clip.state.setProperty (patternBeatsProp, newEnd - newStart, um);
+                if (wantedSteps > steps.length())
+                    session.setSteps (*channel, pattern, steps.paddedRight ('.', wantedSteps), Session::getStepPitch (*channel, pattern));
 
-            clip.setStart (tempo.toTime (te::BeatPosition::fromBeats (newStart)), false, true);
-            rebuildPatternClip (session, *channel);
+                auto stepsBeats = Session::getSteps (*channel, pattern).length() * beatsPerStep;
+
+                if (std::abs ((newEnd - newStart) - stepsBeats) < 1.0e-6)
+                    c->state.removeProperty (patternBeatsProp, um);
+                else
+                    c->state.setProperty (patternBeatsProp, newEnd - newStart, um);
+
+                c->setStart (tempo.toTime (te::BeatPosition::fromBeats (newStart)), false, true);
+                channels.addIfNotAlreadyThere (channel);
+            }
+
+            // A longer row lengthens the pattern's other blocks too.
+            for (auto channel : channels)
+                rebuildPatternClip (session, *channel, pattern);
+
             return CommandResult::success (describeClip (session, clip));
         }
 
@@ -477,6 +573,32 @@ namespace
         if (startBeat < 0.0)
             return CommandResult::failure ("duplicate_clip: start_beat can't be before the start of the project");
 
+        // A pattern clip copies its whole block (and a block already there stays as it is).
+        if (Session::isPatternClip (*found.clip))
+        {
+            te::Clip* copyOfThis = nullptr;
+            auto pattern = Session::getPatternOf (*found.clip);
+
+            for (auto c : blockOf (session, *found.clip))
+            {
+                if (auto* channel = dynamic_cast<te::AudioTrack*> (c->getTrack()))
+                {
+                    auto placed = placeOn (session, *channel, pattern, startBeat, c->state[patternBeatsProp]);
+
+                    if (placed != nullptr)
+                        fillPatternClip (session, *placed, *channel);
+
+                    if (c == found.clip)
+                        copyOfThis = placed;
+                }
+            }
+
+            if (copyOfThis == nullptr)
+                return CommandResult::failure ("duplicate_clip: couldn't copy the pattern");
+
+            return CommandResult::success (describeClip (session, *copyOfThis));
+        }
+
         auto copy = te::duplicateClip (*found.clip);
 
         if (copy == nullptr)
@@ -494,7 +616,228 @@ namespace
             return *error;
 
         auto result = describeClip (session, *found.clip);
-        found.clip->removeFromParent();
+
+        // A pattern clip deletes its whole block.
+        if (Session::isPatternClip (*found.clip))
+            for (auto clip : blockOf (session, *found.clip))
+                clip->removeFromParent();
+        else
+            found.clip->removeFromParent();
+
+        return CommandResult::success (result);
+    }
+
+    //==============================================================================
+    // Managing patterns.
+
+    /** The "pattern" param as a pattern that exists, or explains what's wrong. */
+    std::optional<CommandResult> requirePattern (Session& session, const juce::String& command, const juce::var& p, int& pattern)
+    {
+        if (! isNumber (p["pattern"]))
+            return CommandResult::failure (command + ": give the pattern's id (get_state lists them)");
+
+        pattern = static_cast<int> (p["pattern"]);
+
+        if (! session.findPattern (pattern))
+            return CommandResult::failure (command + ": no pattern " + juce::String (pattern) + " (get_state lists them)");
+
+        return std::nullopt;
+    }
+
+    juce::var describePattern (Session& session, int pattern)
+    {
+        auto info = session.findPattern (pattern).value_or (Session::PatternInfo());
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("pattern", info.id);
+        obj->setProperty ("name", info.name);
+
+        if (! info.colour.isTransparent())
+            obj->setProperty ("colour", "#" + info.colour.toDisplayString (false));
+
+        return juce::var (obj);
+    }
+
+    /** A new pattern with the rows of another, e.g. to make a variation of it. */
+    int copyPattern (Session& session, int from, const juce::String& name, juce::Colour colour)
+    {
+        auto pattern = session.addPattern (name, colour);
+
+        for (auto channel : session.getChannels())
+            if (Session::getSteps (*channel, from).containsChar ('x'))
+                session.setSteps (*channel, pattern, Session::getSteps (*channel, from), Session::getStepPitch (*channel, from));
+
+        return pattern;
+    }
+
+    CommandResult createPattern (Session& session, const juce::var& p)
+    {
+        auto from = 0;
+
+        if (p.hasProperty ("copy_of"))
+        {
+            from = static_cast<int> (p["copy_of"]);
+
+            if (! isNumber (p["copy_of"]) || ! session.findPattern (from))
+                return CommandResult::failure ("create_pattern: no pattern " + p["copy_of"].toString() + " to copy (get_state lists them)");
+        }
+
+        std::optional<juce::Colour> colour;
+
+        if (auto text = params::getString (p, "colour").trim(); text.isNotEmpty())
+            if (! (colour = parseColour (text)))
+                return CommandResult::failure ("create_pattern: colour is a hex colour like \"#3c8ce0\"");
+
+        auto name = params::getString (p, "name").trim();
+        auto pattern = from > 0 ? copyPattern (session, from, name, colour.value_or (juce::Colour()))
+                                : session.addPattern (name, colour.value_or (juce::Colour()));
+
+        if (name.isEmpty())
+            session.setPatternInfo (pattern, "Pattern " + juce::String (pattern), colour.value_or (juce::Colour()));
+
+        // As in FL Studio, a new pattern is the one the rack shows.
+        session.setCurrentPattern (pattern);
+        return CommandResult::success (describePattern (session, pattern));
+    }
+
+    CommandResult setPattern (Session& session, const juce::var& p)
+    {
+        int pattern = 0;
+
+        if (auto error = requirePattern (session, "set_pattern", p, pattern))
+            return *error;
+
+        if (! p.hasProperty ("name") && ! p.hasProperty ("colour"))
+            return CommandResult::failure ("set_pattern: give a name, a colour, or both");
+
+        auto info = *session.findPattern (pattern);
+
+        if (p.hasProperty ("name"))
+        {
+            info.name = params::getString (p, "name").trim();
+
+            if (info.name.isEmpty())
+                return CommandResult::failure ("set_pattern: the name can't be empty");
+        }
+
+        if (p.hasProperty ("colour"))
+        {
+            auto text = params::getString (p, "colour").trim();
+            auto colour = text.isEmpty() ? std::optional<juce::Colour> (juce::Colour()) : parseColour (text);
+
+            if (! colour)
+                return CommandResult::failure ("set_pattern: colour is a hex colour like \"#3c8ce0\", or \"\" for the channels' colours");
+
+            info.colour = *colour;
+        }
+
+        session.setPatternInfo (pattern, info.name, info.colour);
+
+        // Its clips take the new name and colour.
+        for (auto clip : patternClips (session, pattern))
+        {
+            clip->setName (info.name);
+            session.setClipColour (*clip, info.colour.isTransparent() ? std::optional<juce::Colour>() : info.colour);
+        }
+
+        return CommandResult::success (describePattern (session, pattern));
+    }
+
+    CommandResult deletePattern (Session& session, const juce::var& p)
+    {
+        int pattern = 0;
+
+        if (auto error = requirePattern (session, "delete_pattern", p, pattern))
+            return *error;
+
+        if (pattern == 1)
+            return CommandResult::failure ("delete_pattern: pattern 1 can't be deleted; clear its steps instead");
+
+        auto result = describePattern (session, pattern);
+
+        for (auto clip : patternClips (session, pattern))
+            clip->removeFromParent();
+
+        session.removePattern (pattern);
+
+        if (session.getCurrentPattern() == pattern)
+            session.setCurrentPattern (1);
+
+        return CommandResult::success (result);
+    }
+
+    CommandResult selectPattern (Session& session, const juce::var& p)
+    {
+        int pattern = 0;
+
+        if (auto error = requirePattern (session, "select_pattern", p, pattern))
+            return *error;
+
+        session.setCurrentPattern (pattern);
+        return CommandResult::success (describePattern (session, pattern));
+    }
+
+    CommandResult placePattern (Session& session, const juce::var& p)
+    {
+        int pattern = 0;
+
+        if (auto error = requirePattern (session, "place_pattern", p, pattern))
+            return *error;
+
+        auto startBeat = params::getDouble (p, "start_beat", 0.0);
+
+        if (startBeat < 0.0)
+            return CommandResult::failure ("place_pattern: start_beat can't be before the start of the project");
+
+        juce::Array<juce::var> clips;
+
+        for (auto channel : session.getChannels())
+        {
+            if (Session::isAudioChannel (*channel) || ! Session::getSteps (*channel, pattern).containsChar ('x'))
+                continue;
+
+            if (auto clip = placeOn (session, *channel, pattern, startBeat, {}))
+            {
+                fillPatternClip (session, *clip, *channel);
+                clips.add (describeClip (session, *clip));
+            }
+        }
+
+        if (clips.isEmpty())
+            return CommandResult::failure ("place_pattern: pattern " + juce::String (pattern) + " has no steps yet; set some with set_steps");
+
+        auto result = describePattern (session, pattern);
+        result.getDynamicObject()->setProperty ("start_beat", roundBeats (startBeat));
+        result.getDynamicObject()->setProperty ("clips", clips);
+        return CommandResult::success (result);
+    }
+
+    CommandResult makeUnique (Session& session, const juce::var& p)
+    {
+        FoundClip found;
+
+        if (auto error = requireClip (session, "make_unique", p, found))
+            return *error;
+
+        auto from = Session::getPatternOf (*found.clip);
+
+        if (from == 0)
+            return CommandResult::failure ("make_unique: only a step pattern's clips can be made unique");
+
+        // The block gets a pattern of its own, starting as a copy, so changing its steps
+        // leaves the pattern's other blocks as they are.
+        auto info = *session.findPattern (from);
+        auto block = blockOf (session, *found.clip);
+        auto pattern = copyPattern (session, from, info.name + " (copy)", info.colour);
+
+        for (auto clip : block)
+        {
+            clip->state.setProperty (patternClipProp, pattern, &session.getUndoManager());
+            clip->setName (info.name + " (copy)");
+        }
+
+        session.setCurrentPattern (pattern);
+        auto result = describePattern (session, pattern);
+        result.getDynamicObject()->setProperty ("clip", found.clip->itemID.toString());
         return CommandResult::success (result);
     }
 
@@ -711,9 +1054,10 @@ void registerClipCommands (CommandRegistry& registry)
                     true, addMidiClip });
 
     registry.add ({ "set_steps",
-                    "Sets a channel's step pattern: a row of 16th-note steps from the start of the project that "
-                    "plays one pitch and loops with the project. Give the whole row, a new length, or one step.",
+                    "Sets a channel's row in a step pattern: 16th-note steps that play one pitch wherever the pattern "
+                    "is placed (pattern 1 starts at the beginning of the project). Give the whole row, a new length, or one step.",
                     schema ({ { "channel", prop ("string", "Channel id or name") },
+                              { "pattern", prop ("integer", "Pattern id, from get_state (default: the current pattern)") },
                               { "steps", prop ("string", "The row as 'x' (on) and '.' (off), e.g. \"x...x...x...x...\"; "
                                                          "an array of booleans also works") },
                               { "length", prop ("integer", "Number of steps, 1 to 64 (default 16)") },
@@ -724,7 +1068,7 @@ void registerClipCommands (CommandRegistry& registry)
                     true, setSteps });
 
     registry.add ({ "move_clip",
-                    "Moves a clip to a new start beat, and optionally to another channel. A step pattern can only move in time.",
+                    "Moves a clip to a new start beat, and optionally to another channel. A step pattern's clip only moves in time, and takes its whole block along.",
                     schema ({ { "clip", prop ("string", "Clip id, from get_state") },
                               { "start_beat", prop ("number", "New start, in beats (default: where it is)") },
                               { "channel", prop ("string", "Channel id or name to move it to") } },
@@ -733,7 +1077,7 @@ void registerClipCommands (CommandRegistry& registry)
 
     registry.add ({ "resize_clip",
                     "Moves a clip's start and/or end; its notes stay where they are in the song. "
-                    "A step pattern copy can be resized too: longer adds empty steps to the channel's row (up to 64); "
+                    "A step pattern's block can be resized too: longer adds empty steps to its rows (up to 64); "
                     "shorter cuts off the steps past its end.",
                     schema ({ { "clip", prop ("string", "Clip id, from get_state") },
                               { "start_beat", prop ("number", "New start, in beats") },
@@ -766,16 +1110,56 @@ void registerClipCommands (CommandRegistry& registry)
                     true, setClip });
 
     registry.add ({ "duplicate_clip",
-                    "Copies a clip, by default to just after itself. A copied step pattern keeps following the channel's steps.",
+                    "Copies a clip, by default to just after itself. A step pattern's clip copies its whole block, which keeps playing the same pattern.",
                     schema ({ { "clip", prop ("string", "Clip id, from get_state") },
                               { "start_beat", prop ("number", "Where the copy starts, in beats (default: the clip's end)") } },
                             { "clip" }),
                     true, duplicateClip });
 
     registry.add ({ "delete_clip",
-                    "Deletes a clip.",
+                    "Deletes a clip. A step pattern's clip deletes its whole block (the pattern's clips on every channel that start there).",
                     schema ({ { "clip", prop ("string", "Clip id, from get_state") } }, { "clip" }),
                     true, deleteClip });
+
+    registry.add ({ "create_pattern",
+                    "Adds a step pattern, as in FL Studio: a step row for each channel, placed on the timeline as one block. "
+                    "It becomes the current pattern, which set_steps changes by default.",
+                    schema ({ { "name", prop ("string", "Its name (default \"Pattern <id>\")") },
+                              { "colour", prop ("string", "Hex colour such as #3c8ce0 for its clips (default: the channels' colours)") },
+                              { "copy_of", prop ("integer", "A pattern whose rows it starts with, to make a variation") } }),
+                    true, createPattern });
+
+    registry.add ({ "set_pattern",
+                    "Renames a step pattern or changes its colour (its clips follow).",
+                    schema ({ { "pattern", prop ("integer", "Pattern id, from get_state") },
+                              { "name", prop ("string", "New name") },
+                              { "colour", prop ("string", "Hex colour such as #3c8ce0, or \"\" for the channels' colours") } },
+                            { "pattern" }),
+                    true, setPattern });
+
+    registry.add ({ "delete_pattern",
+                    "Deletes a step pattern, its rows and every block of it on the timeline. Pattern 1 can't be deleted.",
+                    schema ({ { "pattern", prop ("integer", "Pattern id, from get_state") } }, { "pattern" }),
+                    true, deletePattern });
+
+    registry.add ({ "select_pattern",
+                    "Makes a pattern the current one: the one the channel rack shows and set_steps changes by default.",
+                    schema ({ { "pattern", prop ("integer", "Pattern id, from get_state") } }, { "pattern" }),
+                    true, selectPattern });
+
+    registry.add ({ "place_pattern",
+                    "Places a step pattern on the timeline as a block: a clip on every channel with steps in it, all starting at start_beat. "
+                    "Moving, copying, resizing or deleting any clip of the block does the same to all of it.",
+                    schema ({ { "pattern", prop ("integer", "Pattern id, from get_state") },
+                              { "start_beat", prop ("number", "Where the block starts, in beats (default 0)") } },
+                            { "pattern" }),
+                    true, placePattern });
+
+    registry.add ({ "make_unique",
+                    "Gives a step pattern's block a pattern of its own, a copy of the one it played, so its steps can change "
+                    "without changing the pattern's other blocks. The copy becomes the current pattern.",
+                    schema ({ { "clip", prop ("string", "Id of any clip of the block, from get_state") } }, { "clip" }),
+                    true, makeUnique });
 
     registry.add ({ "get_notes",
                     "Lists a MIDI clip's notes. Start and length are in beats from the clip's start.",

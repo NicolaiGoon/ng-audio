@@ -1076,6 +1076,116 @@ namespace
         CHECK (near (clipsOf (f, 0)[0]["start_beat"], 0.0));
     }
 
+    void testPatterns (tracktion::Engine& engine)
+    {
+        std::cout << "patterns hold a row per channel and are placed as blocks\n";
+        Fixture f (engine);
+        auto run = [&f] (const char* name, std::initializer_list<std::pair<const char*, juce::var>> p)
+        {
+            return f.dispatcher.execute (name, obj (p));
+        };
+        auto startsOf = [&f] (int channel)
+        {
+            juce::Array<double> starts;
+            auto clips = clipsOf (f, channel);
+
+            for (auto& c : *clips.getArray())
+                starts.add (static_cast<double> (c["start_beat"]));
+
+            return starts;
+        };
+
+        run ("create_track", { { "name", "Kick" } });
+        run ("create_track", { { "name", "Hat" } });
+        CHECK (run ("set_steps", { { "channel", "Kick" }, { "steps", "x...x...x...x..." } }).ok);
+
+        // Pattern 1 is there from the start; a new pattern becomes the current one.
+        auto state = f.state();
+        CHECK (state["patterns"].size() == 1 && static_cast<int> (state["current_pattern"]) == 1);
+        auto created = run ("create_pattern", { { "name", "Chorus" } });
+        CHECK (created.ok && static_cast<int> (created.value["pattern"]) == 2);
+        CHECK (static_cast<int> (f.state()["current_pattern"]) == 2);
+        CHECK (f.state()["channels"][0]["pattern"]["steps"] == juce::String::repeatedString (".", 16));
+
+        // set_steps changes the current pattern's rows, and nothing is placed until asked.
+        CHECK (run ("set_steps", { { "channel", "Kick" }, { "steps", "x.x.x.x.x.x.x.x." } }).ok);
+        CHECK (startsOf (0) == juce::Array<double> { 0.0 });
+        CHECK (! run ("place_pattern", { { "pattern", 9 } }).ok);
+        auto placed = run ("place_pattern", { { "pattern", 2 }, { "start_beat", 16 } });
+        CHECK (placed.ok && placed.value["clips"].size() == 1);
+        CHECK (startsOf (0) == juce::Array<double> ({ 0.0, 16.0 }));
+        CHECK (clipsOf (f, 0)[1]["name"] == "Chorus" && static_cast<int> (clipsOf (f, 0)[1]["pattern_id"]) == 2);
+        CHECK (static_cast<int> (clipsOf (f, 0)[1]["notes"]) == 8);
+        CHECK (static_cast<int> (clipsOf (f, 0)[0]["notes"]) == 4);   // pattern 1 is unchanged
+
+        // Steps on another channel join every block of the pattern.
+        CHECK (run ("set_steps", { { "channel", "Hat" }, { "pattern", 2 }, { "steps", "..x...x...x...x." } }).ok);
+        CHECK (startsOf (1) == juce::Array<double> { 16.0 });
+        auto chorusOf = [&f] (int channel) { return clipsOf (f, channel)[channel == 0 ? 1 : 0]["id"].toString(); };
+
+        // The block moves, copies and deletes as one.
+        CHECK (run ("move_clip", { { "clip", chorusOf (0) }, { "start_beat", 20 } }).ok);
+        CHECK (startsOf (0) == juce::Array<double> ({ 0.0, 20.0 }) && startsOf (1) == juce::Array<double> { 20.0 });
+        CHECK (run ("duplicate_clip", { { "clip", chorusOf (1) } }).ok);
+        CHECK (startsOf (0) == juce::Array<double> ({ 0.0, 20.0, 24.0 }) && startsOf (1) == juce::Array<double> ({ 20.0, 24.0 }));
+
+        // Copying onto a block that's already there doesn't stack another on it.
+        CHECK (run ("duplicate_clip", { { "clip", chorusOf (0) }, { "start_beat", 24 } }).ok);
+        CHECK (startsOf (1) == juce::Array<double> ({ 20.0, 24.0 }));
+
+        CHECK (run ("delete_clip", { { "clip", clipsOf (f, 1)[1]["id"] } }).ok);
+        CHECK (startsOf (0) == juce::Array<double> ({ 0.0, 20.0 }) && startsOf (1) == juce::Array<double> { 20.0 });
+
+        // Resizing a block resizes all of it.
+        CHECK (run ("resize_clip", { { "clip", chorusOf (1) }, { "end_beat", 22 } }).ok);
+        CHECK (near (clipsOf (f, 0)[1]["length_beats"], 2.0) && near (clipsOf (f, 1)[0]["length_beats"], 2.0));
+        CHECK (f.dispatcher.undo());
+
+        // Clearing a row takes that channel's clips out of the blocks.
+        CHECK (run ("set_steps", { { "channel", "Hat" }, { "pattern", 2 }, { "steps", "................" } }).ok);
+        CHECK (startsOf (1).isEmpty());
+        CHECK (f.dispatcher.undo());
+
+        // A block made unique gets its own copy of the pattern.
+        auto unique = run ("make_unique", { { "clip", chorusOf (1) } });
+        CHECK (unique.ok && static_cast<int> (unique.value["pattern"]) == 3);
+        CHECK (static_cast<int> (clipsOf (f, 1)[0]["pattern_id"]) == 3 && static_cast<int> (clipsOf (f, 0)[1]["pattern_id"]) == 3);
+        CHECK (run ("set_steps", { { "channel", "Kick" }, { "steps", "x..............." } }).ok);   // pattern 3, the current one
+        CHECK (static_cast<int> (clipsOf (f, 0)[1]["notes"]) == 1);
+        CHECK (f.dispatcher.undo());
+        CHECK (f.dispatcher.undo());
+        CHECK (static_cast<int> (clipsOf (f, 0)[1]["pattern_id"]) == 2);
+
+        // Renaming and colouring a pattern changes its clips.
+        CHECK (run ("set_pattern", { { "pattern", 2 }, { "name", "Drop" }, { "colour", "#3c8ce0" } }).ok);
+        CHECK (clipsOf (f, 1)[0]["name"] == "Drop" && clipsOf (f, 1)[0]["colour"].toString().equalsIgnoreCase ("#3c8ce0"));
+        CHECK (! run ("set_pattern", { { "pattern", 2 }, { "name", "" } }).ok);
+
+        // The current pattern is what the rack shows.
+        CHECK (run ("select_pattern", { { "pattern", 1 } }).ok);
+        CHECK (f.state()["channels"][0]["pattern"]["steps"] == "x...x...x...x...");
+        CHECK (! run ("select_pattern", { { "pattern", 42 } }).ok);
+
+        // Patterns are saved with the project.
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (run ("save_project", { { "path", path } }).ok);
+        CHECK (run ("open_project", { { "path", path }, { "discard_changes", true } }).ok);
+        state = f.state();
+        CHECK (state["patterns"].size() == 2 && state["patterns"][1]["name"] == "Drop");
+        CHECK (startsOf (1) == juce::Array<double> { 20.0 });
+        CHECK (run ("select_pattern", { { "pattern", 2 } }).ok);
+        CHECK (f.state()["channels"][1]["pattern"]["steps"] == "..x...x...x...x.");
+
+        // Deleting a pattern deletes its blocks; pattern 1 stays.
+        CHECK (! run ("delete_pattern", { { "pattern", 1 } }).ok);
+        CHECK (run ("delete_pattern", { { "pattern", 2 } }).ok);
+        CHECK (startsOf (0) == juce::Array<double> { 0.0 } && startsOf (1).isEmpty());
+        CHECK (static_cast<int> (f.state()["current_pattern"]) == 1);
+        CHECK (f.dispatcher.undo());
+        CHECK (f.state()["patterns"].size() == 2 && startsOf (1) == juce::Array<double> { 20.0 });
+    }
+
     void testEditingNotes (tracktion::Engine& engine)
     {
         std::cout << "notes are read and replaced, timed from the clip's start\n";
@@ -3522,6 +3632,7 @@ int main (int argc, char* argv[])
         RUN (testClipEditing);
         RUN (testClipNamesAndColours);
         RUN (testPatternCopiesFollowSteps);
+        RUN (testPatterns);
         RUN (testEditingNotes);
         RUN (testQuantizeAndVelocity);
         RUN (testArmingForMidiInput);
