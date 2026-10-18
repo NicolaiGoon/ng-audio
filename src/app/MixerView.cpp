@@ -31,7 +31,8 @@ namespace
         for (auto& s : *strips.getArray())
             parts.add (s["id"].toString() + "|" + s["name"].toString() + "|" + s["colour"].toString()
                          + "|" + juce::String (s["inputs"].size()) + "|" + juce::String (s["strip_inputs"].size())
-                         + "|" + s["output"].toString() + "|" + getEffectsKey (s));
+                         + "|" + s["output"].toString() + "|" + getEffectsKey (s)
+                         + (static_cast<bool> (s["folded"]) ? "|folded" : ""));
 
         parts.add ("master|" + getEffectsKey (state["master"]));
 
@@ -622,6 +623,18 @@ public:
         {
             setUpNameLabel (name, dispatcher, id, strip["name"].toString());
             setUpDeleteButton (deleteButton, dispatcher, id, "mixer strip");
+            name.setTooltip ("Drag to move the strip, double-click to rename");
+            name.addMouseListener (this, false);
+
+            // A strip other strips play into (a bus or group) can fold them away.
+            if (strip["strip_inputs"].size() > 0)
+            {
+                auto folded = static_cast<bool> (strip["folded"]);
+                foldButton.setButtonText (juce::String::fromUTF8 (folded ? "\xe2\x96\xb8" : "\xe2\x96\xbe"));
+                foldButton.setTooltip (folded ? "Show the strips that play into this one" : "Fold away the strips that play into this one");
+                foldButton.onClick = [this] { dispatcher.execute ("fold_strip", makeObject ({ { "strip", id } })); };
+                addAndMakeVisible (foldButton);
+            }
 
             // Channels and other strips playing into this one (an instrument's own output strips
             // are shown next to it instead).
@@ -730,15 +743,44 @@ public:
             sends->setValues (strip["sends"]);
     }
 
-    // Effects and effect presets dragged from the browser go after the strip's other effects.
-    bool isInterestedInDragSource (const SourceDetails& details) override   { return browser::canDropOnStrip (details.description); }
+    /** Called when another strip is dragged onto this one by its name: it moves to here. */
+    std::function<void (const juce::String& draggedId, const juce::String& targetId)> onStripDropped;
+
+    // Effects and effect presets dragged from the browser go after the strip's other effects,
+    // and a strip dragged by its name moves to this one's place.
+    bool isInterestedInDragSource (const SourceDetails& details) override
+    {
+        if (auto dragged = draggedStrip (details); dragged.isNotEmpty())
+            return ! isMaster && dragged != id;
+
+        return browser::canDropOnStrip (details.description);
+    }
+
     void itemDragEnter (const SourceDetails&) override     { setDropHighlight (true); }
     void itemDragExit (const SourceDetails&) override      { setDropHighlight (false); }
 
     void itemDropped (const SourceDetails& details) override
     {
         setDropHighlight (false);
+
+        if (auto dragged = draggedStrip (details); dragged.isNotEmpty())
+        {
+            if (onStripDropped != nullptr)
+                onStripDropped (dragged, id);
+
+            return;
+        }
+
         browser::showDropError (getTopLevelComponent(), browser::dropOnStrip (dispatcher, id, { details.description }));
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (e.eventComponent != &name || e.getDistanceFromDragStart() < 6)
+            return;
+
+        if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor (this); container != nullptr && ! container->isDragAndDropActive())
+            container->startDragging (stripDragPrefix + id, this);
     }
 
     void paintOverChildren (juce::Graphics& g) override
@@ -774,6 +816,9 @@ public:
             swatch.setBounds (top.removeFromLeft (12).reduced (0, 4));
             top.removeFromLeft (2);
         }
+
+        if (foldButton.isVisible())
+            foldButton.setBounds (top.removeFromRight (16));
 
         name.setBounds (top);
         r.removeFromTop (4);
@@ -827,6 +872,14 @@ public:
     }
 
 private:
+    static inline const juce::String stripDragPrefix { "ngStrip:" };
+
+    static juce::String draggedStrip (const SourceDetails& details)
+    {
+        auto text = details.description.toString();
+        return text.startsWith (stripDragPrefix) ? text.fromFirstOccurrenceOf (stripDragPrefix, false, false) : juce::String();
+    }
+
     void showOutputMenu()
     {
         juce::PopupMenu menu;
@@ -881,7 +934,7 @@ private:
     ColourSwatch swatch;
     juce::Label name, inputs;
     juce::Slider pan, fader;
-    juce::TextButton mute { "M" }, solo { "S" }, deleteButton;
+    juce::TextButton mute { "M" }, solo { "S" }, deleteButton, foldButton;
     EffectSlots effects;
     std::unique_ptr<SendSlots> sends;
     Meter meter;
@@ -903,6 +956,9 @@ MixerView::MixerView (Session& s, CommandDispatcher& d)
     viewport.setViewedComponent (&columnHolder, false);
     viewport.setScrollBarsShown (false, true);
     addAndMakeVisible (viewport);
+    busViewport.setViewedComponent (&busHolder, false);
+    busViewport.setScrollBarsShown (false, true);
+    addChildComponent (busViewport);
     startTimerHz (30);
 }
 
@@ -947,11 +1003,45 @@ void MixerView::update (const juce::var& state)
             ordered.add (strip);
 
     juce::var strips (ordered);
+    lastState = state;
 
-    if (key == structureKey && columns.size() == strips.size() && masterColumn != nullptr)
+    // Strips playing (directly or through others) into a folded strip are left out.
+    auto isFoldedAway = [&all] (const juce::var& strip)
+    {
+        auto output = strip["output"].toString();
+
+        for (int depth = 0; depth < 64 && output != "master"; ++depth)
+        {
+            juce::var next;
+
+            for (auto& other : *all.getArray())
+                if (other["id"].toString() == output)
+                    next = other;
+
+            if (next.isVoid())
+                break;
+
+            if (static_cast<bool> (next["folded"]))
+                return true;
+
+            output = next["output"].toString();
+        }
+
+        return false;
+    };
+
+    juce::Array<juce::var> shown;
+
+    for (auto& strip : ordered)
+        if (! isFoldedAway (strip))
+            shown.add (strip);
+
+    key << (busesDocked ? ";docked" : "");
+
+    if (key == structureKey && columns.size() == shown.size() && masterColumn != nullptr)
     {
         for (int i = 0; i < columns.size(); ++i)
-            columns[i]->setValues (strips[i]);
+            columns[i]->setValues (shown[i]);
 
         masterColumn->setValues (state["master"]);
         return;
@@ -959,13 +1049,20 @@ void MixerView::update (const juce::var& state)
 
     structureKey = key;
     columns.clear();
+    dockedColumns.clear();
 
-    for (auto& strip : *strips.getArray())
+    for (auto& strip : shown)
     {
         auto track = session.findTrack (strip["id"].toString(), Session::Role::strip);
         auto meterPlugin = track != nullptr ? track->getLevelMeterPlugin() : nullptr;
         auto volumePlugin = track != nullptr ? track->getVolumePlugin() : nullptr;
-        columnHolder.addAndMakeVisible (columns.add (new StripColumn (session, dispatcher, strip, strips, meterPlugin, volumePlugin)));
+        auto column = columns.add (new StripColumn (session, dispatcher, strip, strips, meterPlugin, volumePlugin));
+        column->onStripDropped = [this] (const juce::String& dragged, const juce::String& target) { moveStrip (dragged, target); };
+
+        // Docked, the buses (and groups other strips play into) sit together beside the master.
+        auto docked = busesDocked && (static_cast<bool> (strip["bus"]) || strip["strip_inputs"].size() > 0);
+        dockedColumns.add (docked);
+        (docked ? busHolder : columnHolder).addAndMakeVisible (column);
     }
 
     auto master = state["master"].clone();
@@ -984,8 +1081,32 @@ void MixerView::clear()
 {
     dispatcher.endGesture();
     columns.clear();
+    dockedColumns.clear();
     masterColumn = nullptr;
     structureKey = {};
+    lastState = juce::var();
+}
+
+void MixerView::setBusesDocked (bool shouldDock)
+{
+    if (busesDocked == shouldDock)
+        return;
+
+    busesDocked = shouldDock;
+
+    // A copy, since update() replaces lastState while reading it.
+    if (auto state = lastState; ! state.isVoid())
+        update (state);
+}
+
+void MixerView::moveStrip (const juce::String& draggedId, const juce::String& targetId)
+{
+    // Into the target's place: after it when coming from its left, before it from its right.
+    auto strips = session.getStrips();
+    auto target = session.findTrack (targetId, Session::Role::strip);
+
+    if (target != nullptr)
+        dispatcher.execute ("move_strip", makeObject ({ { "strip", draggedId }, { "index", strips.indexOf (target) } }));
 }
 
 void MixerView::resized()
@@ -996,13 +1117,48 @@ void MixerView::resized()
         masterColumn->setBounds (r.removeFromRight (columnWidth));
 
     r.removeFromRight (6);
+
+    auto numDocked = (int) std::count (dockedColumns.begin(), dockedColumns.end(), true);
+    auto numMain = columns.size() - numDocked;
+    busViewport.setVisible (numDocked > 0);
+
+    if (numDocked > 0)
+    {
+        auto area = r.removeFromRight (juce::jmin (numDocked * columnWidth, std::max (columnWidth, r.getWidth() / 2)));
+        busViewport.setBounds (area);
+        r.removeFromRight (6);
+    }
+
     viewport.setBounds (r);
 
-    auto height = r.getHeight() - (columns.size() * columnWidth > r.getWidth() ? viewport.getScrollBarThickness() : 0);
-    columnHolder.setSize (columns.size() * columnWidth, height);
+    auto layOut = [this] (juce::Viewport& view, juce::Component& holder, int count, bool docked)
+    {
+        auto height = view.getHeight() - (count * columnWidth > view.getWidth() ? view.getScrollBarThickness() : 0);
+        holder.setSize (count * columnWidth, height);
 
-    for (int i = 0; i < columns.size(); ++i)
-        columns[i]->setBounds (i * columnWidth, 0, columnWidth, height);
+        for (int i = 0, x = 0; i < columns.size(); ++i)
+        {
+            if (dockedColumns[i] != docked)
+                continue;
+
+            columns[i]->setBounds (x, 0, columnWidth, height);
+            x += columnWidth;
+        }
+    };
+
+    layOut (viewport, columnHolder, numMain, false);
+    layOut (busViewport, busHolder, numDocked, true);
+    repaint();
+}
+
+void MixerView::paint (juce::Graphics& g)
+{
+    // A line between the strips and the docked buses.
+    if (busViewport.isVisible())
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.12f));
+        g.fillRect (busViewport.getX() - 4, busViewport.getY() + 8, 2, busViewport.getHeight() - 16);
+    }
 }
 
 } // namespace ng

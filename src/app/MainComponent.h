@@ -220,7 +220,7 @@ private:
                rollTaller { "Bigger rows (Alt + wheel)", icons::Icon::zoomInVertical },
                closePianoRollButton { "Close the piano roll (Esc)", icons::Icon::close },
                closeSampleEditorButton { "Close the sample editor (Esc)", icons::Icon::close };
-    juce::TextButton quantizeButton { "Quantize" }, ghostNotesButton { "Ghosts" }, patternMenuButton { "Pattern" }, paintToolButton { "Paint" }, sliceToolButton { "Slice" },
+    juce::TextButton quantizeButton { "Quantize" }, ghostNotesButton { "Ghosts" }, dockBusesButton { "Dock buses" }, patternMenuButton { "Pattern" }, paintToolButton { "Paint" }, sliceToolButton { "Slice" },
                      deleteToolButton { "Delete" }, muteToolButton { "Mute" };
     juce::Label timelineHint { {}, "Click a clip, then click its lane to paint copies. Right-click deletes. Drag in the ruler for a loop." },
                 pianoRollHint { {}, "Click or drag to draw notes, drag a note to move it, its right edge to resize. Right-click or right-drag deletes." },
