@@ -3,6 +3,8 @@
 #include "TypingKeyboard.h"
 #include "Widgets.h"
 
+#include <set>
+
 namespace ng
 {
 namespace
@@ -61,6 +63,7 @@ void TimelineView::update (const juce::var& state)
             clip.startBeat = c["start_beat"];
             clip.lengthBeats = c["length_beats"];
             clip.pattern = c["pattern"];
+            clip.patternId = c.getProperty ("pattern_id", 0);
             clip.audio = c["type"] == "audio";
             clip.missing = c["missing"];
             clip.maxEndBeat = c.hasProperty ("max_end_beat") ? static_cast<double> (c["max_end_beat"]) : -1.0;
@@ -1953,14 +1956,24 @@ void TimelineView::selectAll()
     repaint();
 }
 
-std::vector<std::pair<int, const TimelineView::Clip*>> TimelineView::getSelectionWithLanes() const
+std::vector<std::pair<int, const TimelineView::Clip*>> TimelineView::getSelectionWithLanes (bool onePerBlock) const
 {
     std::vector<std::pair<int, const Clip*>> picked;
+    std::set<std::pair<int, double>> blocks;   // pattern and start
 
     for (int i = 0; i < lanes.size(); ++i)
+    {
         for (auto& clip : lanes.getReference (i).clips)
-            if (isSelected (clip.id) && ! erased.contains (clip.id))
-                picked.emplace_back (i, &clip);
+        {
+            if (! isSelected (clip.id) || erased.contains (clip.id))
+                continue;
+
+            if (onePerBlock && clip.patternId > 0 && ! blocks.insert ({ clip.patternId, std::round (clip.startBeat * 1.0e6) }).second)
+                continue;
+
+            picked.emplace_back (i, &clip);
+        }
+    }
 
     return picked;
 }
@@ -2051,7 +2064,7 @@ void TimelineView::deleteSelected()
 {
     juce::Array<juce::var> commands;
 
-    for (auto [lane, clip] : getSelectionWithLanes())
+    for (auto [lane, clip] : getSelectionWithLanes (true))
         commands.add (commandFor ("delete_clip", makeObject ({ { "clip", clip->id } })));
 
     if (! runCommands ("Delete clips", commands).isEmpty())
@@ -2065,7 +2078,7 @@ void TimelineView::duplicateSelected()
     juce::Array<juce::var> commands;
     int primary = 0;
 
-    for (auto [lane, clip] : getSelectionWithLanes())
+    for (auto [lane, clip] : getSelectionWithLanes (true))
     {
         if (clip->id == selectedClip)
             primary = commands.size();
@@ -2082,7 +2095,7 @@ void TimelineView::splitSelectedAtPlayhead()
     juce::Array<juce::var> commands;
     int primary = 0;
 
-    for (auto [lane, clip] : getSelectionWithLanes())
+    for (auto [lane, clip] : getSelectionWithLanes (true))
     {
         if (clip->pattern || playhead <= clip->startBeat || playhead >= clip->startBeat + clip->lengthBeats)
             continue;
@@ -2107,9 +2120,12 @@ void TimelineView::pasteAtPlayhead()
     // each on its own channel.
     std::vector<const Clip*> copied;
 
+    std::set<std::pair<int, double>> blocks;   // a step pattern's block is copied once
+
     for (auto& lane : lanes)
         for (auto& clip : lane.clips)
-            if (copiedClips.contains (clip.id))
+            if (copiedClips.contains (clip.id)
+                 && (clip.patternId == 0 || blocks.insert ({ clip.patternId, std::round (clip.startBeat * 1.0e6) }).second))
                 copied.push_back (&clip);
 
     if (copied.empty())
@@ -2137,7 +2153,7 @@ void TimelineView::moveSelection (double beats, int lanesDown)
     juce::Array<juce::var> commands;
     int primary = 0;
 
-    for (auto [lane, clip] : getSelectionWithLanes())
+    for (auto [lane, clip] : getSelectionWithLanes (true))
     {
         if (! juce::isPositiveAndBelow (lane + lanesDown, lanes.size()))
             return;

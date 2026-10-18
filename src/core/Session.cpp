@@ -472,10 +472,157 @@ double Session::getSourceEndBeat (te::WaveAudioClip& clip) const
     return edit->tempoSequence.toBeats (pos.getStartOfSource() + clip.getSourceLength() / clip.getSpeedRatio()).inBeats();
 }
 
-juce::String Session::getSteps (const te::AudioTrack& channel)
+//==============================================================================
+namespace
 {
-    auto steps = channel.state["ngSteps"].toString();
+    // The patterns, under the edit: PATTERN children (id, name, colour), each holding a ROW per
+    // channel (channel id, steps, pitch) for every pattern but 1, whose rows stay on the channels.
+    const juce::Identifier patternsType ("NGPATTERNS"), patternType ("PATTERN"), rowType ("ROW"),
+                           currentProp ("current"), idProp ("id"), nameProp ("name"), colourProp ("colour"),
+                           channelProp ("channel"), stepsProp ("steps"), pitchProp ("pitch");
+
+    juce::ValueTree findPatternState (const te::Edit& edit, int id)
+    {
+        return edit.state.getChildWithName (patternsType).getChildWithProperty (idProp, id);
+    }
+
+    juce::ValueTree findRow (const te::AudioTrack& channel, int pattern)
+    {
+        return findPatternState (channel.edit, pattern).getChildWithProperty (channelProp, channel.itemID.toString());
+    }
+}
+
+juce::String Session::getSteps (const te::AudioTrack& channel, int pattern)
+{
+    auto steps = pattern == 1 ? channel.state["ngSteps"].toString() : findRow (channel, pattern)[stepsProp].toString();
     return steps.isEmpty() ? juce::String::repeatedString (".", 16) : steps;
+}
+
+int Session::getStepPitch (const te::AudioTrack& channel, int pattern)
+{
+    return pattern == 1 ? channel.state.getProperty ("ngStepPitch", 60) : findRow (channel, pattern).getProperty (pitchProp, 60);
+}
+
+void Session::setSteps (te::AudioTrack& channel, int pattern, const juce::String& steps, int pitch)
+{
+    auto* um = &getUndoManager();
+
+    if (pattern == 1)
+    {
+        channel.state.setProperty ("ngSteps", steps, um);
+        channel.state.setProperty ("ngStepPitch", pitch, um);
+        return;
+    }
+
+    auto patternState = findPatternState (*edit, pattern);
+    jassert (patternState.isValid());
+    auto row = findRow (channel, pattern);
+
+    if (! row.isValid())
+    {
+        row = juce::ValueTree (rowType);
+        row.setProperty (channelProp, channel.itemID.toString(), nullptr);
+        patternState.appendChild (row, um);
+    }
+
+    row.setProperty (stepsProp, steps, um);
+    row.setProperty (pitchProp, pitch, um);
+}
+
+juce::Array<Session::PatternInfo> Session::getPatterns() const
+{
+    juce::Array<PatternInfo> patterns;
+    auto all = edit->state.getChildWithName (patternsType);
+
+    // Pattern 1 is there even before anything has named it.
+    if (! all.getChildWithProperty (idProp, 1).isValid())
+        patterns.add ({ 1, "Pattern 1", {} });
+
+    for (auto child : all)
+    {
+        if (! child.hasType (patternType))
+            continue;
+
+        PatternInfo info;
+        info.id = child[idProp];
+        info.name = child[nameProp].toString();
+        info.colour = parseColour (child[colourProp].toString()).value_or (juce::Colour());
+
+        if (info.name.isEmpty())
+            info.name = "Pattern " + juce::String (info.id);
+
+        patterns.add (info);
+    }
+
+    std::sort (patterns.begin(), patterns.end(), [] (const PatternInfo& a, const PatternInfo& b) { return a.id < b.id; });
+    return patterns;
+}
+
+std::optional<Session::PatternInfo> Session::findPattern (int id) const
+{
+    for (auto& p : getPatterns())
+        if (p.id == id)
+            return p;
+
+    return std::nullopt;
+}
+
+int Session::addPattern (const juce::String& name, juce::Colour colour)
+{
+    auto id = 1;
+
+    for (auto& p : getPatterns())
+        id = std::max (id, p.id + 1);
+
+    auto* um = &getUndoManager();
+    auto all = edit->state.getOrCreateChildWithName (patternsType, um);
+    juce::ValueTree pattern (patternType);
+    pattern.setProperty (idProp, id, nullptr);
+    all.appendChild (pattern, um);
+    setPatternInfo (id, name, colour);
+    return id;
+}
+
+void Session::setPatternInfo (int id, const juce::String& name, juce::Colour colour)
+{
+    auto* um = &getUndoManager();
+    auto all = edit->state.getOrCreateChildWithName (patternsType, um);
+    auto pattern = all.getChildWithProperty (idProp, id);
+
+    if (! pattern.isValid())
+    {
+        pattern = juce::ValueTree (patternType);
+        pattern.setProperty (idProp, id, nullptr);
+        all.appendChild (pattern, um);
+    }
+
+    pattern.setProperty (nameProp, name, um);
+
+    if (colour.isTransparent())
+        pattern.removeProperty (colourProp, um);
+    else
+        pattern.setProperty (colourProp, colourToString (colour), um);
+}
+
+void Session::removePattern (int id)
+{
+    jassert (id != 1);
+    auto all = edit->state.getChildWithName (patternsType);
+
+    if (auto pattern = all.getChildWithProperty (idProp, id); pattern.isValid())
+        all.removeChild (pattern, &getUndoManager());
+}
+
+int Session::getCurrentPattern() const
+{
+    int id = edit->state.getChildWithName (patternsType).getProperty (currentProp, 1);
+    return findPattern (id) ? id : 1;
+}
+
+void Session::setCurrentPattern (int id)
+{
+    // Not undoable: picking which pattern to look at isn't an edit.
+    edit->state.getOrCreateChildWithName (patternsType, nullptr).setProperty (currentProp, id, nullptr);
 }
 
 te::Plugin* Session::getInstrument (const te::AudioTrack& channel)
@@ -686,7 +833,14 @@ int Session::getEffectInsertIndex (const te::PluginList& list, int effectIndex)
 
 bool Session::isPatternClip (const te::Clip& clip)
 {
-    return clip.state["ngPattern"];
+    return getPatternOf (clip) > 0;
+}
+
+int Session::getPatternOf (const te::Clip& clip)
+{
+    // Older projects mark pattern clips with true, which reads as pattern 1.
+    auto value = clip.state["ngPattern"];
+    return value.isBool() ? (static_cast<bool> (value) ? 1 : 0) : static_cast<int> (value);
 }
 
 juce::Colour Session::getClipColour (const te::Clip& clip)
@@ -1009,10 +1163,6 @@ juce::Array<ClipNote> Session::getNotes (const te::MidiClip& clip)
     return notes;
 }
 
-int Session::getStepPitch (const te::AudioTrack& channel)
-{
-    return channel.state.getProperty ("ngStepPitch", 60);
-}
 
 te::AudioTrack* Session::getLinkedPartner (const te::AudioTrack& track) const
 {
@@ -1437,9 +1587,12 @@ juce::var Session::toVar() const
         if (auto sampler = getSampler (*c))
             obj->setProperty ("samples", describeSamples (*sampler));
 
+        // The channel's row in the current pattern, the one the rack shows.
+        auto currentPattern = getCurrentPattern();
         auto pattern = new juce::DynamicObject();
-        pattern->setProperty ("steps", getSteps (*c));
-        pattern->setProperty ("pitch", getStepPitch (*c));
+        pattern->setProperty ("id", currentPattern);
+        pattern->setProperty ("steps", getSteps (*c, currentPattern));
+        pattern->setProperty ("pitch", getStepPitch (*c, currentPattern));
         obj->setProperty ("pattern", juce::var (pattern));
 
         juce::Array<juce::var> clips;
@@ -1457,6 +1610,9 @@ juce::var Session::toVar() const
             clipObj->setProperty ("start_beat", std::round (startBeat * 1.0e6) / 1.0e6);
             clipObj->setProperty ("length_beats", std::round ((endBeat - startBeat) * 1.0e6) / 1.0e6);
             clipObj->setProperty ("pattern", isPatternClip (*clip));
+
+            if (auto patternId = getPatternOf (*clip); patternId > 0)
+                clipObj->setProperty ("pattern_id", patternId);
 
             if (clip->isMuted())
                 clipObj->setProperty ("muted", true);
@@ -1594,6 +1750,31 @@ juce::var Session::toVar() const
     root->setProperty ("midi_inputs", getMidiInputNames());
     root->setProperty ("audio_inputs", getAudioInputNames());
     root->setProperty ("time_signature", juce::var (timeSigObj));
+    // The patterns, and which channels have steps in each.
+    juce::Array<juce::var> patterns;
+    auto instrumentChannels = getChannels();
+
+    for (auto& info : getPatterns())
+    {
+        auto patternObj = new juce::DynamicObject();
+        patternObj->setProperty ("id", info.id);
+        patternObj->setProperty ("name", info.name);
+
+        if (! info.colour.isTransparent())
+            patternObj->setProperty ("colour", colourToString (info.colour));
+
+        juce::Array<juce::var> withSteps;
+
+        for (auto c : instrumentChannels)
+            if (! isAudioChannel (*c) && getSteps (*c, info.id).containsChar ('x'))
+                withSteps.add (c->itemID.toString());
+
+        patternObj->setProperty ("channels", withSteps);
+        patterns.add (juce::var (patternObj));
+    }
+
+    root->setProperty ("patterns", patterns);
+    root->setProperty ("current_pattern", getCurrentPattern());
     root->setProperty ("channels", channels);
     root->setProperty ("strips", strips);
     root->setProperty ("master", juce::var (master));

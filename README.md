@@ -75,6 +75,10 @@ Linux, build it from source (see *Building*).
 - **A step sequencer.** Each channel has a row of 16 steps (16th notes) under its name; click a
   step to turn it on or off, or drag across steps to paint them (right-click clears). The − and + beside the row take away
   or add a bar of steps (4 to 64). The step under the playhead is outlined while playing.
+  As in FL Studio, a project can have several patterns, each with its own row for every
+  channel. A pattern is placed on the timeline as a block, with a clip on each channel that has
+  steps in it, and moving, copying, resizing or deleting any clip of a block does the same to
+  all of it. Pattern 1 starts at the beginning of the project, as the single pattern always did.
 - **A transport** with Play, back to the start (|< or Home), tempo (type it, click the arrows
   or drag), time signature, the song position (bar.beat.sixteenth), a Loop switch and a
   Metronome that clicks on every beat, louder on the bar. New projects loop the whole project,
@@ -222,10 +226,12 @@ Linux, build it from source (see *Building*).
   | `set_mixer_strip` | Sets a strip's (or `master`'s) fader, pan, mute and solo |
   | `set_tempo` / `set_time_signature` | Project tempo (clips keep their beats) and time signature |
   | `set_loop` | Loop on/off and the loop region in beats (default: the whole project, in whole bars) |
-  | `set_steps` | Sets or toggles a channel's step pattern (`steps`, `step`, `length`, `pitch`) |
+  | `set_steps` | Sets or toggles a channel's row in a pattern (`steps`, `step`, `length`, `pitch`; `pattern`, default the current one) |
+  | `create_pattern` / `set_pattern` / `delete_pattern` / `select_pattern` | FL-style patterns: a step row per channel; a new one (optionally a `copy_of` another) becomes the current one |
+  | `place_pattern` / `make_unique` | Places a pattern as a block (a clip on each channel with steps in it), or gives a block a copy of its own |
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
   | `move_clip` / `resize_clip` / `split_clip` / `duplicate_clip` / `delete_clip` / `mute_clip` | Clip editing, by clip id from `get_state` |
-| `set_clip` | Renames a clip, or gives it a colour of its own (`""` goes back to its channel's) |
+  | `set_clip` | Renames a clip, or gives it a colour of its own (`""` goes back to its channel's) |
   | `get_notes` / `set_notes` | Reads or replaces a MIDI clip's notes (beats from the clip's start) |
   | `quantize_notes` | Moves a clip's notes (or some of them) onto a grid, optionally with their ends |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
