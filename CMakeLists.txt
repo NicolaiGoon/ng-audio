@@ -97,6 +97,8 @@ add_library(ng_core STATIC
     src/core/CommandRegistry.cpp
     src/core/CommandDispatcher.cpp
     src/core/ProjectCommands.cpp
+    src/core/ClipCommands.cpp
+    src/core/TransportCommands.cpp
     src/core/PluginCommands.cpp
     src/core/EffectCommands.cpp
     src/core/BusCommands.cpp
@@ -109,6 +111,7 @@ add_library(ng_core STATIC
     src/core/Bridge.cpp
     src/core/McpServer.cpp
     src/core/Autosave.cpp
+    src/core/SampleIndex.cpp
     src/core/AiChat.cpp)
 
 target_include_directories(ng_core PUBLIC src)
@@ -175,10 +178,14 @@ juce_add_gui_app(NgDaw
     MICROPHONE_PERMISSION_TEXT "Audio recording")
 
 target_sources(NgDaw PRIVATE
+    src/app/AppActions.cpp
+    src/app/CommandPalette.cpp
     src/app/Main.cpp
     src/app/MainComponent.cpp
     src/app/MixerView.cpp
     src/app/TimelineView.cpp
+    src/app/TimelineAutomation.cpp
+    src/app/TimelineTools.cpp
     src/app/PianoRoll.cpp
     src/app/PluginWindow.cpp
     src/app/SamplerEditor.cpp
@@ -266,5 +273,9 @@ if (BUILD_TESTING)
         NG_TEST_PLUGIN_FOLDER="${CMAKE_CURRENT_BINARY_DIR}/NgTestSynth_artefacts/$<CONFIG>/VST3"
         NG_TEST_EFFECT_FOLDER="${CMAKE_CURRENT_BINARY_DIR}/NgTestGain_artefacts/$<CONFIG>/VST3"
         NG_TEST_DRUMS_FOLDER="${CMAKE_CURRENT_BINARY_DIR}/NgTestDrums_artefacts/$<CONFIG>/VST3")
+    # One process for every test. Run one by itself with `NgDawTests =testName` (or every test
+    # with a word in its name, `NgDawTests Bridge`). Not one ctest test per function: tearing
+    # down the engine after a VST3 plugin has run sometimes crashes in JUCE's Linux run loop,
+    # and 45 teardowns instead of one turn that into a flaky CI.
     add_test(NAME command_layer COMMAND NgDawTests)
 endif()

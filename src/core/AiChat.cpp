@@ -5,16 +5,7 @@ namespace ng
 {
 namespace
 {
-    juce::var object (std::initializer_list<std::pair<const char*, juce::var>> properties)
-    {
-        auto obj = new juce::DynamicObject();
-
-        for (auto& [name, value] : properties)
-            obj->setProperty (name, value);
-
-        return juce::var (obj);
-    }
-
+    using params::object;
     const char* const chatInstructions =
         "\n\nYou are talking to the person in Ng DAW's chat panel, beside the project they are working on. They see "
         "your replies there, and each change you make also appears in the app's command log and undo history. Keep "

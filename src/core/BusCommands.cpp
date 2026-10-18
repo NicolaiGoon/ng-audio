@@ -4,27 +4,14 @@ namespace ng
 {
 namespace
 {
+    using params::object;
+    using params::isNumber;
     using params::prop;
     using params::schema;
 
     // Tracktion numbers its aux buses; this many is plenty for one project.
     constexpr int maxBuses = 32;
     constexpr double minSendDb = -100.0, maxSendDb = 6.0;
-
-    juce::var object (std::initializer_list<std::pair<const char*, juce::var>> properties)
-    {
-        auto obj = new juce::DynamicObject();
-
-        for (auto& [name, value] : properties)
-            obj->setProperty (name, value);
-
-        return juce::var (obj);
-    }
-
-    bool isNumber (const juce::var& v)
-    {
-        return v.isDouble() || v.isInt() || v.isInt64();
-    }
 
     /** Sets a send's level as part of the undo step: the stored value first, then the live one. */
     void setSendLevel (te::AuxSendPlugin& send, double db)
@@ -209,6 +196,58 @@ namespace
             placeSend (*t.strip, *send, static_cast<bool> (preFader), um);
 
         return CommandResult::success (describeSend (session, *t.strip, *send));
+    }
+
+    //==============================================================================
+    /** Moves a strip to another place in the mixer (and in get_state's strips). */
+    CommandResult moveStrip (Session& session, const juce::var& p)
+    {
+        auto ref = params::getString (p, "strip");
+        auto strip = session.findTrack (ref, Session::Role::strip);
+
+        if (strip == nullptr)
+            return CommandResult::failure ("move_strip: no mixer strip called '" + ref + "'");
+
+        if (! isNumber (p["index"]))
+            return CommandResult::failure ("move_strip: give the index to move it to, from 0 (the first strip)");
+
+        auto others = session.getStrips();
+        others.removeFirstMatchingValue (strip);
+        auto index = static_cast<int> (p["index"]);
+
+        if (index < 0 || index > others.size())
+            return CommandResult::failure ("move_strip: index must be 0 to " + juce::String (others.size()));
+
+        if (! others.isEmpty())
+        {
+            auto& edit = session.getEdit();
+            edit.moveTrack (strip, index < others.size() ? te::TrackInsertPoint (*others[index], true)
+                                                         : te::TrackInsertPoint (*others.getLast(), false));
+        }
+
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("strip", strip->itemID.toString());
+        obj->setProperty ("index", session.getStrips().indexOf (strip));
+        return CommandResult::success (juce::var (obj));
+    }
+
+    /** Folds a strip's inputs away in the mixer, e.g. a drum bus with its drums. Not an edit:
+        it isn't undone, but it's saved with the project. */
+    CommandResult foldStrip (Session& session, const juce::var& p)
+    {
+        auto ref = params::getString (p, "strip");
+        auto strip = session.findTrack (ref, Session::Role::strip);
+
+        if (strip == nullptr)
+            return CommandResult::failure ("fold_strip: no mixer strip called '" + ref + "'");
+
+        auto folded = p.hasProperty ("folded") ? static_cast<bool> (p["folded"]) : ! Session::isFolded (*strip);
+        Session::setFolded (*strip, folded);
+
+        auto obj = new juce::DynamicObject();
+        obj->setProperty ("strip", strip->itemID.toString());
+        obj->setProperty ("folded", folded);
+        return CommandResult::success (juce::var (obj));
     }
 
     //==============================================================================
@@ -400,6 +439,21 @@ void registerBusCommands (CommandRegistry& registry)
                               { "pre_fader", prop ("boolean", "True to send before the strip's fader, so the fader doesn't change it") } },
                             { "strip", "bus" }),
                     true, setSend });
+
+    registry.add ({ "move_strip",
+                    "Moves a mixer strip to another place in the mixer, by its index among the strips (0 is the first).",
+                    schema ({ { "strip", prop ("string", "Mixer strip id or name") },
+                              { "index", prop ("integer", "Where it goes, from 0") } },
+                            { "strip", "index" }),
+                    true, moveStrip });
+
+    registry.add ({ "fold_strip",
+                    "Folds away (or shows again) the strips that play into a strip, such as a bus's channels, so the mixer "
+                    "shows just the bus. Toggles if folded isn't given. Not an undo step.",
+                    schema ({ { "strip", prop ("string", "Mixer strip id or name") },
+                              { "folded", prop ("boolean", "True to fold, false to show them") } },
+                            { "strip" }),
+                    true, foldStrip });
 
     registry.add ({ "route_strip",
                     "Plays a mixer strip into another strip (a group or bus, which then carries it through its own effects "

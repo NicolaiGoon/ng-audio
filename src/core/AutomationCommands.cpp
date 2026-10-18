@@ -4,23 +4,10 @@ namespace ng
 {
 namespace
 {
+    using params::object;
+    using params::isNumber;
     using params::prop;
     using params::schema;
-
-    juce::var object (std::initializer_list<std::pair<const char*, juce::var>> properties)
-    {
-        auto obj = new juce::DynamicObject();
-
-        for (auto& [name, value] : properties)
-            obj->setProperty (name, value);
-
-        return juce::var (obj);
-    }
-
-    bool isNumber (const juce::var& v)
-    {
-        return v.isDouble() || v.isInt() || v.isInt64();
-    }
 
     double round (double v)
     {

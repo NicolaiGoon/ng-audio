@@ -1,6 +1,7 @@
 #pragma once
 
 #include <tracktion_engine/tracktion_engine.h>
+#include "SampleIndex.h"
 
 #include <atomic>
 #include <optional>
@@ -150,10 +151,34 @@ public:
     /** Finds a channel or a mixer strip by id or name (channels are searched first). */
     te::AudioTrack* findAnyTrack (const juce::String& idOrName) const;
 
-    /** A channel's step pattern as 'x' (on) and '.' (off), one per 16th note (16 off by
-        default), and the MIDI note the steps play (default 60). Changed by set_steps. */
-    static juce::String getSteps (const te::AudioTrack& channel);
-    static int getStepPitch (const te::AudioTrack& channel);
+    /** A channel's step row in a pattern as 'x' (on) and '.' (off), one per 16th note (16 off
+        by default), and the MIDI note the steps play (default 60). Changed by set_steps.
+        Pattern 1's rows are kept on the channels themselves, where the single row always was,
+        so older projects open unchanged; other patterns keep theirs with the pattern. */
+    static juce::String getSteps (const te::AudioTrack& channel, int pattern = 1);
+    static int getStepPitch (const te::AudioTrack& channel, int pattern = 1);
+    void setSteps (te::AudioTrack& channel, int pattern, const juce::String& steps, int pitch);
+
+    //==============================================================================
+    /** A pattern, as in FL Studio: a step row for each channel, placed on the timeline as one
+        block (a pattern clip on each channel with steps in it). Pattern 1 always exists. */
+    struct PatternInfo
+    {
+        int id = 1;
+        juce::String name;
+        juce::Colour colour;   // transparent: the clips show in their channels' colours
+    };
+
+    juce::Array<PatternInfo> getPatterns() const;
+    std::optional<PatternInfo> findPattern (int id) const;
+    int addPattern (const juce::String& name, juce::Colour);
+    void setPatternInfo (int id, const juce::String& name, juce::Colour);
+    void removePattern (int id);   // its rows only; not pattern 1
+
+    /** The pattern the rack shows and set_steps changes by default. It isn't an edit, so it
+        isn't undone, but it's saved with the project. */
+    int getCurrentPattern() const;
+    void setCurrentPattern (int id);
 
     /** An audio channel plays audio clips (imported or, later, recorded files) instead of an
         instrument. It has no instrument, steps or MIDI clips, and its clips stay on audio
@@ -302,11 +327,24 @@ public:
     static juce::String getTagOfBus (const te::AudioTrack& strip);
     void setTagOfBus (te::AudioTrack& strip, const juce::String& tag);
 
+    /** Whether the mixer folds away the strips playing into this one (fold_strip). */
+    static bool isFolded (const te::AudioTrack& strip);
+    static void setFolded (te::AudioTrack& strip, bool);
+
     /** The bus a tag's channels go to, or nullptr if there isn't one yet. */
     te::AudioTrack* findTagBus (const juce::String& tag) const;
 
-    /** True for the clip set_steps keeps in sync with a channel's step pattern. */
+    /** True for the clips set_steps keeps in sync with a channel's step row in a pattern. */
     static bool isPatternClip (const te::Clip&);
+
+    /** The pattern a pattern clip plays, or 0 for any other clip. */
+    static int getPatternOf (const te::Clip&);
+
+    /** A clip's own colour, set with set_clip, or a transparent colour if it shows in its
+        channel's colour (the default). Tracktion gives every clip a colour of its own when it's
+        made, so Ng keeps this one separately. */
+    static juce::Colour getClipColour (const te::Clip&);
+    void setClipColour (te::Clip&, std::optional<juce::Colour>);
 
     /** A clip on any channel, by its id. */
     te::Clip* findClip (const juce::String& id) const;
@@ -381,6 +419,9 @@ public:
     /** Where the playhead is, as bar.beat.sixteenth counting from 1 (e.g. "3.2.1"). */
     juce::String getPositionText() const;
 
+    /** The list of files in the sample folders find_samples searches. */
+    SampleIndex& getSampleIndex() noexcept          { return sampleIndex; }
+
     /** The level meter on the master output, for the mixer's master strip. */
     te::LevelMeterPlugin* getMasterMeter() const;
 
@@ -422,6 +463,7 @@ private:
     std::atomic<bool> unsavedChanges { false };
     ChangeListener changeListener { *this };
     bool exporting = false;
+    SampleIndex sampleIndex;
 
     JUCE_DECLARE_NON_COPYABLE (Session)
 };

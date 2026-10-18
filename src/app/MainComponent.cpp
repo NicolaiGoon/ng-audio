@@ -9,61 +9,42 @@ namespace ng
 namespace
 {
     //==============================================================================
-    /** Every keyboard shortcut, in sections, for the ? button and F1. */
+    /** Every keyboard shortcut, in sections, for the ? button and F1. The first section is
+        the app's actions; the rest are the timeline's and piano roll's own keys. */
     class ShortcutsList  : public juce::Component
     {
     public:
-        ShortcutsList()
+        explicit ShortcutsList (const AppActions& actions)
         {
-            setSize (2 * columnWidth + 3 * margin, std::max (getColumnHeight (left()), getColumnHeight (right())));
+            leftRows.push_back ({ "Everywhere", {} });
+
+            for (auto& a : actions.getAll())
+                if (a.listed && ! a.keys.isEmpty())
+                    leftRows.push_back ({ AppActions::describeKeys (a), a.description });
+
+            leftRows.push_back ({ "Typing keyboard (FL Studio style)", {} });
+            leftRows.push_back ({ "Z S X D C V ...", "Play from middle C" });
+            leftRows.push_back ({ "Q 2 W 3 E R ...", "Play the octave above" });
+
+            setSize (2 * columnWidth + 3 * margin, std::max (getColumnHeight (leftRows), getColumnHeight (right())));
         }
 
         void paint (juce::Graphics& g) override
         {
-            paintColumn (g, left(), margin);
+            paintColumn (g, leftRows, margin);
             paintColumn (g, right(), columnWidth + 2 * margin);
         }
 
     private:
         // A row with no description is a section heading.
-        using Rows = std::vector<std::pair<const char*, const char*>>;
+        using Rows = std::vector<std::pair<juce::String, juce::String>>;
 
-        static const Rows& left()
-        {
-            static const Rows rows {
-                { "Everywhere", nullptr },
-                { "Space", "Play or stop" },
-                { "Home", "Back to the start" },
-                { "R", "Record into the armed channel, again to stop" },
-                { "Ctrl+M", "Metronome on or off" },
-                { "Ctrl+L", "Looping on or off" },
-                { "Ctrl+Z", "Undo" },
-                { "Ctrl+Y, Ctrl+Shift+Z", "Redo" },
-                { "Ctrl+N", "New project" },
-                { "Ctrl+O", "Open a project" },
-                { "Ctrl+S", "Save" },
-                { "Ctrl+Shift+S", "Save as" },
-                { "Ctrl+T", "Add an instrument" },
-                { "Ctrl+I", "Import audio files" },
-                { "Ctrl+E", "Export the song, the loop or stems" },
-                { "Ctrl+K", "Typing keyboard on or off" },
-                { "Ctrl+Shift+K", "Show or hide the piano keyboard" },
-                { "Ctrl+B", "Show or hide the browser" },
-                { "Ctrl+J", "Show or hide the AI chat" },
-                { "Ctrl+H", "The undo history" },
-                { "Ctrl+,", "Settings" },
-                { "F1", "This list" },
-                { "Typing keyboard (FL Studio style)", nullptr },
-                { "Z S X D C V ...", "Play from middle C" },
-                { "Q 2 W 3 E R ...", "Play the octave above" },
-            };
-            return rows;
-        }
+        Rows leftRows;
 
         static const Rows& right()
         {
             static const Rows rows {
-                { "Timeline", nullptr },
+                { "Timeline", {} },
                 { "Click a clip", "Pick it (what clicks on its lane paint)" },
                 { "Click, drag", "Paint copies of it along the lane" },
                 { "Right-click, drag", "Delete clips" },
@@ -80,8 +61,9 @@ namespace
                 { "S", "Split it at the playhead" },
                 { "Left, Right", "Move it by a beat (Shift: a bar)" },
                 { "Up, Down", "Move it to the channel above or below" },
+                { "F2", "Rename it" },
                 { "Esc", "Deselect it" },
-                { "Piano roll", nullptr },
+                { "Piano roll", {} },
                 { "Click, drag", "Draw notes (as long as the last one)" },
                 { "Right-click, drag", "Delete notes" },
                 { "Ctrl+A", "Select all notes" },
@@ -102,7 +84,7 @@ namespace
             auto height = margin;
 
             for (auto& row : rows)
-                height += row.second == nullptr ? headingHeight : rowHeight;
+                height += row.second.isEmpty() ? headingHeight : rowHeight;
 
             return height + margin;
         }
@@ -113,7 +95,7 @@ namespace
 
             for (auto& row : rows)
             {
-                if (row.second == nullptr)
+                if (row.second.isEmpty())
                 {
                     g.setColour (juce::Colours::white);
                     g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
@@ -266,6 +248,8 @@ MainComponent::MainComponent (te::Engine& engine)
         rack.clear();
     };
 
+    setUpActions();
+    addChildComponent (palette);
     setUpTopBar();
     setUpPanels();
 
@@ -438,13 +422,14 @@ void MainComponent::setUpPanels()
     timelineShorter.onClick = [this] { timeline.zoomVertically (0.8); };
     timelineTaller.onClick = [this] { timeline.zoomVertically (1.25); };
 
-    for (auto* hint : { &timelineHint, &pianoRollHint, &snapLabel })
+    for (auto* hint : { &timelineHint, &pianoRollHint, &snapLabel, &timelineSnapLabel })
     {
         hint->setFont (juce::FontOptions (12.0f));
         hint->setColour (juce::Label::textColourId, juce::Colours::grey);
     }
 
     snapLabel.setJustificationType (juce::Justification::centredRight);
+    timelineSnapLabel.setJustificationType (juce::Justification::centredRight);
     timelinePanel.addHeaderItem (timelineHint, 700);
     timelinePanel.addHeaderItem (addAudioButton, 78, true);
 
@@ -479,6 +464,19 @@ void MainComponent::setUpPanels()
 
     for (auto* button : { &muteToolButton, &deleteToolButton, &sliceToolButton, &paintToolButton })
         timelinePanel.addHeaderItem (*button, 52, true);
+    // What clip edits snap to; remembered with the layout.
+    timelineSnapBox.addItemList ({ "Auto", "Bar", "Beat", "1/8", "1/16", "Off" }, 1);
+    timelineSnapBox.setTooltip ("What clips snap to as they're moved, trimmed, painted and sliced (hold Alt to place freely). "
+                                "Auto: beats, or 16ths when zoomed in");
+    timelineSnapBox.onChange = [this]
+    {
+        auto id = timelineSnapBox.getSelectedId();
+        timeline.setSnap ((TimelineView::Snap) (id - 1));
+        getProperties().setValue ("ngTimelineSnap", id);
+    };
+    timelineSnapBox.setSelectedId (juce::jlimit (1, 6, getProperties().getIntValue ("ngTimelineSnap", 1)));
+    timelinePanel.addHeaderItem (timelineSnapBox, 64, true);
+    timelinePanel.addHeaderItem (timelineSnapLabel, 36, true);
     timelinePanel.addHeaderItem (timelineTaller, 24, true);
     timelinePanel.addHeaderItem (timelineShorter, 24, true);
     timelinePanel.addHeaderItem (timelineZoomIn, 24, true);
@@ -488,7 +486,29 @@ void MainComponent::setUpPanels()
     addInstrumentButton.onClick = [this] { addInstrument(); };
     addBusButton.onClick = [this] { dispatcher.execute ("create_bus"); };
     rackPanel.addHeaderItem (addInstrumentButton, 112, true);
+
+    // Patterns, as in FL Studio: the rack shows and edits the one picked here.
+    patternBox.setTooltip ("The pattern the rack shows and edits; paint copies of its clips on the timeline");
+    patternBox.onChange = [this]
+    {
+        if (auto id = patternBox.getSelectedId(); id > 0 && id != session.getCurrentPattern())
+            dispatcher.execute ("select_pattern", makeObject ({ { "pattern", id } }));
+    };
+    patternMenuButton.setTooltip ("New, clone, rename or delete patterns, or place this one at the playhead");
+    patternMenuButton.onClick = [this] { showPatternMenu(); };
+    rackPanel.addHeaderItem (patternMenuButton, 64, true);
+    rackPanel.addHeaderItem (patternBox, 130, true);
     mixerPanel.addHeaderItem (addBusButton, 64, true);
+    dockBusesButton.setClickingTogglesState (true);
+    dockBusesButton.setTooltip ("Gather the buses in their own section on the right of the mixer");
+    dockBusesButton.onClick = [this]
+    {
+        mixer.setBusesDocked (dockBusesButton.getToggleState());
+        getProperties().setValue ("ngMixerDockBuses", dockBusesButton.getToggleState());
+    };
+    dockBusesButton.setToggleState (getProperties().getBoolValue ("ngMixerDockBuses", false), juce::dontSendNotification);
+    mixer.setBusesDocked (dockBusesButton.getToggleState());
+    mixerPanel.addHeaderItem (dockBusesButton, 92, true);
 
     // The piano roll.
     closePianoRollButton.onClick = [this] { closePianoRoll(); };
@@ -505,11 +525,46 @@ void MainComponent::setUpPanels()
     snapBox.setTooltip ("Grid the piano roll snaps to (hold Alt to place freely)");
     snapBox.onChange = [this] { pianoRoll.setGrid (1.0 / std::pow (2.0, snapBox.getSelectedId() - 1)); };
 
+    // Ghost notes and the scale, remembered between sessions.
+    ghostNotesButton.setClickingTogglesState (true);
+    ghostNotesButton.setTooltip ("Show the notes of the song's other clips faintly behind this one's");
+    ghostNotesButton.onClick = [this]
+    {
+        pianoRoll.setShowGhostNotes (ghostNotesButton.getToggleState());
+        getProperties().setValue ("ngRollGhosts", ghostNotesButton.getToggleState());
+    };
+    ghostNotesButton.setToggleState (getProperties().getBoolValue ("ngRollGhosts", true), juce::dontSendNotification);
+    pianoRoll.setShowGhostNotes (ghostNotesButton.getToggleState());
+
+    for (int i = 0; i < 12; ++i)
+        rollKeyBox.addItem (juce::MidiMessage::getMidiNoteName (i, true, false, 4), i + 1);
+
+    rollScaleBox.addItemList (PianoRoll::getScaleNames(), 1);
+    rollKeyBox.setTooltip ("The key whose scale the piano roll highlights");
+    rollScaleBox.setTooltip ("Dim the rows outside this scale");
+    auto applyScale = [this]
+    {
+        auto root = rollKeyBox.getSelectedId() - 1, scale = rollScaleBox.getSelectedId() - 1;
+        pianoRoll.setScale (root, scale);
+        rollKeyBox.setEnabled (scale > 0);
+        getProperties().setValue ("ngRollKey", root);
+        getProperties().setValue ("ngRollScale", scale);
+    };
+    rollKeyBox.setSelectedId (juce::jlimit (0, 11, getProperties().getIntValue ("ngRollKey", 0)) + 1, juce::dontSendNotification);
+    rollScaleBox.setSelectedId (juce::jlimit (0, PianoRoll::getScaleNames().size() - 1, getProperties().getIntValue ("ngRollScale", 0)) + 1,
+                                juce::dontSendNotification);
+    rollKeyBox.onChange = applyScale;
+    rollScaleBox.onChange = applyScale;
+    applyScale();
+
     pianoRollPanel.addHeaderItem (pianoRollHint, 600);
     pianoRollPanel.addHeaderItem (closePianoRollButton, 24, true);
     pianoRollPanel.addHeaderItem (snapBox, 64, true);
     pianoRollPanel.addHeaderItem (snapLabel, 36, true);
     pianoRollPanel.addHeaderItem (quantizeButton, 72, true);
+    pianoRollPanel.addHeaderItem (rollScaleBox, 124, true);
+    pianoRollPanel.addHeaderItem (rollKeyBox, 52, true);
+    pianoRollPanel.addHeaderItem (ghostNotesButton, 56, true);
     pianoRollPanel.addHeaderItem (rollTaller, 24, true);
     pianoRollPanel.addHeaderItem (rollShorter, 24, true);
     pianoRollPanel.addHeaderItem (rollZoomIn, 24, true);
@@ -609,6 +664,77 @@ void MainComponent::saveLayout()
 }
 
 //==============================================================================
+void MainComponent::setUpActions()
+{
+    using juce::KeyPress;
+    auto command = juce::ModifierKeys::commandModifier;
+    auto shift = juce::ModifierKeys::shiftModifier;
+    auto none = juce::ModifierKeys::noModifiers;
+
+    // In the order the shortcuts list shows them.
+    auto add = [this] (const char* id, const char* name, const char* description, juce::Array<KeyPress> keys,
+                       std::function<void()> run, std::function<bool()> isEnabled = {}, std::function<bool()> isTicked = {})
+    {
+        actions.add ({ id, name, description, std::move (keys), std::move (run), std::move (isEnabled), std::move (isTicked) });
+    };
+
+    add ("play", "Play or stop", "Play or stop", { KeyPress (KeyPress::spaceKey) }, [this] { playButton.onClick(); });
+    add ("toStart", "Back to the start", "Back to the start", { KeyPress (KeyPress::homeKey) }, [this] { returnButton.onClick(); });
+    add ("record", "Record", "Record into the armed channel, again to stop", { KeyPress ('r', none, 0) }, [this] { toggleRecording(); });
+    add ("metronome", "Metronome", "Metronome on or off", { KeyPress ('m', command, 0) },
+         [this] { dispatcher.execute ("set_metronome"); }, {}, [this] { return metronomeButton.getToggleState(); });
+    add ("loop", "Loop", "Looping on or off", { KeyPress ('l', command, 0) },
+         [this] { dispatcher.execute ("set_loop", makeObject ({ { "enabled", ! loopButton.getToggleState() } })); },
+         {}, [this] { return loopButton.getToggleState(); });
+    add ("undo", "Undo", "Undo", { KeyPress ('z', command, 0) }, [this] { dispatcher.undo(); }, [this] { return dispatcher.canUndo(); });
+    add ("redo", "Redo", "Redo", { KeyPress ('y', command, 0), KeyPress ('z', command | shift, 0) },
+         [this] { dispatcher.redo(); }, [this] { return dispatcher.canRedo(); });
+    add ("new", "New project", "New project", { KeyPress ('n', command, 0) }, [this] { newProject(); });
+    add ("open", "Open...", "Open a project", { KeyPress ('o', command, 0) }, [this] { openProject(); });
+    add ("save", "Save", "Save", { KeyPress ('s', command, 0) }, [this] { saveProject(); });
+    add ("saveAs", "Save as...", "Save as", { KeyPress ('s', command | shift, 0) }, [this] { saveProjectAs(); });
+    add ("addInstrument", "Add instrument", "Add an instrument", { KeyPress ('t', command, 0) }, [this] { addInstrument(); });
+    add ("importAudio", "Import audio files...", "Import audio files", { KeyPress ('i', command, 0) },
+         [this] { timeline.chooseAudioFiles ({}, timeline.getPlayheadBeatForImport()); });
+    add ("export", "Export...", "Export the song, the loop or stems", { KeyPress ('e', command, 0) }, [this] { showExport(); });
+    add ("typingKeyboard", "Typing keyboard", "Typing keyboard on or off", { KeyPress ('k', command, 0) },
+         [this] { setTypingKeyboard (! typingKeyboard::enabled); }, {}, [] { return typingKeyboard::enabled; });
+    add ("pianoKeyboard", "Piano keyboard", "Show or hide the piano keyboard", { KeyPress ('k', command | shift, 0) },
+         [this] { showKeyboard (! keyboard.isVisible()); }, {}, [this] { return keyboard.isVisible(); });
+    add ("browser", "Browser", "Show or hide the browser", { KeyPress ('b', command, 0) },
+         [this] { showBrowser (! browserPanel.isVisible()); }, {}, [this] { return browserPanel.isVisible(); });
+    add ("chat", "AI chat", "Show or hide the AI chat", { KeyPress ('j', command, 0) },
+         [this] { showChat (! chatPanel.isVisible()); }, {}, [this] { return chatPanel.isVisible(); });
+    add ("history", "History...", "The undo history", { KeyPress ('h', command, 0) }, [this] { showHistory(); });
+    add ("settings", "Settings...", "Settings", { KeyPress (',', command, 0) }, [this] { showPreferences(); });
+    add ("shortcuts", "Keyboard shortcuts", "This list", { KeyPress (KeyPress::F1Key) }, [this] { showShortcuts(); });
+    add ("commandPalette", "Command palette", "Search every action by name", { KeyPress ('p', command | shift, 0) },
+         [this] { palette.open(); });
+
+    // The timeline's tools, on FL Studio's keys (the shortcuts list shows them with the timeline's).
+    auto tool = [this] (const char* id, const char* name, juce::juce_wchar key, TimelineView::Tool t)
+    {
+        actions.add ({ id, name, name, { KeyPress (key, juce::ModifierKeys::noModifiers, 0) }, [this, t] { timeline.setTool (t); },
+                       {}, [this, t] { return timeline.getTool() == t; }, false });
+    };
+
+    tool ("paintTool", "Paint tool", 'b', TimelineView::Tool::paint);
+    tool ("sliceTool", "Slice tool", 'c', TimelineView::Tool::slice);
+    tool ("deleteTool", "Delete tool", 'd', TimelineView::Tool::erase);
+    tool ("muteTool", "Mute tool", 't', TimelineView::Tool::mute);
+
+    // No keys, but in the menus.
+    add ("addAudioChannel", "Add audio channel", "Add an empty audio channel", {},
+         [this] { dispatcher.execute ("create_track", makeObject ({ { "instrument", "audio" } })); });
+    add ("addBus", "Add bus", "Add a bus", {}, [this] { dispatcher.execute ("create_bus"); });
+    add ("console", "Command console", "Show or hide the command console", {},
+         [this] { showConsole (! consoleShown); }, {}, [this] { return consoleShown; });
+    add ("plugins", "Plugins...", "The scanned plugins", {}, [this] { showPluginList(); });
+    add ("about", "About Ng DAW", "About Ng DAW", {}, [this] { showAbout(); });
+    add ("quit", "Quit", "Quit", {}, [] { juce::JUCEApplication::getInstance()->systemRequestedQuit(); });
+}
+
+//==============================================================================
 juce::StringArray MainComponent::Menus::getMenuBarNames()
 {
     return { "File", "Edit", "View", "Options", "Help" };
@@ -616,13 +742,10 @@ juce::StringArray MainComponent::Menus::getMenuBarNames()
 
 namespace
 {
-    juce::PopupMenu::Item menuItem (const juce::String& text, const juce::String& keys, std::function<void()> action,
-                                    bool enabled = true, bool ticked = false)
+    juce::PopupMenu::Item menuItem (const juce::String& text, std::function<void()> action, bool ticked = false)
     {
         juce::PopupMenu::Item item (text);
-        item.shortcutKeyDescription = keys;
         item.action = std::move (action);
-        item.isEnabled = enabled;
         item.isTicked = ticked;
         return item;
     }
@@ -637,58 +760,52 @@ juce::PopupMenu MainComponent::getMenu (int menuIndex)
 {
     juce::PopupMenu menu;
 
+    auto add = [&] (std::initializer_list<const char*> ids)
+    {
+        for (auto id : ids)
+            menu.addItem (actions.menuItem (id));
+    };
+
     if (menuIndex == 0)
     {
-        menu.addItem (menuItem ("New project", "Ctrl+N", [this] { newProject(); }));
-        menu.addItem (menuItem ("Open...", "Ctrl+O", [this] { openProject(); }));
-        menu.addItem (menuItem ("Save", "Ctrl+S", [this] { saveProject(); }));
-        menu.addItem (menuItem ("Save as...", "Ctrl+Shift+S", [this] { saveProjectAs(); }));
+        add ({ "new", "open", "save", "saveAs" });
         menu.addSeparator();
-        menu.addItem (menuItem ("Import audio files...", "Ctrl+I", [this] { timeline.chooseAudioFiles ({}, timeline.getPlayheadBeatForImport()); }));
-        menu.addItem (menuItem ("Export...", "Ctrl+E", [this] { showExport(); }));
+        add ({ "importAudio", "export" });
         menu.addSeparator();
-        menu.addItem (menuItem ("Quit", {}, [] { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }));
+        add ({ "quit" });
     }
     else if (menuIndex == 1)
     {
-        menu.addItem (menuItem ("Undo", "Ctrl+Z", [this] { dispatcher.undo(); }, dispatcher.canUndo()));
-        menu.addItem (menuItem ("Redo", "Ctrl+Y", [this] { dispatcher.redo(); }, dispatcher.canRedo()));
-        menu.addItem (menuItem ("History...", "Ctrl+H", [this] { showHistory(); }));
+        add ({ "undo", "redo", "history" });
         menu.addSeparator();
-        menu.addItem (menuItem ("Add instrument", "Ctrl+T", [this] { addInstrument(); }));
-        menu.addItem (menuItem ("Add audio channel", {}, [this] { dispatcher.execute ("create_track", makeObject ({ { "instrument", "audio" } })); }));
-        menu.addItem (menuItem ("Add bus", {}, [this] { dispatcher.execute ("create_bus"); }));
+        add ({ "addInstrument", "addAudioChannel", "addBus" });
     }
     else if (menuIndex == 2)
     {
-        menu.addItem (menuItem ("Browser", "Ctrl+B", [this] { showBrowser (! browserPanel.isVisible()); }, true, browserPanel.isVisible()));
-        menu.addItem (menuItem ("Typing keyboard", "Ctrl+K", [this] { setTypingKeyboard (! typingKeyboard::enabled); }, true, typingKeyboard::enabled));
-        menu.addItem (menuItem ("Piano keyboard", "Ctrl+Shift+K", [this] { showKeyboard (! keyboard.isVisible()); }, true, keyboard.isVisible()));
-        menu.addItem (menuItem ("AI chat", "Ctrl+J", [this] { showChat (! chatPanel.isVisible()); }, true, chatPanel.isVisible()));
-        menu.addItem (menuItem ("Command console", {}, [this] { showConsole (! consoleShown); }, true, consoleShown));
+        add ({ "browser", "typingKeyboard", "pianoKeyboard", "chat", "console" });
         menu.addSeparator();
 
         for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
         {
             auto name = panel == &timelinePanel ? "Timeline" : panel == &rackPanel ? "Channel rack" : panel == &mixerPanel ? "Mixer"
                           : panel == &pianoRollPanel ? "Piano roll" : "Sample editor";
-            menu.addItem (menuItem (juce::String (name) + " in its own window", {}, [this, panel] { panel->setDetached (! panel->isDetached()); },
-                                    true, panel->isDetached()));
+            menu.addItem (menuItem (juce::String (name) + " in its own window", [this, panel] { panel->setDetached (! panel->isDetached()); },
+                                    panel->isDetached()));
         }
 
         menu.addSeparator();
-        menu.addItem (menuItem ("Zoom the timeline to fit the song", "Ctrl + left click", [this] { timeline.zoomToFit(); }));
-        menu.addItem (menuItem ("Reset the layout", {}, [this] { resetLayout(); }));
+        auto fit = menuItem ("Zoom the timeline to fit the song", [this] { timeline.zoomToFit(); });
+        fit.shortcutKeyDescription = "Ctrl + left click";
+        menu.addItem (fit);
+        menu.addItem (menuItem ("Reset the layout", [this] { resetLayout(); }));
     }
     else if (menuIndex == 3)
     {
-        menu.addItem (menuItem ("Settings...", "Ctrl+,", [this] { showPreferences(); }));
-        menu.addItem (menuItem ("Plugins...", {}, [this] { showPluginList(); }));
+        add ({ "settings", "plugins" });
     }
     else if (menuIndex == 4)
     {
-        menu.addItem (menuItem ("Keyboard shortcuts", "F1", [this] { showShortcuts(); }));
-        menu.addItem (menuItem ("About Ng DAW", {}, [this] { showAbout(); }));
+        add ({ "commandPalette", "shortcuts", "about" });
     }
 
     return menu;
@@ -713,10 +830,7 @@ void MainComponent::addInstrument()
 void MainComponent::showAudioMenu (juce::Component* target)
 {
     juce::PopupMenu menu;
-    menu.addItem ("Import audio files... (Ctrl+I)", [this]
-    {
-        timeline.chooseAudioFiles ({}, timeline.getPlayheadBeatForImport());
-    });
+    menu.addItem (actions.menuItem ("importAudio"));
     menu.addItem ("Empty audio channel", [this] { dispatcher.execute ("create_track", makeObject ({ { "instrument", "audio" } })); });
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target));
 }
@@ -1069,45 +1183,11 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (playTypedNote (key))
         return true;
 
-    auto command = juce::ModifierKeys::commandModifier;
-    auto shift = juce::ModifierKeys::shiftModifier;
-    auto none = juce::ModifierKeys::noModifiers;
-
-    if (key == juce::KeyPress ('n', command, 0))                    { newProject(); return true; }
-    if (key == juce::KeyPress ('o', command, 0))                    { openProject(); return true; }
-    if (key == juce::KeyPress ('s', command, 0))                    { saveProject(); return true; }
-    if (key == juce::KeyPress ('s', command | shift, 0))            { saveProjectAs(); return true; }
-    if (key == juce::KeyPress ('z', command, 0))                    { dispatcher.undo(); return true; }
-    if (key == juce::KeyPress ('y', command, 0)
-         || key == juce::KeyPress ('z', command | shift, 0))        { dispatcher.redo(); return true; }
-    if (key == juce::KeyPress ('t', command, 0))                    { addInstrument(); return true; }
-    if (key == juce::KeyPress ('i', command, 0))                    { timeline.chooseAudioFiles ({}, timeline.getPlayheadBeatForImport()); return true; }
-    if (key == juce::KeyPress ('e', command, 0))                    { showExport(); return true; }
-    if (key == juce::KeyPress ('h', command, 0))                    { showHistory(); return true; }
-    if (key == juce::KeyPress (',', command, 0))                    { showPreferences(); return true; }
-    if (key == juce::KeyPress ('b', command, 0))                    { showBrowser (! browserPanel.isVisible()); return true; }
-    if (key == juce::KeyPress ('j', command, 0))                    { showChat (! chatPanel.isVisible()); return true; }
-    if (key == juce::KeyPress ('k', command, 0))                    { setTypingKeyboard (! typingKeyboard::enabled); return true; }
-    if (key == juce::KeyPress ('k', command | shift, 0))            { showKeyboard (! keyboard.isVisible()); return true; }
-
-    if (key == juce::KeyPress (juce::KeyPress::spaceKey))           { playButton.onClick(); return true; }
-    if (key == juce::KeyPress (juce::KeyPress::homeKey))            { returnButton.onClick(); return true; }
-    if (key == juce::KeyPress ('r', none, 0))                       { toggleRecording(); return true; }
-    if (key == juce::KeyPress ('m', command, 0))                    { dispatcher.execute ("set_metronome"); return true; }
-
-    // The timeline's tools, on FL Studio's keys.
-    if (key == juce::KeyPress ('b', none, 0))                       { timeline.setTool (TimelineView::Tool::paint); return true; }
-    if (key == juce::KeyPress ('c', none, 0))                       { timeline.setTool (TimelineView::Tool::slice); return true; }
-    if (key == juce::KeyPress ('d', none, 0))                       { timeline.setTool (TimelineView::Tool::erase); return true; }
-    if (key == juce::KeyPress ('t', none, 0))                       { timeline.setTool (TimelineView::Tool::mute); return true; }
-
-    if (key == juce::KeyPress ('l', command, 0))
-    {
-        dispatcher.execute ("set_loop", makeObject ({ { "enabled", ! loopButton.getToggleState() } }));
+    if (actions.keyPressed (key))
         return true;
-    }
 
-    if (key == juce::KeyPress (juce::KeyPress::F1Key) || key.getTextCharacter() == '?')
+    // '?' is Shift + / on some keyboards and its own key on others, so it goes by the character.
+    if (key.getTextCharacter() == '?')
     {
         showShortcuts();
         return true;
@@ -1195,7 +1275,7 @@ void MainComponent::setTypingKeyboard (bool shouldBeOn)
 void MainComponent::showShortcuts()
 {
     juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned (new ShortcutsList());
+    options.content.setOwned (new ShortcutsList (actions));
     options.dialogTitle = "Keyboard shortcuts";
     options.dialogBackgroundColour = getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId);
     options.componentToCentreAround = this;
@@ -1418,6 +1498,7 @@ void MainComponent::refreshViews()
     rack.update (state);
     mixer.update (state);
     timeline.update (state);
+    updatePatternBox (state);
 
     // The clip may have been deleted (or undone away) while open.
     if (pianoRoll.getClip().isNotEmpty() && ! pianoRoll.update())
@@ -1429,6 +1510,71 @@ void MainComponent::refreshViews()
     updatePianoRollTitle();
     updateSampleEditorTitle();
     updateTransportControls (state);
+}
+
+void MainComponent::updatePatternBox (const juce::var& state)
+{
+    auto key = juce::JSON::toString (state["patterns"], true) + state["current_pattern"].toString();
+
+    if (key == patternBoxKey)
+        return;
+
+    patternBoxKey = key;
+    patternBox.clear (juce::dontSendNotification);
+
+    if (auto patterns = state["patterns"].getArray())
+        for (auto& p : *patterns)
+            patternBox.addItem (p["name"].toString(), static_cast<int> (p["id"]));
+
+    patternBox.setSelectedId (static_cast<int> (state["current_pattern"]), juce::dontSendNotification);
+}
+
+void MainComponent::showPatternMenu()
+{
+    auto current = session.getCurrentPattern();
+    auto name = session.findPattern (current).value_or (Session::PatternInfo()).name;
+    auto report = [this] (const juce::String& title, const CommandResult& result)
+    {
+        if (! result.ok)
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOk (juce::MessageBoxIconType::WarningIcon,
+                                                                                 title, result.error, {}, this),
+                                          nullptr);
+    };
+
+    juce::PopupMenu menu;
+    menu.addItem ("New pattern", [this] { dispatcher.execute ("create_pattern"); });
+    menu.addItem ("Clone " + name, [this, current] { dispatcher.execute ("create_pattern", makeObject ({ { "copy_of", current } })); });
+    menu.addItem ("Rename " + name + "...", [this, current, name]
+    {
+        auto* window = new juce::AlertWindow ("Rename pattern", {}, juce::MessageBoxIconType::NoIcon, this);
+        window->addTextEditor ("name", name);
+        window->addButton ("Rename", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+        window->enterModalState (true, juce::ModalCallbackFunction::create ([window, &d = dispatcher, current, name] (int button)
+        {
+            auto newName = window->getTextEditorContents ("name").trim();
+
+            if (button == 1 && newName.isNotEmpty() && newName != name)
+                d.execute ("set_pattern", makeObject ({ { "pattern", current }, { "name", newName } }));
+        }), true);
+    });
+    menu.addItem ("Delete " + name, current != 1, false, [this, current]
+    {
+        dispatcher.execute ("delete_pattern", makeObject ({ { "pattern", current } }));
+    });
+    menu.addSeparator();
+
+    // At the start of the bar the playhead is in.
+    menu.addItem ("Place " + name + " at the playhead", [this, current, report]
+    {
+        auto& sequence = session.getEdit().tempoSequence;
+        auto playhead = session.getEdit().getTransport().getPosition();
+        auto bar = sequence.toBeats (te::tempo::BarsAndBeats { sequence.toBarsAndBeats (playhead).bars, {} }).inBeats();
+        report ("Can't place the pattern", dispatcher.execute ("place_pattern", makeObject ({ { "pattern", current }, { "start_beat", bar } })));
+    });
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (patternMenuButton));
 }
 
 void MainComponent::openPianoRoll (const juce::String& clipId)
@@ -1584,6 +1730,11 @@ void MainComponent::resized()
     }
 
     layOutPanels (r);
+
+    // The palette floats over the top of the panels.
+    auto paletteHeight = juce::jmin (440, getHeight() - topBarHeight - 40);
+    palette.setBounds ((getWidth() - juce::jmin (620, getWidth() - 40)) / 2, topBarHeight + 4,
+                       juce::jmin (620, getWidth() - 40), paletteHeight);
     repaint();
 }
 

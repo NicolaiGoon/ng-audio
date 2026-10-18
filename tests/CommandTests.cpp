@@ -342,6 +342,31 @@ namespace
         CHECK (! f.dispatcher.execute ("create_track", obj ({ { "colour", "#12" } })).ok);
     }
 
+    void testFindByIdOrName (tracktion::Engine& engine)
+    {
+        std::cout << "tracks and clips are found by id, and tracks by a name that looks like an id\n";
+        Fixture f (engine);
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } }));
+        auto channelId = f.state()["channels"][0]["id"].toString();
+        auto stripId = f.state()["strips"][0]["id"].toString();
+
+        CHECK (f.session.findTrack (channelId, ng::Session::Role::channel) != nullptr);
+        CHECK (f.session.findTrack (channelId, ng::Session::Role::strip) == nullptr);   // a channel's id isn't a strip's
+        CHECK (f.session.findTrack (stripId, ng::Session::Role::strip) != nullptr);
+
+        // A channel named like a number is found by its name, not taken for an id.
+        f.dispatcher.execute ("create_track", obj ({ { "name", stripId } }));
+        auto numbered = f.session.findTrack (stripId, ng::Session::Role::channel);
+        CHECK (numbered != nullptr && numbered->getName() == stripId);
+
+        auto clip = f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "start_beat", 0 }, { "length_beats", 4 } }));
+        CHECK (clip.ok);
+        auto clipId = f.state()["channels"][0]["clips"][0]["id"].toString();
+        CHECK (f.session.findClip (clipId) != nullptr);
+        CHECK (f.session.findClip (channelId) == nullptr);   // a track isn't a clip
+        CHECK (f.session.findClip ("nonsense") == nullptr);
+    }
+
     void testDeleteTrack (tracktion::Engine& engine)
     {
         std::cout << "delete_track removes channels and strips and fixes up routing\n";
@@ -873,6 +898,33 @@ namespace
         return f.state()["channels"][channelIndex]["clips"];
     }
 
+    void testClipNamesAndColours (tracktion::Engine& engine)
+    {
+        std::cout << "clips can be renamed and given a colour of their own\n";
+        Fixture f (engine);
+        f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } }));
+        auto id = f.dispatcher.execute ("add_midi_clip", obj ({ { "channel", "Lead" }, { "start_beat", 0 } })).value["clip"].toString();
+        auto clip = [&] { return f.state()["channels"][0]["clips"][0]; };
+
+        CHECK (! clip().hasProperty ("colour"));   // shows in the channel's colour
+        CHECK (! f.dispatcher.execute ("set_clip", obj ({ { "clip", id } })).ok);
+        CHECK (! f.dispatcher.execute ("set_clip", obj ({ { "clip", id }, { "name", " " } })).ok);
+        CHECK (! f.dispatcher.execute ("set_clip", obj ({ { "clip", id }, { "colour", "blue" } })).ok);
+        CHECK (! f.dispatcher.execute ("set_clip", obj ({ { "clip", "nope" }, { "name", "Verse" } })).ok);
+
+        auto r = f.dispatcher.execute ("set_clip", obj ({ { "clip", id }, { "name", "Verse" }, { "colour", "#3c8ce0" } }));
+        CHECK (r.ok && r.value["name"] == "Verse" && r.value["colour"] == "#3C8CE0");
+        CHECK (clip()["name"] == "Verse" && clip()["colour"] == "#3C8CE0");
+
+        // A copy keeps both; "" goes back to the channel's colour; each change is one undo step.
+        auto copy = f.dispatcher.execute ("duplicate_clip", obj ({ { "clip", id } }));
+        CHECK (copy.ok && f.state()["channels"][0]["clips"][1]["colour"] == "#3C8CE0");
+        CHECK (f.dispatcher.execute ("set_clip", obj ({ { "clip", id }, { "colour", "" } })).ok);
+        CHECK (! clip().hasProperty ("colour") && clip()["name"] == "Verse");
+        CHECK (f.dispatcher.undo());
+        CHECK (clip()["colour"] == "#3C8CE0");
+    }
+
     void testClipEditing (tracktion::Engine& engine)
     {
         std::cout << "clips move, resize, split, duplicate and delete\n";
@@ -1022,6 +1074,166 @@ namespace
         CHECK (f.dispatcher.execute ("set_steps", obj ({ { "channel", "Kick" }, { "step", 1 } })).ok);
         CHECK (clipsOf (f, 0).size() == 1);
         CHECK (near (clipsOf (f, 0)[0]["start_beat"], 0.0));
+    }
+
+    void testPatterns (tracktion::Engine& engine)
+    {
+        std::cout << "patterns hold a row per channel and are placed as blocks\n";
+        Fixture f (engine);
+        auto run = [&f] (const char* name, std::initializer_list<std::pair<const char*, juce::var>> p)
+        {
+            return f.dispatcher.execute (name, obj (p));
+        };
+        auto startsOf = [&f] (int channel)
+        {
+            juce::Array<double> starts;
+            auto clips = clipsOf (f, channel);
+
+            for (auto& c : *clips.getArray())
+                starts.add (static_cast<double> (c["start_beat"]));
+
+            return starts;
+        };
+
+        run ("create_track", { { "name", "Kick" } });
+        run ("create_track", { { "name", "Hat" } });
+        CHECK (run ("set_steps", { { "channel", "Kick" }, { "steps", "x...x...x...x..." } }).ok);
+
+        // Pattern 1 is there from the start; a new pattern becomes the current one.
+        auto state = f.state();
+        CHECK (state["patterns"].size() == 1 && static_cast<int> (state["current_pattern"]) == 1);
+        auto created = run ("create_pattern", { { "name", "Chorus" } });
+        CHECK (created.ok && static_cast<int> (created.value["pattern"]) == 2);
+        CHECK (static_cast<int> (f.state()["current_pattern"]) == 2);
+        CHECK (f.state()["channels"][0]["pattern"]["steps"] == juce::String::repeatedString (".", 16));
+
+        // set_steps changes the current pattern's rows, and nothing is placed until asked.
+        CHECK (run ("set_steps", { { "channel", "Kick" }, { "steps", "x.x.x.x.x.x.x.x." } }).ok);
+        CHECK (startsOf (0) == juce::Array<double> { 0.0 });
+        CHECK (! run ("place_pattern", { { "pattern", 9 } }).ok);
+        auto placed = run ("place_pattern", { { "pattern", 2 }, { "start_beat", 16 } });
+        CHECK (placed.ok && placed.value["clips"].size() == 1);
+        CHECK (startsOf (0) == juce::Array<double> ({ 0.0, 16.0 }));
+        CHECK (clipsOf (f, 0)[1]["name"] == "Chorus" && static_cast<int> (clipsOf (f, 0)[1]["pattern_id"]) == 2);
+        CHECK (static_cast<int> (clipsOf (f, 0)[1]["notes"]) == 8);
+        CHECK (static_cast<int> (clipsOf (f, 0)[0]["notes"]) == 4);   // pattern 1 is unchanged
+
+        // Steps on another channel join every block of the pattern.
+        CHECK (run ("set_steps", { { "channel", "Hat" }, { "pattern", 2 }, { "steps", "..x...x...x...x." } }).ok);
+        CHECK (startsOf (1) == juce::Array<double> { 16.0 });
+        auto chorusOf = [&f] (int channel) { return clipsOf (f, channel)[channel == 0 ? 1 : 0]["id"].toString(); };
+
+        // The block moves, copies and deletes as one.
+        CHECK (run ("move_clip", { { "clip", chorusOf (0) }, { "start_beat", 20 } }).ok);
+        CHECK (startsOf (0) == juce::Array<double> ({ 0.0, 20.0 }) && startsOf (1) == juce::Array<double> { 20.0 });
+        CHECK (run ("duplicate_clip", { { "clip", chorusOf (1) } }).ok);
+        CHECK (startsOf (0) == juce::Array<double> ({ 0.0, 20.0, 24.0 }) && startsOf (1) == juce::Array<double> ({ 20.0, 24.0 }));
+
+        // Copying onto a block that's already there doesn't stack another on it.
+        CHECK (run ("duplicate_clip", { { "clip", chorusOf (0) }, { "start_beat", 24 } }).ok);
+        CHECK (startsOf (1) == juce::Array<double> ({ 20.0, 24.0 }));
+
+        CHECK (run ("delete_clip", { { "clip", clipsOf (f, 1)[1]["id"] } }).ok);
+        CHECK (startsOf (0) == juce::Array<double> ({ 0.0, 20.0 }) && startsOf (1) == juce::Array<double> { 20.0 });
+
+        // Resizing a block resizes all of it.
+        CHECK (run ("resize_clip", { { "clip", chorusOf (1) }, { "end_beat", 22 } }).ok);
+        CHECK (near (clipsOf (f, 0)[1]["length_beats"], 2.0) && near (clipsOf (f, 1)[0]["length_beats"], 2.0));
+        CHECK (f.dispatcher.undo());
+
+        // Clearing a row takes that channel's clips out of the blocks.
+        CHECK (run ("set_steps", { { "channel", "Hat" }, { "pattern", 2 }, { "steps", "................" } }).ok);
+        CHECK (startsOf (1).isEmpty());
+        CHECK (f.dispatcher.undo());
+
+        // A block made unique gets its own copy of the pattern.
+        auto unique = run ("make_unique", { { "clip", chorusOf (1) } });
+        CHECK (unique.ok && static_cast<int> (unique.value["pattern"]) == 3);
+        CHECK (static_cast<int> (clipsOf (f, 1)[0]["pattern_id"]) == 3 && static_cast<int> (clipsOf (f, 0)[1]["pattern_id"]) == 3);
+        CHECK (run ("set_steps", { { "channel", "Kick" }, { "steps", "x..............." } }).ok);   // pattern 3, the current one
+        CHECK (static_cast<int> (clipsOf (f, 0)[1]["notes"]) == 1);
+        CHECK (f.dispatcher.undo());
+        CHECK (f.dispatcher.undo());
+        CHECK (static_cast<int> (clipsOf (f, 0)[1]["pattern_id"]) == 2);
+
+        // Renaming and colouring a pattern changes its clips.
+        CHECK (run ("set_pattern", { { "pattern", 2 }, { "name", "Drop" }, { "colour", "#3c8ce0" } }).ok);
+        CHECK (clipsOf (f, 1)[0]["name"] == "Drop" && clipsOf (f, 1)[0]["colour"].toString().equalsIgnoreCase ("#3c8ce0"));
+        CHECK (! run ("set_pattern", { { "pattern", 2 }, { "name", "" } }).ok);
+
+        // The current pattern is what the rack shows.
+        CHECK (run ("select_pattern", { { "pattern", 1 } }).ok);
+        CHECK (f.state()["channels"][0]["pattern"]["steps"] == "x...x...x...x...");
+        CHECK (! run ("select_pattern", { { "pattern", 42 } }).ok);
+
+        // Patterns are saved with the project.
+        juce::TemporaryFile temp (".ngdaw");
+        auto path = temp.getFile().getFullPathName();
+        CHECK (run ("save_project", { { "path", path } }).ok);
+        CHECK (run ("open_project", { { "path", path }, { "discard_changes", true } }).ok);
+        state = f.state();
+        CHECK (state["patterns"].size() == 2 && state["patterns"][1]["name"] == "Drop");
+        CHECK (startsOf (1) == juce::Array<double> { 20.0 });
+        CHECK (run ("select_pattern", { { "pattern", 2 } }).ok);
+        CHECK (f.state()["channels"][1]["pattern"]["steps"] == "..x...x...x...x.");
+
+        // Deleting a pattern deletes its blocks; pattern 1 stays.
+        CHECK (! run ("delete_pattern", { { "pattern", 1 } }).ok);
+        CHECK (run ("delete_pattern", { { "pattern", 2 } }).ok);
+        CHECK (startsOf (0) == juce::Array<double> { 0.0 } && startsOf (1).isEmpty());
+        CHECK (static_cast<int> (f.state()["current_pattern"]) == 1);
+        CHECK (f.dispatcher.undo());
+        CHECK (f.state()["patterns"].size() == 2 && startsOf (1) == juce::Array<double> { 20.0 });
+    }
+
+    void testMoveAndFoldStrips (tracktion::Engine& engine)
+    {
+        std::cout << "mixer strips can be reordered, and a strip's inputs folded away\n";
+        Fixture f (engine);
+        auto run = [&f] (const char* name, std::initializer_list<std::pair<const char*, juce::var>> p)
+        {
+            return f.dispatcher.execute (name, obj (p));
+        };
+        auto order = [&f]
+        {
+            juce::StringArray names;
+            auto strips = f.state()["strips"];
+
+            for (auto& s : *strips.getArray())
+                names.add (s["name"].toString());
+
+            return names;
+        };
+
+        run ("create_track", { { "name", "Kick" } });
+        run ("create_track", { { "name", "Snare" } });
+        run ("create_track", { { "name", "Bass" } });
+        CHECK (order() == juce::StringArray ({ "Kick", "Snare", "Bass" }));
+
+        CHECK (run ("move_strip", { { "strip", "Bass" }, { "index", 0 } }).ok);
+        CHECK (order() == juce::StringArray ({ "Bass", "Kick", "Snare" }));
+        CHECK (run ("move_strip", { { "strip", "Bass" }, { "index", 2 } }).ok);
+        CHECK (order() == juce::StringArray ({ "Kick", "Snare", "Bass" }));
+        CHECK (run ("move_strip", { { "strip", "Kick" }, { "index", 1 } }).ok);
+        CHECK (order() == juce::StringArray ({ "Snare", "Kick", "Bass" }));
+
+        // The channels keep their own order.
+        CHECK (f.state()["channels"][0]["name"] == "Kick");
+
+        CHECK (f.dispatcher.undo());
+        CHECK (order() == juce::StringArray ({ "Kick", "Snare", "Bass" }));
+        CHECK (! run ("move_strip", { { "strip", "Bass" }, { "index", 3 } }).ok);
+        CHECK (! run ("move_strip", { { "strip", "Nobody" }, { "index", 0 } }).ok);
+        CHECK (! run ("move_strip", { { "strip", "Bass" } }).ok);
+
+        // Folding is saved in the state, and toggles without a value.
+        CHECK (run ("create_bus", { { "name", "Drums" } }).ok);
+        CHECK (run ("fold_strip", { { "strip", "Drums" }, { "folded", true } }).ok);
+        auto strips = f.state()["strips"];
+        CHECK (static_cast<bool> (strips[3]["folded"]));
+        CHECK (run ("fold_strip", { { "strip", "Drums" } }).ok);
+        CHECK (! f.state()["strips"][3].hasProperty ("folded"));
+        CHECK (! run ("fold_strip", { { "strip", "Nobody" } }).ok);
     }
 
     void testEditingNotes (tracktion::Engine& engine)
@@ -1942,6 +2154,14 @@ namespace
         CHECK (find ("hat").size() == 0);
         r = f.dispatcher.execute ("find_samples", obj ({ { "limit", 1 } }));
         CHECK (r.ok && r.value["samples"].size() == 1 && static_cast<bool> (r.value["truncated"]));
+
+        // Searches use the folder's list; a file added later shows up once it's listed again.
+        auto added = writeSample (samples.getChildFile ("Loops"), "Hat Loop.wav", 0.0, 0.2);
+        f.session.getSampleIndex().clear();
+        CHECK (find ("hat").size() == 1 && find ("hat")[0]["path"] == added.getFullPathName());
+        added.deleteFile();
+        f.session.getSampleIndex().clear();
+        CHECK (find ("hat").size() == 0);
 
         // An effect preset, loaded onto another strip, brings its settings.
         CHECK (f.dispatcher.execute ("create_track", obj ({ { "name", "Lead" } })).ok);
@@ -3429,9 +3649,16 @@ int main (int argc, char* argv[])
     {
         tracktion::Engine engine ("NgDawTests", nullptr, std::make_unique<HeadlessBehaviour>());
 
-        // `NgDawTests Bridge` runs only the tests with "Bridge" in their names.
+        // `NgDawTests Bridge` runs only the tests with "Bridge" in their names, and
+        // `NgDawTests =testLibrary` only that one test (ctest runs each test like this).
         auto only = juce::String (argc > 1 ? argv[1] : "");
-        #define RUN(test) if (only.isEmpty() || juce::String (#test).containsIgnoreCase (only)) test (engine)
+        auto exact = only.startsWithChar ('=');
+        auto matches = [&] (const juce::String& name)
+        {
+            return only.isEmpty() || (exact ? name == only.substring (1) : name.containsIgnoreCase (only));
+        };
+        auto ran = 0;
+        #define RUN(test) if (matches (#test)) { ++ran; test (engine); }
 
         RUN (testCreateTrackLinksAStrip);
         RUN (testUndoAfterTracktionTidiesUp);
@@ -3440,6 +3667,7 @@ int main (int argc, char* argv[])
         RUN (testFailuresRollBack);
         RUN (testJsonBridgeAndToolList);
         RUN (testRenameAndRecolourStayInSyncWhileLinked);
+        RUN (testFindByIdOrName);
         RUN (testDeleteTrack);
         RUN (testSetInstrument);
         RUN (testMixerStripSettings);
@@ -3452,7 +3680,10 @@ int main (int argc, char* argv[])
         RUN (testSaveAndOpen);
         RUN (testClipsAndPlayheadInState);
         RUN (testClipEditing);
+        RUN (testClipNamesAndColours);
         RUN (testPatternCopiesFollowSteps);
+        RUN (testPatterns);
+        RUN (testMoveAndFoldStrips);
         RUN (testEditingNotes);
         RUN (testQuantizeAndVelocity);
         RUN (testArmingForMidiInput);
@@ -3477,6 +3708,12 @@ int main (int argc, char* argv[])
         RUN (testBridgeAndMcpServer);
         RUN (testRendersAudio);
         RUN (testRecordingAudio);
+
+        if (ran == 0)
+        {
+            std::cout << "No test is called '" << only << "'\n";
+            ++failures;
+        }
     }
 
     std::cout << (failures == 0 ? "\nAll checks passed\n" : "\nSome checks failed\n");

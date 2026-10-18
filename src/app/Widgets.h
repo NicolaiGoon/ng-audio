@@ -10,12 +10,7 @@ namespace ng
 
 inline juce::var makeObject (std::initializer_list<std::pair<const char*, juce::var>> props)
 {
-    auto obj = new juce::DynamicObject();
-
-    for (auto& [k, v] : props)
-        obj->setProperty (k, v);
-
-    return juce::var (obj);
+    return params::object (props);
 }
 
 inline juce::Colour colourFrom (const juce::var& v)

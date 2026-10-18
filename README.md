@@ -46,10 +46,17 @@ Linux, build it from source (see *Building*).
   an empty spot makes a new one-bar clip; the ▾ on a clip, or Shift+right-click, opens its menu
   (split, duplicate, delete, open in the piano roll). Drag a clip to move it (onto another
   channel's lane too) and drag its edges to trim it. Del deletes the selected clip, Ctrl+D
-  duplicates it and S splits it at the playhead. Drags snap to the beat (16ths when zoomed in); hold Alt to place freely. A step
+  duplicates it and S splits it at the playhead. Drags snap to the beat (16ths when zoomed in), or to what *Snap* in the timeline's
+  header picks (bar, beat, 1/8, 1/16 or off); hold Alt to place freely. *Rename* (or F2) and *Colour*
+  in a clip's menu name it and colour it apart from its channel. A step
   pattern can be copied along the timeline, and every copy follows the channel's steps; drag a
   copy's edge to resize it: making it longer adds empty steps to the channel's step row, as in
   FL Studio, and making it shorter cuts off the steps past its end.
+- **Selecting several clips.** Ctrl+click clips to add them to the selection, Ctrl+drag across
+  the lanes to select every clip in a box, or press Ctrl+A for all of them. Dragging one moves
+  them all (onto other lanes too, when every clip fits there), and Del, Ctrl+D, Ctrl+C and
+  Ctrl+V, S and the arrow keys act on the whole selection as one undo step. A Ctrl+click on an
+  empty spot still fits the song in view.
 - **A piano roll.** Double-click a clip (or select it and press Enter) to edit its notes in
   place of the rack and mixer. Click to draw a note, or hold and drag to paint more along the
   way, as on the timeline; each is as long as the last note drawn or resized. Drag a note to
@@ -62,9 +69,20 @@ Linux, build it from source (see *Building*).
   Under the notes, the velocity lane shows how hard each one plays: click or drag across it to
   set the velocity of the notes there (only the selected ones, if any are). Quantize (or Q)
   moves the selected notes, or all of them, onto the grid. Each edit is one undo step.
+  Ghosts shows the song's other MIDI clips faintly behind the notes, in their channel's colour,
+  so a part can be written against what plays with it. Pick a key and scale (major, minor, the
+  modes, pentatonics or blues) to dim the rows outside it and mark the root.
 - **A step sequencer.** Each channel has a row of 16 steps (16th notes) under its name; click a
   step to turn it on or off, or drag across steps to paint them (right-click clears). The − and + beside the row take away
   or add a bar of steps (4 to 64). The step under the playhead is outlined while playing.
+  As in FL Studio, a project can have several patterns, each with its own row for every
+  channel. A pattern is placed on the timeline as a block, with a clip on each channel that has
+  steps in it, and moving, copying, resizing or deleting any clip of a block does the same to
+  all of it. Pattern 1 starts at the beginning of the project, as the single pattern always did.
+  The picker in the rack's header shows which pattern the rack edits, and its *Pattern* menu
+  makes a new one, clones, renames or deletes it, or places it at the playhead's bar. Clicking a
+  pattern's clip on the timeline selects its whole block and shows that pattern in the rack;
+  *Make unique* in the clip's menu gives a block its own copy of the pattern.
 - **A transport** with Play, back to the start (|< or Home), tempo (type it, click the arrows
   or drag), time signature, the song position (bar.beat.sixteenth), a Loop switch and a
   Metronome that clicks on every beat, louder on the bar. New projects loop the whole project,
@@ -84,7 +102,8 @@ Linux, build it from source (see *Building*).
   paste it at the playhead, the left and right arrows move it by a beat (Shift: a bar), up and
   down move it to the next channel, and Esc deselects. In the piano roll, Ctrl+C, Ctrl+X and
   Ctrl+V copy, cut and paste notes at the playhead, Ctrl+D duplicates them, and Esc closes it.
-  F1 or the ? button lists them all.
+  F1 or the ? button lists them all, and Ctrl+Shift+P opens a command palette: type a few
+  words to find any action, see its keys, and press Enter to run it.
 - **A layout you can arrange.** The top bar holds the menus (File, Edit, View, Options, Help),
   the transport and the buttons for settings, export, history and the browser. The timeline,
   channel rack, mixer and piano roll are panels: drag the bars between them to give each more
@@ -111,6 +130,10 @@ Linux, build it from source (see *Building*).
   as a shared reverb. *+ Send* on a strip sends it to a bus (or makes a new one); drag the send's
   bar to set its level, and right-click it to make it pre-fader or remove it. Sends that would
   loop back into themselves are refused. Channels can also be routed straight to a bus.
+- **Arranging the mixer.** Drag a strip by its name onto another to move it there. A bus or group
+  that strips play into gets a fold arrow next to its name, which hides those strips so the mixer
+  shows just the bus (and shows them again). *Dock buses* (above the mixer) gathers the buses in a
+  section of their own beside the master, which stays put while the channels scroll.
 - **Multi-output instruments.** For a plugin with more than one stereo output (a drum plugin with
   separate kick, snare and hats outputs, say), *Outs* in the channel rack gives each output its own
   mixer strip, shown right after the instrument's strip, which sums them. Click *Outs* again to go
@@ -211,9 +234,12 @@ Linux, build it from source (see *Building*).
   | `set_mixer_strip` | Sets a strip's (or `master`'s) fader, pan, mute and solo |
   | `set_tempo` / `set_time_signature` | Project tempo (clips keep their beats) and time signature |
   | `set_loop` | Loop on/off and the loop region in beats (default: the whole project, in whole bars) |
-  | `set_steps` | Sets or toggles a channel's step pattern (`steps`, `step`, `length`, `pitch`) |
+  | `set_steps` | Sets or toggles a channel's row in a pattern (`steps`, `step`, `length`, `pitch`; `pattern`, default the current one) |
+  | `create_pattern` / `set_pattern` / `delete_pattern` / `select_pattern` | FL-style patterns: a step row per channel; a new one (optionally a `copy_of` another) becomes the current one |
+  | `place_pattern` / `make_unique` | Places a pattern as a block (a clip on each channel with steps in it), or gives a block a copy of its own |
   | `add_midi_clip` | Adds a MIDI clip with notes to a channel |
   | `move_clip` / `resize_clip` / `split_clip` / `duplicate_clip` / `delete_clip` / `mute_clip` | Clip editing, by clip id from `get_state` |
+  | `set_clip` | Renames a clip, or gives it a colour of its own (`""` goes back to its channel's) |
   | `get_notes` / `set_notes` | Reads or replaces a MIDI clip's notes (beats from the clip's start) |
   | `quantize_notes` | Moves a clip's notes (or some of them) onto a grid, optionally with their ends |
   | `play` / `stop` / `set_position` | Transport; `set_position` moves the playhead to a beat |
@@ -230,6 +256,8 @@ Linux, build it from source (see *Building*).
   | `set_effect` / `get_effect` | Bypass an effect and set its parameters; list them with their ranges |
   | `show_effect_window` | Opens an effect's window |
   | `create_bus` / `set_send` / `remove_send` | Adds a bus; sends a strip to it with a level, pre- or post-fader |
+  | `move_strip` | Moves a mixer strip to another place in the mixer, by index |
+  | `fold_strip` | Hides (or shows again) the strips playing into a bus or group; not an undo step |
   | `route_strip` | Plays a mixer strip into another strip (a group or bus) or into `master` |
   | `tag_channel` | Tags a channel `drums`, `bass`, `vox` or anything else; the tag's bus ("Drums Bus") is created the first time, and the channel's strip plays into it. `create_track` takes a `tag` too |
   | `set_multi_output` | Gives each stereo output of a channel's plugin instrument its own strip, or goes back to one |
@@ -299,7 +327,10 @@ Linux, build it from source (see *Building*).
 src/core/Session.*            the open project: Tracktion Edit + channel/strip model
 src/core/CommandRegistry.*    command specs (name, description, JSON schema, handler)
 src/core/CommandDispatcher.*  runs commands, batches, JSON requests, undo/redo
-src/core/ProjectCommands.cpp  create_track, route, set_steps, add_midi_clip, play, stop, projects, get_state
+src/core/ProjectCommands.cpp  create_track, route, the mixer strip, projects, get_state (and registering every command)
+src/core/ClipCommands.cpp     MIDI clips, step patterns and notes: add_midi_clip, set_steps, move_clip ... quantize_notes
+src/core/TransportCommands.cpp  play, stop, record, arming, the playhead, metronome, tempo, time signature and loop
+src/core/SampleIndex.*        the kept list of files in the sample folders that find_samples searches
 src/core/PluginCommands.cpp   scan_plugins, list_plugins
 src/core/EffectCommands.cpp   insert effects on mixer strips
 src/core/BusCommands.cpp      buses and sends
@@ -326,6 +357,8 @@ src/app/ChatPanel.*           the AI chat panel
 src/app/AppSettings.h         the app's preferences: theme, project folder, autosave
 src/app/CommandLogPanel.*     the AI command log, with undo for each entry
 src/app/TimelineView.*        the arrangement timeline: lanes, clips and waveforms, ruler, playhead, zoom, audio drops
+src/app/TimelineAutomation.cpp the timeline's automation lanes
+src/app/TimelineTools.cpp     the timeline's paint, delete, mute and slice tools
 src/app/PianoRoll.*           the piano roll: keyboard, note grid, drawing and editing notes
 tests/CommandTests.cpp        headless tests, including an offline render that checks for sound
 tests/TestSynth, TestGain,    tiny VST3 plugins the tests load: an instrument, an effect

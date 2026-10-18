@@ -1,5 +1,7 @@
 #pragma once
 
+#include "AppActions.h"
+#include "CommandPalette.h"
 #include "BrowserPanel.h"
 #include "ChannelRack.h"
 #include "ChatPanel.h"
@@ -30,8 +32,9 @@ namespace ng
     Every button here calls the command layer rather than touching the Edit directly,
     so the UI does exactly what an AI client or macro could do.
 
-    The shortcuts that work everywhere live in keyPressed() (detached windows send their keys
-    here too); the timeline and piano roll handle their own and pass on the rest. With the
+    The shortcuts that work everywhere are the actions set up in setUpActions(), which also
+    fill the menus and the shortcuts list; keyPressed() runs them (detached windows send their
+    keys here too); the timeline and piano roll handle their own and pass on the rest. With the
     typing keyboard on, letter keys play the armed channel instead, as in FL Studio.
 */
 class MainComponent  : public juce::Component,
@@ -79,6 +82,9 @@ private:
 
     juce::PopupMenu getMenu (int menuIndex);
 
+    /** Defines the app-wide actions: their names, keys and what they do. */
+    void setUpActions();
+
     void timerCallback() override;
     void handleAsyncUpdate() override;
     void handleNoteOn (juce::MidiKeyboardState*, int midiChannel, int note, float velocity) override;
@@ -117,6 +123,11 @@ private:
     void updateCpuMeter();
     void autosaveIfDue();
     void showPluginList();
+
+    /** The rack header's pattern picker, and its menu (new, clone, rename, delete, place). */
+    void updatePatternBox (const juce::var& state);
+    void showPatternMenu();
+    juce::String patternBoxKey;
     void showExport();
     void showBrowser (bool);
     void setUpTopBar();
@@ -148,6 +159,8 @@ private:
 
     //==============================================================================
     // The top bar.
+    AppActions actions;
+    CommandPalette palette { actions };
     Menus menus { *this };
     juce::MenuBarComponent menuBar { &menus };
     IconButton newButton { "New project (Ctrl+N)", icons::Icon::newFile },
@@ -175,7 +188,7 @@ private:
                helpButton { "Keyboard shortcuts (F1)", icons::Icon::help };
 
     juce::Slider tempo;
-    juce::ComboBox timeSignature, snapBox;
+    juce::ComboBox timeSignature, snapBox, timelineSnapBox, rollKeyBox, rollScaleBox, patternBox;
     juce::Label positionDisplay;
 
     /** How hard the audio engine is working, with advice when it struggles. */
@@ -207,12 +220,12 @@ private:
                rollTaller { "Bigger rows (Alt + wheel)", icons::Icon::zoomInVertical },
                closePianoRollButton { "Close the piano roll (Esc)", icons::Icon::close },
                closeSampleEditorButton { "Close the sample editor (Esc)", icons::Icon::close };
-    juce::TextButton quantizeButton { "Quantize" }, paintToolButton { "Paint" }, sliceToolButton { "Slice" },
+    juce::TextButton quantizeButton { "Quantize" }, ghostNotesButton { "Ghosts" }, dockBusesButton { "Dock buses" }, patternMenuButton { "Pattern" }, paintToolButton { "Paint" }, sliceToolButton { "Slice" },
                      deleteToolButton { "Delete" }, muteToolButton { "Mute" };
     juce::Label timelineHint { {}, "Click a clip, then click its lane to paint copies. Right-click deletes. Drag in the ruler for a loop." },
                 pianoRollHint { {}, "Click or drag to draw notes, drag a note to move it, its right edge to resize. Right-click or right-drag deletes." },
                 sampleEditorHint { {}, "Drag the lit part's edges to trim. Knobs apply when let go; double-click one to reset it." },
-                snapLabel { {}, "Snap" };
+                snapLabel { {}, "Snap" }, timelineSnapLabel { {}, "Snap" };
 
     //==============================================================================
     // The panels and the bars between them. They come after their contents, so they go first.
