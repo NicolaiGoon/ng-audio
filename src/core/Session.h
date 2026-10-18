@@ -327,6 +327,10 @@ public:
     static juce::String getTagOfBus (const te::AudioTrack& strip);
     void setTagOfBus (te::AudioTrack& strip, const juce::String& tag);
 
+    /** Whether the mixer folds away the strips playing into this one (fold_strip). */
+    static bool isFolded (const te::AudioTrack& strip);
+    static void setFolded (te::AudioTrack& strip, bool);
+
     /** The bus a tag's channels go to, or nullptr if there isn't one yet. */
     te::AudioTrack* findTagBus (const juce::String& tag) const;
 

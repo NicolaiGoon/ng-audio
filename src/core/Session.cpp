@@ -831,6 +831,17 @@ int Session::getEffectInsertIndex (const te::PluginList& list, int effectIndex)
     return list.size();
 }
 
+bool Session::isFolded (const te::AudioTrack& strip)
+{
+    return strip.state["ngFolded"];
+}
+
+void Session::setFolded (te::AudioTrack& strip, bool folded)
+{
+    // Not undoable: how the mixer is laid out isn't an edit.
+    strip.state.setProperty ("ngFolded", folded, nullptr);
+}
+
 bool Session::isPatternClip (const te::Clip& clip)
 {
     return getPatternOf (clip) > 0;
@@ -1687,6 +1698,9 @@ juce::var Session::toVar() const
 
         auto busNumber = getBusNumber (*s);
         obj->setProperty ("bus", busNumber >= 0);
+
+        if (isFolded (*s))
+            obj->setProperty ("folded", true);
 
         if (auto channel = getOutputOf (*s))
         {

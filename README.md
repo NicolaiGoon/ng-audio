@@ -130,6 +130,10 @@ Linux, build it from source (see *Building*).
   as a shared reverb. *+ Send* on a strip sends it to a bus (or makes a new one); drag the send's
   bar to set its level, and right-click it to make it pre-fader or remove it. Sends that would
   loop back into themselves are refused. Channels can also be routed straight to a bus.
+- **Arranging the mixer.** Drag a strip by its name onto another to move it there. A bus or group
+  that strips play into gets a fold arrow next to its name, which hides those strips so the mixer
+  shows just the bus (and shows them again). *Dock buses* (above the mixer) gathers the buses in a
+  section of their own beside the master, which stays put while the channels scroll.
 - **Multi-output instruments.** For a plugin with more than one stereo output (a drum plugin with
   separate kick, snare and hats outputs, say), *Outs* in the channel rack gives each output its own
   mixer strip, shown right after the instrument's strip, which sums them. Click *Outs* again to go
@@ -252,6 +256,8 @@ Linux, build it from source (see *Building*).
   | `set_effect` / `get_effect` | Bypass an effect and set its parameters; list them with their ranges |
   | `show_effect_window` | Opens an effect's window |
   | `create_bus` / `set_send` / `remove_send` | Adds a bus; sends a strip to it with a level, pre- or post-fader |
+  | `move_strip` | Moves a mixer strip to another place in the mixer, by index |
+  | `fold_strip` | Hides (or shows again) the strips playing into a bus or group; not an undo step |
   | `route_strip` | Plays a mixer strip into another strip (a group or bus) or into `master` |
   | `tag_channel` | Tags a channel `drums`, `bass`, `vox` or anything else; the tag's bus ("Drums Bus") is created the first time, and the channel's strip plays into it. `create_track` takes a `tag` too |
   | `set_multi_output` | Gives each stereo output of a channel's plugin instrument its own strip, or goes back to one |

@@ -499,6 +499,16 @@ void MainComponent::setUpPanels()
     rackPanel.addHeaderItem (patternMenuButton, 64, true);
     rackPanel.addHeaderItem (patternBox, 130, true);
     mixerPanel.addHeaderItem (addBusButton, 64, true);
+    dockBusesButton.setClickingTogglesState (true);
+    dockBusesButton.setTooltip ("Gather the buses in their own section on the right of the mixer");
+    dockBusesButton.onClick = [this]
+    {
+        mixer.setBusesDocked (dockBusesButton.getToggleState());
+        getProperties().setValue ("ngMixerDockBuses", dockBusesButton.getToggleState());
+    };
+    dockBusesButton.setToggleState (getProperties().getBoolValue ("ngMixerDockBuses", false), juce::dontSendNotification);
+    mixer.setBusesDocked (dockBusesButton.getToggleState());
+    mixerPanel.addHeaderItem (dockBusesButton, 92, true);
 
     // The piano roll.
     closePianoRollButton.onClick = [this] { closePianoRoll(); };

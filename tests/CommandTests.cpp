@@ -1186,6 +1186,56 @@ namespace
         CHECK (f.state()["patterns"].size() == 2 && startsOf (1) == juce::Array<double> { 20.0 });
     }
 
+    void testMoveAndFoldStrips (tracktion::Engine& engine)
+    {
+        std::cout << "mixer strips can be reordered, and a strip's inputs folded away\n";
+        Fixture f (engine);
+        auto run = [&f] (const char* name, std::initializer_list<std::pair<const char*, juce::var>> p)
+        {
+            return f.dispatcher.execute (name, obj (p));
+        };
+        auto order = [&f]
+        {
+            juce::StringArray names;
+            auto strips = f.state()["strips"];
+
+            for (auto& s : *strips.getArray())
+                names.add (s["name"].toString());
+
+            return names;
+        };
+
+        run ("create_track", { { "name", "Kick" } });
+        run ("create_track", { { "name", "Snare" } });
+        run ("create_track", { { "name", "Bass" } });
+        CHECK (order() == juce::StringArray ({ "Kick", "Snare", "Bass" }));
+
+        CHECK (run ("move_strip", { { "strip", "Bass" }, { "index", 0 } }).ok);
+        CHECK (order() == juce::StringArray ({ "Bass", "Kick", "Snare" }));
+        CHECK (run ("move_strip", { { "strip", "Bass" }, { "index", 2 } }).ok);
+        CHECK (order() == juce::StringArray ({ "Kick", "Snare", "Bass" }));
+        CHECK (run ("move_strip", { { "strip", "Kick" }, { "index", 1 } }).ok);
+        CHECK (order() == juce::StringArray ({ "Snare", "Kick", "Bass" }));
+
+        // The channels keep their own order.
+        CHECK (f.state()["channels"][0]["name"] == "Kick");
+
+        CHECK (f.dispatcher.undo());
+        CHECK (order() == juce::StringArray ({ "Kick", "Snare", "Bass" }));
+        CHECK (! run ("move_strip", { { "strip", "Bass" }, { "index", 3 } }).ok);
+        CHECK (! run ("move_strip", { { "strip", "Nobody" }, { "index", 0 } }).ok);
+        CHECK (! run ("move_strip", { { "strip", "Bass" } }).ok);
+
+        // Folding is saved in the state, and toggles without a value.
+        CHECK (run ("create_bus", { { "name", "Drums" } }).ok);
+        CHECK (run ("fold_strip", { { "strip", "Drums" }, { "folded", true } }).ok);
+        auto strips = f.state()["strips"];
+        CHECK (static_cast<bool> (strips[3]["folded"]));
+        CHECK (run ("fold_strip", { { "strip", "Drums" } }).ok);
+        CHECK (! f.state()["strips"][3].hasProperty ("folded"));
+        CHECK (! run ("fold_strip", { { "strip", "Nobody" } }).ok);
+    }
+
     void testEditingNotes (tracktion::Engine& engine)
     {
         std::cout << "notes are read and replaced, timed from the clip's start\n";
@@ -3633,6 +3683,7 @@ int main (int argc, char* argv[])
         RUN (testClipNamesAndColours);
         RUN (testPatternCopiesFollowSteps);
         RUN (testPatterns);
+        RUN (testMoveAndFoldStrips);
         RUN (testEditingNotes);
         RUN (testQuantizeAndVelocity);
         RUN (testArmingForMidiInput);
