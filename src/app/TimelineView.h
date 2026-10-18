@@ -256,6 +256,8 @@ private:
     void toggleSelected (const juce::String& clipId);
     void selectInBox (juce::Rectangle<float>);
     void selectAll();
+    void selectBlockOf (const Clip&);   // adds the rest of a step pattern's block
+    static bool inSameBlock (const Clip&, const Clip&);
     bool isSelected (const juce::String& clipId) const      { return selection.contains (clipId); }
     /** The selected clips with their lane index. For commands, a step pattern's block counts
         once: a command on any of its clips acts on all of it. */

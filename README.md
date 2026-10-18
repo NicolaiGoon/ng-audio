@@ -79,6 +79,10 @@ Linux, build it from source (see *Building*).
   channel. A pattern is placed on the timeline as a block, with a clip on each channel that has
   steps in it, and moving, copying, resizing or deleting any clip of a block does the same to
   all of it. Pattern 1 starts at the beginning of the project, as the single pattern always did.
+  The picker in the rack's header shows which pattern the rack edits, and its *Pattern* menu
+  makes a new one, clones, renames or deletes it, or places it at the playhead's bar. Clicking a
+  pattern's clip on the timeline selects its whole block and shows that pattern in the rack;
+  *Make unique* in the clip's menu gives a block its own copy of the pattern.
 - **A transport** with Play, back to the start (|< or Home), tempo (type it, click the arrows
   or drag), time signature, the song position (bar.beat.sixteenth), a Loop switch and a
   Metronome that clicks on every beat, louder on the bar. New projects loop the whole project,
