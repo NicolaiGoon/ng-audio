@@ -95,6 +95,13 @@ add_subdirectory(${tracktion_SOURCE_DIR}/modules ${CMAKE_BINARY_DIR}/tracktion E
 if (NG_COMPILER_LAUNCHER)
     set(CMAKE_C_COMPILER_LAUNCHER ${NG_COMPILER_LAUNCHER})
     set(CMAKE_CXX_COMPILER_LAUNCHER ${NG_COMPILER_LAUNCHER})
+
+    # JUCE's recommended flags ask MSVC for a shared PDB too; embedded debug info (/Z7) instead.
+    if (MSVC)
+        get_target_property(ng_juce_flags juce_recommended_config_flags INTERFACE_COMPILE_OPTIONS)
+        string(REPLACE "/Zi" "/Z7" ng_juce_flags "${ng_juce_flags}")
+        set_target_properties(juce_recommended_config_flags PROPERTIES INTERFACE_COMPILE_OPTIONS "${ng_juce_flags}")
+    endif()
 endif()
 
 # ------------------------------------------------------------------------------
