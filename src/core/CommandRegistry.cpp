@@ -90,6 +90,26 @@ namespace params
     {
         return p.hasProperty (key) ? static_cast<double> (p[key]) : fallback;
     }
+
+    juce::var object (std::initializer_list<std::pair<const char*, juce::var>> properties)
+    {
+        auto obj = new juce::DynamicObject();
+
+        for (auto& [name, value] : properties)
+            obj->setProperty (name, value);
+
+        return juce::var (obj);
+    }
+
+    bool isNumber (const juce::var& v)
+    {
+        return v.isDouble() || v.isInt() || v.isInt64();
+    }
+
+    double roundBeats (double beats)
+    {
+        return std::round (beats * 1.0e6) / 1.0e6;
+    }
 }
 
 } // namespace ng

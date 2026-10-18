@@ -6,13 +6,9 @@ namespace ng
 {
 namespace
 {
+    using params::isNumber;
     using params::prop;
     using params::schema;
-
-    bool isNumber (const juce::var& v)
-    {
-        return v.isDouble() || v.isInt() || v.isInt64();
-    }
 
     /** How long a song export runs on past the last clip, so reverb and release tails can ring out.
         A loop export stops exactly at the loop's end, so it loops cleanly. */

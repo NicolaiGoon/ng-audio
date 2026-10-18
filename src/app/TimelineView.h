@@ -26,6 +26,11 @@ namespace ng
     when zoomed in); hold Alt to place freely. Each edit (and each paint or delete drag) is
     one undo step.
 
+    Several clips can be selected: Ctrl+click adds or removes one, Ctrl+drag on the lanes
+    selects those in a box and Ctrl+A selects all (a Ctrl+click that doesn't drag fits the song
+    in view). Dragging a selected clip moves them all, and the keys above act on all of them,
+    still one undo step.
+
     Audio channels show their clips' waveforms. Drop audio files (from the browser or the
     desktop) on an audio channel's lane to add them there, one after another, or anywhere else
     for a new audio channel each; a folder brings in the audio files in it. Double-click an
@@ -90,8 +95,11 @@ public:
         Step patterns are edited in the rack instead. */
     std::function<void (const juce::String& clipId)> onOpenClip;
 
-    /** The selected clip's id, or empty. */
+    /** The clip picked last (what Enter, F2 and its menu act on), or empty. */
     juce::String getSelectedClip() const        { return selectedClip; }
+
+    /** Every selected clip, including the one picked last. */
+    const juce::StringArray& getSelectedClips() const noexcept   { return selection; }
 
     /** Horizontal zoom, in pixels per beat. */
     double getPixelsPerBeat() const noexcept    { return pixelsPerBeat; }
@@ -119,11 +127,25 @@ public:
     /** Called when the tool changes, so the header's buttons can follow. */
     std::function<void()> onToolChanged;
 
+    /** What clip drags, painting, slicing and drops snap to: automatic (beats, or 16ths when
+        zoomed in far enough), bars, beats, 8ths, 16ths, or off. Alt places freely whatever it is. */
+    enum class Snap { automatic, bar, beat, eighth, sixteenth, off };
+    void setSnap (Snap newSnap)                 { snapTo = newSnap; }
+    Snap getSnap() const noexcept               { return snapTo; }
+
     /** Shows or hides a channel's automation lane. */
     void showAutomation (const juce::String& channelId, bool shouldShow);
     bool isShowingAutomation (const juce::String& channelId) const     { return automationLanes.count (channelId) > 0; }
 
 private:
+    /** A note of a MIDI clip, for the small picture of its notes: its start in beats from where
+        the clip's content starts (the clip's start, unless its front is trimmed), and length. */
+    struct NoteBar
+    {
+        double start = 0.0, length = 0.0;
+        int pitch = 60;
+    };
+
     struct Clip
     {
         juce::String id, name;
@@ -132,6 +154,14 @@ private:
         double maxEndBeat = -1.0;   // for an audio clip, where its file runs out
         double gainDb = 0.0, fadeInBeats = 0.0, fadeOutBeats = 0.0, sourceBpm = 0.0;   // audio only
         bool followTempo = false, muted = false;
+        int patternId = 0;     // for a step pattern's clip, the pattern it plays
+
+        te::EditItemID itemID;
+        juce::Colour colour;   // the clip's own colour, or transparent for its channel's
+
+        // A MIDI clip's notes, read once per update() rather than on every repaint.
+        juce::Array<NoteBar> notes;
+        int lowestNote = 127, highestNote = 0;
     };
 
     struct Lane
@@ -151,7 +181,7 @@ private:
         juce::Array<juce::Point<double>> points;   // beat, value
     };
 
-    enum class DragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut, paint, erase, mute, laneHeight };
+    enum class DragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut, paint, erase, mute, laneHeight, select };
     enum class RulerDrag { none, playhead, loopStart, loopEnd, newLoop };
 
     /** What's under the mouse in the lanes: a lane, maybe a clip, and which part of it. */
@@ -170,6 +200,8 @@ private:
         double fadeIn = 0.0, fadeOut = 0.0;   // an audio clip's fades as they would be, in beats
         bool moved = false;
         bool stretch = false;   // Shift-dragging an audio clip's end stretches it instead of trimming
+        bool group = false;     // moving the whole selection, by as much as this clip moves
+        juce::Rectangle<float> box;   // for DragMode::select
     };
 
     Hit hitTestLanes (juce::Point<float>) const;
@@ -202,6 +234,7 @@ private:
     void showAutomationMenu (int lane);
     void showChannelMenu (int lane);
     void renameChannel (const juce::String& channelId, const juce::String& name);
+    void renameSelected();
     void paintAutomation (juce::Graphics&, int lane);
     bool automationMouseDown (const juce::MouseEvent&);
     juce::Rectangle<float> getClipArea (int lane, double startBeat, double lengthBeats) const;
@@ -217,6 +250,23 @@ private:
     void splitSelectedAtPlayhead();
     void pasteAtPlayhead();
     void moveSelected (double beats, int lanesDown);
+
+    // The selection: one clip or several, each command on it one undo step.
+    void selectOnly (const juce::String& clipId);
+    void toggleSelected (const juce::String& clipId);
+    void selectInBox (juce::Rectangle<float>);
+    void selectAll();
+    void selectBlockOf (const Clip&);   // adds the rest of a step pattern's block
+    static bool inSameBlock (const Clip&, const Clip&);
+    bool isSelected (const juce::String& clipId) const      { return selection.contains (clipId); }
+    /** The selected clips with their lane index. For commands, a step pattern's block counts
+        once: a command on any of its clips acts on all of it. */
+    std::vector<std::pair<int, const Clip*>> getSelectionWithLanes (bool onePerBlock = false) const;
+    juce::Range<double> getSelectionRange() const;
+    bool canMoveSelectionByLanes (int lanesDown) const;
+    void moveSelection (double beats, int lanesDown);
+    juce::Array<juce::var> runCommands (const juce::String& undoLabel, const juce::Array<juce::var>& commands);
+    bool selectResults (const juce::Array<juce::var>& results, int primary, const std::function<juce::String (const juce::var&)>& clipOf);
 
     juce::Array<juce::var> itemsForFiles (const juce::StringArray&) const;
     void showDropTarget (juce::Point<float>);
@@ -263,7 +313,8 @@ private:
     std::map<juce::String, int> laneHeights;   // by channel id, for lanes dragged to their own height
     int laneHeightDragStart = 0;
 
-    juce::String selectedClip, copiedClip;
+    juce::String selectedClip;
+    juce::StringArray selection, copiedClips;
     Drag drag;
 
     /** The last clip picked on each lane (by channel id): what clicking that lane paints. */
@@ -272,6 +323,7 @@ private:
     juce::StringArray erased;          // clips a right-drag has deleted, until the lanes catch up
     juce::StringArray toggled;         // clips a mute-tool drag has muted or unmuted
     Tool tool = Tool::paint;
+    Snap snapTo = Snap::automatic;
     juce::String lastPainted;          // so a double-click on a clip just painted doesn't open it
 
     RulerDrag rulerDrag = RulerDrag::none;

@@ -6,13 +6,10 @@ namespace ng
 {
 namespace
 {
+    using params::isNumber;
+    using params::roundBeats;
     using params::prop;
     using params::schema;
-
-    double rounded (double beats)
-    {
-        return std::round (beats * 1.0e6) / 1.0e6;
-    }
 
     /** An audio channel that already plays this file and has room for it at startBeat, so
         dropping the same sample again doesn't make another channel. */
@@ -125,15 +122,10 @@ namespace
         auto clipStart = tempo.toBeats (pos.getStart()).inBeats();
         result->setProperty ("clip", clip->itemID.toString());
         result->setProperty ("channel", channel->itemID.toString());
-        result->setProperty ("start_beat", rounded (clipStart));
-        result->setProperty ("length_beats", rounded (tempo.toBeats (pos.getEnd()).inBeats() - clipStart));
+        result->setProperty ("start_beat", roundBeats (clipStart));
+        result->setProperty ("length_beats", roundBeats (tempo.toBeats (pos.getEnd()).inBeats() - clipStart));
         result->setProperty ("file", file.getFullPathName());
         return CommandResult::success (value);
-    }
-
-    bool isNumber (const juce::var& v)
-    {
-        return v.isDouble() || v.isInt() || v.isInt64();
     }
 
     // Resampling and stretching go from a quarter to four times the speed: two octaves either way.

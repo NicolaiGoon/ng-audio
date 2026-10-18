@@ -4,6 +4,8 @@ namespace ng
 {
 namespace
 {
+    using params::object;
+    using params::isNumber;
     using params::prop;
     using params::schema;
 
@@ -12,21 +14,6 @@ namespace
 
     // Kits start on C1 (36), where General MIDI puts the kick.
     constexpr int firstKitNote = 36;
-
-    juce::var object (std::initializer_list<std::pair<const char*, juce::var>> properties)
-    {
-        auto obj = new juce::DynamicObject();
-
-        for (auto& [name, value] : properties)
-            obj->setProperty (name, value);
-
-        return juce::var (obj);
-    }
-
-    bool isNumber (const juce::var& v)
-    {
-        return v.isDouble() || v.isInt() || v.isInt64();
-    }
 
     juce::Array<juce::ValueTree> getSounds (te::SamplerPlugin& sampler)
     {

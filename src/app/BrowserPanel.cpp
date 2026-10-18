@@ -725,7 +725,11 @@ void BrowserPanel::showMenu (Node& node)
         });
 
     menu.addSeparator();
-    menu.addItem ("Refresh", [this] { refresh(); });
+    menu.addItem ("Refresh", [this]
+    {
+        session.getSampleIndex().clear();   // list the sample folders again, for files just added
+        refresh();
+    });
     menu.showMenuAsync (juce::PopupMenu::Options());
 }
 
