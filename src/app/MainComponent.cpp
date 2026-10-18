@@ -486,6 +486,18 @@ void MainComponent::setUpPanels()
     addInstrumentButton.onClick = [this] { addInstrument(); };
     addBusButton.onClick = [this] { dispatcher.execute ("create_bus"); };
     rackPanel.addHeaderItem (addInstrumentButton, 112, true);
+
+    // Patterns, as in FL Studio: the rack shows and edits the one picked here.
+    patternBox.setTooltip ("The pattern the rack shows and edits; paint copies of its clips on the timeline");
+    patternBox.onChange = [this]
+    {
+        if (auto id = patternBox.getSelectedId(); id > 0 && id != session.getCurrentPattern())
+            dispatcher.execute ("select_pattern", makeObject ({ { "pattern", id } }));
+    };
+    patternMenuButton.setTooltip ("New, clone, rename or delete patterns, or place this one at the playhead");
+    patternMenuButton.onClick = [this] { showPatternMenu(); };
+    rackPanel.addHeaderItem (patternMenuButton, 64, true);
+    rackPanel.addHeaderItem (patternBox, 130, true);
     mixerPanel.addHeaderItem (addBusButton, 64, true);
 
     // The piano roll.
@@ -1476,6 +1488,7 @@ void MainComponent::refreshViews()
     rack.update (state);
     mixer.update (state);
     timeline.update (state);
+    updatePatternBox (state);
 
     // The clip may have been deleted (or undone away) while open.
     if (pianoRoll.getClip().isNotEmpty() && ! pianoRoll.update())
@@ -1487,6 +1500,71 @@ void MainComponent::refreshViews()
     updatePianoRollTitle();
     updateSampleEditorTitle();
     updateTransportControls (state);
+}
+
+void MainComponent::updatePatternBox (const juce::var& state)
+{
+    auto key = juce::JSON::toString (state["patterns"], true) + state["current_pattern"].toString();
+
+    if (key == patternBoxKey)
+        return;
+
+    patternBoxKey = key;
+    patternBox.clear (juce::dontSendNotification);
+
+    if (auto patterns = state["patterns"].getArray())
+        for (auto& p : *patterns)
+            patternBox.addItem (p["name"].toString(), static_cast<int> (p["id"]));
+
+    patternBox.setSelectedId (static_cast<int> (state["current_pattern"]), juce::dontSendNotification);
+}
+
+void MainComponent::showPatternMenu()
+{
+    auto current = session.getCurrentPattern();
+    auto name = session.findPattern (current).value_or (Session::PatternInfo()).name;
+    auto report = [this] (const juce::String& title, const CommandResult& result)
+    {
+        if (! result.ok)
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOk (juce::MessageBoxIconType::WarningIcon,
+                                                                                 title, result.error, {}, this),
+                                          nullptr);
+    };
+
+    juce::PopupMenu menu;
+    menu.addItem ("New pattern", [this] { dispatcher.execute ("create_pattern"); });
+    menu.addItem ("Clone " + name, [this, current] { dispatcher.execute ("create_pattern", makeObject ({ { "copy_of", current } })); });
+    menu.addItem ("Rename " + name + "...", [this, current, name]
+    {
+        auto* window = new juce::AlertWindow ("Rename pattern", {}, juce::MessageBoxIconType::NoIcon, this);
+        window->addTextEditor ("name", name);
+        window->addButton ("Rename", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+        window->enterModalState (true, juce::ModalCallbackFunction::create ([window, &d = dispatcher, current, name] (int button)
+        {
+            auto newName = window->getTextEditorContents ("name").trim();
+
+            if (button == 1 && newName.isNotEmpty() && newName != name)
+                d.execute ("set_pattern", makeObject ({ { "pattern", current }, { "name", newName } }));
+        }), true);
+    });
+    menu.addItem ("Delete " + name, current != 1, false, [this, current]
+    {
+        dispatcher.execute ("delete_pattern", makeObject ({ { "pattern", current } }));
+    });
+    menu.addSeparator();
+
+    // At the start of the bar the playhead is in.
+    menu.addItem ("Place " + name + " at the playhead", [this, current, report]
+    {
+        auto& sequence = session.getEdit().tempoSequence;
+        auto playhead = session.getEdit().getTransport().getPosition();
+        auto bar = sequence.toBeats (te::tempo::BarsAndBeats { sequence.toBarsAndBeats (playhead).bars, {} }).inBeats();
+        report ("Can't place the pattern", dispatcher.execute ("place_pattern", makeObject ({ { "pattern", current }, { "start_beat", bar } })));
+    });
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (patternMenuButton));
 }
 
 void MainComponent::openPianoRoll (const juce::String& clipId)

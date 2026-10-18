@@ -1124,7 +1124,17 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
 
         if (hit.clip >= 0)
         {
-            toggleSelected (lanes[hit.lane].clips[hit.clip].id);
+            auto& clip = lanes.getReference (hit.lane).clips.getReference (hit.clip);
+            auto adding = ! isSelected (clip.id);
+            toggleSelected (clip.id);
+
+            // A step pattern's block goes in or out as a whole.
+            for (auto& lane : lanes)
+                for (auto& other : lane.clips)
+                    if (other.id != clip.id && inSameBlock (other, clip) && isSelected (other.id) != adding)
+                        toggleSelected (other.id);
+
+            selectedClip = adding ? clip.id : selectedClip;
             return;
         }
 
@@ -1261,9 +1271,25 @@ void TimelineView::mouseDown (const juce::MouseEvent& e)
     drag.group = selection.size() > 1 && isSelected (clip.id) && hit.mode == DragMode::move;
 
     if (drag.group)
+    {
         selectedClip = clip.id;
+    }
     else
+    {
+        // A step pattern's clip picks its whole block, which moves as one, and its pattern
+        // becomes the one the rack shows, as in FL Studio.
         selectOnly (clip.id);
+        selectBlockOf (clip);
+        drag.group = selection.size() > 1 && hit.mode == DragMode::move;
+
+        // After this click is handled: the command refreshes the lanes this click is reading.
+        if (clip.patternId > 0 && clip.patternId != session.getCurrentPattern())
+            juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer<TimelineView> (this), pattern = clip.patternId]
+            {
+                if (safeThis != nullptr)
+                    safeThis->dispatcher.execute ("select_pattern", makeObject ({ { "pattern", pattern } }));
+            });
+    }
 
     brushes[lanes[hit.lane].channelId] = clip.id;
 
@@ -1515,7 +1541,10 @@ void TimelineView::finishMouseDrag()
     if (! finished.moved)
     {
         if (finished.group)
+        {
             selectOnly (finished.clip.id);
+            selectBlockOf (finished.clip);
+        }
 
         return;
     }
@@ -1874,6 +1903,9 @@ void TimelineView::showClipMenu()
     menu.addSeparator();
     menu.addItem ("Split at playhead (S)", canSplit, false, [this] { splitSelectedAtPlayhead(); });
     menu.addItem ("Duplicate (Ctrl+D)", [this] { duplicateSelected(); });
+
+    if (clip->patternId > 0)
+        menu.addItem ("Make unique", [this, id = clip->id] { dispatcher.execute ("make_unique", makeObject ({ { "clip", id } })); });
     menu.addItem ("Copy (Ctrl+C)", [this] { copiedClips = selection; });
     menu.addSeparator();
     menu.addItem ("Delete (Del)", [this] { deleteSelected(); });
@@ -1923,6 +1955,24 @@ void TimelineView::toggleSelected (const juce::String& clipId)
         selection.add (clipId);
         selectedClip = clipId;
     }
+
+    repaint();
+}
+
+bool TimelineView::inSameBlock (const Clip& a, const Clip& b)
+{
+    return a.patternId > 0 && a.patternId == b.patternId && std::abs (a.startBeat - b.startBeat) < 1.0e-6;
+}
+
+void TimelineView::selectBlockOf (const Clip& clip)
+{
+    if (clip.patternId == 0)
+        return;
+
+    for (auto& lane : lanes)
+        for (auto& other : lane.clips)
+            if (inSameBlock (other, clip))
+                selection.addIfNotAlreadyThere (other.id);
 
     repaint();
 }
