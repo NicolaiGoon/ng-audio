@@ -1,4 +1,5 @@
 #include "CommandRegistry.h"
+#include "AudioAnalysis.h"
 
 #include <tracktion_engine/timestretch/tracktion_TempoDetect.h>
 
@@ -522,8 +523,8 @@ namespace
         result->setProperty ("sample_rate", info.sampleRate);
         result->setProperty ("channels", info.numChannels);
 
-        auto peak = getPeak (session, file);
-        result->setProperty ("peak_db", peak > 0.0f ? std::round (juce::Decibels::gainToDecibels (peak) * 100.0f) / 100.0f : -100.0f);
+        // Peak, RMS, integrated loudness and clipping, from one pass over the file.
+        measureAudioFile (session.getEngine(), file).addTo (*result);
 
         auto bpm = detectBpm (session, file, length);
 
@@ -632,7 +633,8 @@ void registerAudioCommands (CommandRegistry& registry)
 
     registry.add ({ "analyze_audio",
                     "Reads an audio clip's file, or any audio file: its length, sample rate, channels, loudest peak "
-                    "(peak_db) and detected tempo (bpm, and how many beats long it is at that tempo; left out when no "
+                    "(peak_db), RMS level (rms_db), integrated loudness (loudness_lufs, as streaming services measure it), "
+                    "how many samples hit full scale (clipped_samples) and detected tempo (bpm, and how many beats long it is at that tempo; left out when no "
                     "tempo is found). A short loop's tempo is matched to a whole number of bars. Changes nothing.",
                     schema ({ { "clip", prop ("string", "An audio clip's id") },
                               { "file", prop ("string", "Or the path to an audio file") } }),

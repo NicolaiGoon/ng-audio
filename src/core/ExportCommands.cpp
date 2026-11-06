@@ -1,4 +1,5 @@
 #include "CommandRegistry.h"
+#include "AudioAnalysis.h"
 
 #include <thread>
 
@@ -13,6 +14,9 @@ namespace
     /** How long a song export runs on past the last clip, so reverb and release tails can ring out.
         A loop export stops exactly at the loop's end, so it loops cleanly. */
     constexpr double songTailSeconds = 2.0;
+
+    /** Below this, a loudness reading means silence. */
+    constexpr double silenceThreshold = -99.0;
 
     /** Sets the export flag for as long as it lives. */
     struct ScopedExport
@@ -360,6 +364,150 @@ namespace
     }
 }
 
+namespace
+{
+    /** Renders the loop (or the song) and measures it: the master, and each strip's stem as
+        export_audio would write it, so levels can be checked and balanced without listening.
+        The files go in a temporary folder that is deleted afterwards. */
+    CommandResult analyzeMix (Session& session, const juce::var& p)
+    {
+        auto& edit = session.getEdit();
+
+        if (session.isExporting())
+            return CommandResult::failure ("analyze_mix: an export is already running");
+
+        if (edit.getTransport().isRecording())
+            return CommandResult::failure ("analyze_mix: stop recording first");
+
+        auto& transport = edit.getTransport();
+        auto loopRange = transport.getLoopRange();
+        auto hasLoop = loopRange.getLength() > te::TimeDuration();
+        auto rangeName = params::getString (p, "range", hasLoop && transport.looping ? "loop" : "song");
+        te::TimeRange range;
+
+        if (rangeName == "loop")
+        {
+            if (! hasLoop)
+                return CommandResult::failure ("analyze_mix: there's no loop region; set one with set_loop, or use range \"song\"");
+
+            range = loopRange;
+        }
+        else if (rangeName == "song")
+        {
+            if (edit.getLength() <= te::TimeDuration())
+                return CommandResult::failure ("analyze_mix: the project is empty, so there's nothing to measure");
+
+            range = { te::TimePosition(), edit.getLength() + te::TimeDuration::fromSeconds (songTailSeconds) };
+        }
+        else
+        {
+            return CommandResult::failure ("analyze_mix: range must be \"loop\" or \"song\"");
+        }
+
+        auto stems = static_cast<bool> (p.getProperty ("stems", true));
+        auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                        .getChildFile ("NgDawAnalyze-" + juce::Uuid().toString());
+
+        struct DeleteAfterwards
+        {
+            juce::File folder;
+            ~DeleteAfterwards()     { folder.deleteRecursively(); }
+        } cleanup { folder };
+
+        ScopedExport exporting (session);
+        te::TransportControl::stopAllTransports (edit.engine, false, true);
+
+        constexpr double sampleRate = 44100.0;
+        auto mixFile = folder.getChildFile ("mix.wav");
+
+        if (auto error = renderWav (session, mixFile, range, {}, true, 32, sampleRate); error.isNotEmpty())
+            return CommandResult::failure ("analyze_mix: " + error);
+
+        auto master = measureAudioFile (edit.engine, mixFile);
+        auto masterObj = new juce::DynamicObject();
+        master.addTo (*masterObj);
+
+        juce::StringArray warnings;
+
+        if (master.clippedSamples > 0 || master.peak >= 1.0f)
+            warnings.add ("the master clips (" + juce::String (master.clippedSamples) + " samples at full scale); "
+                          "turn faders or the master down");
+        else if (master.peak > juce::Decibels::decibelsToGain (-1.0f))
+            warnings.add ("the master peaks above -1 dBFS, which can clip once encoded to MP3 or AAC");
+
+        if (master.loudnessLufs > silenceThreshold && master.loudnessLufs < -24.0)
+            warnings.add ("the mix is quiet (" + juce::String (master.loudnessLufs, 1) + " LUFS); most music sits around -14");
+
+        auto result = new juce::DynamicObject();
+        auto& tempo = edit.tempoSequence;
+        result->setProperty ("range", rangeName);
+        result->setProperty ("start_beat", std::round (tempo.toBeats (range.getStart()).inBeats() * 1.0e6) / 1.0e6);
+        result->setProperty ("end_beat", std::round (tempo.toBeats (range.getEnd()).inBeats() * 1.0e6) / 1.0e6);
+        result->setProperty ("master", juce::var (masterObj));
+
+        if (stems)
+        {
+            juce::Array<juce::var> strips;
+            int index = 0;
+
+            for (auto source : getStemSources (session))
+            {
+                auto senders = getSendersInto (session, *source);
+                juce::Array<te::Track*> tracks { source };
+
+                for (auto sender : senders)
+                    tracks.add (sender);
+
+                auto file = folder.getChildFile ("stem" + juce::String (index++) + ".wav");
+                ScopedSendsOnly sendsOnly (edit, source, senders);
+
+                if (auto error = renderWav (session, file, range, tracks, false, 32, sampleRate); error.isNotEmpty())
+                    return CommandResult::failure ("analyze_mix: " + error);
+
+                auto levels = measureAudioFile (edit.engine, file);
+                auto obj = new juce::DynamicObject();
+                obj->setProperty ("id", source->itemID.toString());
+                obj->setProperty ("name", source->getName());
+                obj->setProperty ("role", Session::getRole (*source) == Session::Role::channel ? "channel" : "strip");
+
+                if (auto fader = source->getVolumePlugin())
+                    obj->setProperty ("volume_db", std::round (fader->getVolumeDb() * 100.0f) / 100.0f);
+
+                levels.addTo (*obj);
+
+                if (source->isMuted (false))
+                    obj->setProperty ("muted", true);
+                else if (levels.clippedSamples > 0)
+                    warnings.add ("'" + source->getName() + "' clips on its own; turn its instrument or effects down");
+
+                strips.add (juce::var (obj));
+            }
+
+            // Which strip is loudest, and which are buried, relative to it.
+            double loudest = silenceThreshold;
+
+            for (auto& s : strips)
+                if (! s.hasProperty ("muted"))
+                    loudest = std::max (loudest, static_cast<double> (s["loudness_lufs"]));
+
+            for (auto& s : strips)
+            {
+                auto lufs = static_cast<double> (s["loudness_lufs"]);
+
+                if (! s.hasProperty ("muted") && lufs > silenceThreshold && loudest > silenceThreshold)
+                    s.getDynamicObject()->setProperty ("relative_to_loudest_db", std::round ((lufs - loudest) * 10.0) / 10.0);
+                else if (! s.hasProperty ("muted") && lufs <= silenceThreshold)
+                    warnings.add ("'" + s["name"].toString() + "' is silent in this range");
+            }
+
+            result->setProperty ("strips", strips);
+        }
+
+        result->setProperty ("warnings", warnings);
+        return CommandResult::success (juce::var (result));
+    }
+}
+
 juce::File findMp3Encoder()
 {
    #if JUCE_WINDOWS
@@ -414,6 +562,15 @@ void registerExportCommands (CommandRegistry& registry)
                               { "mp3_kbps", prop ("number", "MP3 bit rate, 96 to 320 (default 320)") } },
                             { "path" }),
                     false, exportAudio });
+
+    registry.add ({ "analyze_mix",
+                    "Renders the loop region (or the song) offline and measures it, so a mix can be checked without "
+                    "listening: the master's peak, RMS, integrated loudness (LUFS) and clipping, and the same for each "
+                    "mixer strip's stem with its fader level and how far below the loudest strip it sits. Warnings point "
+                    "out clipping, a quiet master and silent strips. Changes nothing; it takes about as long as an export.",
+                    schema ({ { "range", prop ("string", "\"loop\" (default while looping) or \"song\"") },
+                              { "stems", prop ("boolean", "Also measure each strip (default true); false measures only the master, faster") } }),
+                    false, analyzeMix });
 }
 
 } // namespace ng

@@ -114,6 +114,8 @@ add_library(ng_core STATIC
     src/core/CommandDispatcher.cpp
     src/core/ProjectCommands.cpp
     src/core/ClipCommands.cpp
+    src/core/NoteBuilder.cpp
+    src/core/SynthSounds.cpp
     src/core/TransportCommands.cpp
     src/core/PluginCommands.cpp
     src/core/EffectCommands.cpp
@@ -122,21 +124,20 @@ add_library(ng_core STATIC
     src/core/SamplerCommands.cpp
     src/core/LibraryCommands.cpp
     src/core/AudioCommands.cpp
+    src/core/AudioAnalysis.cpp
     src/core/ExportCommands.cpp
     src/core/AutomationCommands.cpp
     src/core/Bridge.cpp
     src/core/McpServer.cpp
     src/core/Autosave.cpp
-    src/core/SampleIndex.cpp
-    src/core/AiChat.cpp)
+    src/core/SampleIndex.cpp)
 
 target_include_directories(ng_core PUBLIC src)
 target_include_directories(ng_core PRIVATE ${NG_RUBBERBAND_INCLUDE})
 
 target_compile_definitions(ng_core PUBLIC
     JUCE_PLUGINHOST_VST3=1
-    # The chat panel talks to AI services over HTTPS: through libcurl on Linux, the OS elsewhere.
-    JUCE_USE_CURL=$<BOOL:${NG_LINUX}>
+    JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
     JUCE_MODAL_LOOPS_PERMITTED=1
     JUCE_STRICT_REFCOUNTEDPOINTER=1
@@ -174,12 +175,16 @@ target_compile_definitions(ng_core INTERFACE
     $<TARGET_PROPERTY:ng_core,COMPILE_DEFINITIONS>)
 
 if (NG_LINUX)
-    find_package(CURL REQUIRED)
-    target_link_libraries(ng_core PUBLIC atomic CURL::libcurl)
+    target_link_libraries(ng_core PUBLIC atomic)
 endif()
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     target_compile_options(ng_core PRIVATE -Wno-unknown-pragmas)
+
+    # GCC 15+ errors on a broken but never-used template in Tracktion's bundled nanorange.
+    if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
+        target_compile_options(ng_core PRIVATE -Wno-template-body)
+    endif()
 endif()
 
 # ------------------------------------------------------------------------------
@@ -211,7 +216,6 @@ target_sources(NgDaw PRIVATE
     src/app/CommandLogPanel.cpp
     src/app/PreferencesPanel.cpp
     src/app/HistoryPanel.cpp
-    src/app/ChatPanel.cpp
     src/app/Theme.cpp
     src/app/DockPanel.cpp
     src/app/ChannelRack.cpp)

@@ -1592,6 +1592,26 @@ juce::var Session::toVar() const
         if (instrument != nullptr && instrument->isMissing())
             obj->setProperty ("instrument_missing", true);
 
+        // Instrument parameters with automation (set_automation with a channel), named like an effect's.
+        if (instrument != nullptr && ! instrument->isMissing())
+        {
+            juce::Array<juce::var> automated;
+
+            for (auto param : instrument->getAutomatableParameters())
+            {
+                if (! param->hasAutomationPoints())
+                    continue;
+
+                auto a = new juce::DynamicObject();
+                a->setProperty ("parameter", param->paramID);
+                a->setProperty ("name", instrument->getName() + " " + param->getParameterName());
+                automated.add (juce::var (a));
+            }
+
+            if (! automated.isEmpty())
+                obj->setProperty ("automation", automated);
+        }
+
         obj->setProperty ("outputs", instrument != nullptr && ! instrument->isMissing() ? getNumOutputs (*instrument) : 2);
         obj->setProperty ("multi_output", getMultiOutputRack (*c) != nullptr);
 

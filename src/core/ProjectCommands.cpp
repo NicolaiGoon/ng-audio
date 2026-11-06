@@ -1,4 +1,5 @@
 #include "CommandRegistry.h"
+#include "SynthSounds.h"
 
 namespace ng
 {
@@ -22,7 +23,26 @@ namespace
     {
         juce::String builtIn;
         std::optional<juce::PluginDescription> plugin;
+        juce::String sound;     // for 4osc: a starter sound from list_sounds, or "" for the plain synth
     };
+
+    /** Reads "sound" into a 4osc choice, or returns an error. */
+    juce::String readSound (const juce::String& command, const juce::var& p, InstrumentChoice& choice)
+    {
+        if (! p.hasProperty ("sound"))
+            return {};
+
+        if (choice.builtIn != "4osc")
+            return command + ": a sound is for the built-in 4osc synth (other instruments have presets: list_presets)";
+
+        choice.sound = synthsounds::find (p["sound"].toString());
+
+        if (choice.sound.isEmpty())
+            return command + ": no sound called '" + p["sound"].toString() + "' (there's "
+                     + synthsounds::getNames().joinIntoString (", ") + ")";
+
+        return {};
+    }
 
     std::variant<InstrumentChoice, juce::String> findInstrument (Session& session, const juce::String& command,
                                                                  const juce::String& name)
@@ -68,6 +88,8 @@ namespace
 
         if (choice.plugin)
             instrument = edit.getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, *choice.plugin);
+        else if (choice.builtIn == "4osc" && choice.sound.isNotEmpty())
+            instrument = edit.getPluginCache().createNewPlugin (synthsounds::createState (choice.sound));
         else if (choice.builtIn == "4osc")
             instrument = edit.getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {});
         else if (choice.builtIn == "sampler")
@@ -133,6 +155,9 @@ namespace
 
         if (auto error = std::get_if<juce::String> (&choice))
             return CommandResult::failure (*error);
+
+        if (auto error = readSound ("create_track", p, std::get<InstrumentChoice> (choice)); error.isNotEmpty())
+            return CommandResult::failure (error);
 
         // The channel: holds the instrument and its clips.
         auto channel = edit.insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (edit), nullptr);
@@ -357,6 +382,9 @@ namespace
         if (auto error = std::get_if<juce::String> (&choice))
             return CommandResult::failure (*error);
 
+        if (auto error = readSound ("set_instrument", p, std::get<InstrumentChoice> (choice)); error.isNotEmpty())
+            return CommandResult::failure (error);
+
         if (auto error = setInstrument (session.getEdit(), *channel, std::get<InstrumentChoice> (choice)); error.isNotEmpty())
             return CommandResult::failure ("set_instrument: " + error);
 
@@ -527,6 +555,27 @@ namespace
         return root;
     }
 
+    /** The undo history: what undo would take back, newest first, and what redo would put back. */
+    CommandResult getHistory (Session& session, const juce::var& p)
+    {
+        auto limit = juce::jlimit (1, 500, juce::roundToInt (params::getDouble (p, "limit", 20)));
+        auto& um = session.getUndoManager();
+
+        auto take = [limit] (const juce::StringArray& all)
+        {
+            juce::Array<juce::var> list;
+
+            for (int i = 0; i < std::min (limit, all.size()); ++i)
+                list.add (all[i].isNotEmpty() ? all[i] : juce::String ("(unnamed)"));
+
+            return list;
+        };
+
+        auto undo = um.getUndoDescriptions(), redo = um.getRedoDescriptions();
+        return CommandResult::success (params::object ({ { "undo", take (undo) }, { "undo_count", undo.size() },
+                                                 { "redo", take (redo) }, { "redo_count", redo.size() } }));
+    }
+
     CommandResult getState (Session& session, const juce::var& p)
     {
         auto state = session.toVar();
@@ -665,12 +714,16 @@ namespace
 //==============================================================================
 void registerProjectCommands (CommandRegistry& registry)
 {
+    auto soundProp = prop ("string", "With the 4osc synth: a starter sound from list_sounds, e.g. \"" + synthsounds::getNames().joinIntoString ("\", \"")
+                                     + "\" (default: the synth's plain sound)");
+
     registry.add ({ "create_track",
                     "Adds an instrument channel and a mixer strip with the same name and colour, linked to it.",
                     schema ({ { "name", prop ("string", "Name for the channel and its strip") },
                               { "colour", prop ("string", "Hex colour such as #3c8ce0; picked automatically if omitted") },
                               { "instrument", prop ("string", "\"4osc\" (built-in synth, default), \"sampler\" (plays samples: load them with add_sample or load_drum_kit), \"none\", "
                                                               "\"audio\" (an audio channel, for audio clips: add them with import_audio), or a plugin's id or name from list_plugins") },
+                              { "sound", soundProp },
                               { "tag", prop ("string", "What it is, like \"drums\", \"bass\" or \"vox\": its strip then plays into that tag's bus, "
                                                        "which is created if needed (see tag_channel). The result's bus is the bus's id") } }),
                     true, createTrack });
@@ -713,9 +766,17 @@ void registerProjectCommands (CommandRegistry& registry)
                     "Replaces a channel's instrument: the built-in \"4osc\" synth, the \"sampler\", \"none\", or a scanned plugin instrument. "
                     "Fails if the plugin won't load, leaving the old instrument in place.",
                     schema ({ { "channel", prop ("string", "Channel id or name") },
-                              { "instrument", prop ("string", "\"4osc\" (built-in synth), \"sampler\", \"none\", or a plugin's id or name from list_plugins") } },
+                              { "instrument", prop ("string", "\"4osc\" (built-in synth), \"sampler\", \"none\", or a plugin's id or name from list_plugins") },
+                              { "sound", soundProp } },
                             { "channel", "instrument" }),
                     true, setInstrumentCommand });
+
+    registry.add ({ "list_sounds",
+                    "Lists the starter sounds for the built-in 4osc synth (a soft lead, basses, a pluck, a pad, keys, an "
+                    "organ), with what each is for. Give one as sound to create_track or set_instrument; then shape it "
+                    "further with set_effect and the channel.",
+                    schema ({}),
+                    false, [] (Session&, const juce::var&) { return CommandResult::success (synthsounds::describe()); } });
 
     registry.add ({ "set_mixer_strip",
                     "Sets a mixer strip's fader, pan, mute and solo. Only the values given change. "
@@ -758,6 +819,13 @@ void registerProjectCommands (CommandRegistry& registry)
                               { "clip", prop ("string", "Just this clip (id), with its notes if it's a MIDI clip") },
                               { "view", prop ("string", "\"full\" (default), \"summary\", \"mixer\" or \"transport\"") } }),
                     false, getState });
+
+    registry.add ({ "get_history",
+                    "Lists the undo history: the steps undo would take back, newest first (each a command's name or a "
+                    "batch's label), and the steps redo would put back. Use it to check what changed, or how many undo "
+                    "steps to go back. Changes nothing.",
+                    schema ({ { "limit", prop ("integer", "At most this many of each (default 20)") } }),
+                    false, getHistory });
 
     registerClipCommands (registry);
     registerTransportCommands (registry);

@@ -94,11 +94,11 @@ AutomationTarget findAutomationTarget (Session& session, const juce::String& com
 
     if (parameter.isEmpty())
     {
-        t.error = command + ": give a parameter: \"volume\", \"pan\", or with an effect, one of its parameters (get_effect lists them)";
+        t.error = command + ": give a parameter: \"volume\", \"pan\", or with an effect or channel, one of its parameters (get_effect lists them)";
         return t;
     }
 
-    if (! p.hasProperty ("effect"))
+    if (! p.hasProperty ("effect") && ! p.hasProperty ("channel"))
     {
         te::VolumeAndPanPlugin* fader = nullptr;
 
@@ -140,7 +140,9 @@ AutomationTarget findAutomationTarget (Session& session, const juce::String& com
         return t;
     }
 
-    if (stripRef != "master")
+    if (effect.channel != nullptr)
+        t.channel = effect.channel;
+    else if (stripRef != "master")
         t.strip = session.findTrack (stripRef, Session::Role::strip);
 
     t.effect = effect.effect;
@@ -174,16 +176,22 @@ juce::var describeAutomation (Session& session, const AutomationTarget& t)
         points.add (object ({ { "beat", round (tempo.toBeats (curve.getPointTime (i)).inBeats()) },
                               { "value", round (fromCurveValue (t, curve.getPointValue (i))) } }));
 
-    auto result = object ({ { "strip", t.strip != nullptr ? t.strip->itemID.toString() : juce::String ("master") },
-                            { "parameter", t.parameterId },
+    auto result = object ({ { "parameter", t.parameterId },
                             { "name", t.name },
                             { "min", t.min },
                             { "max", t.max },
                             { "value", round (fromCurveValue (t, t.param->getCurrentExplicitValue())) },
                             { "points", points } });
 
+    auto* o = result.getDynamicObject();
+
+    if (t.channel != nullptr)
+        o->setProperty ("channel", t.channel->itemID.toString());
+    else
+        o->setProperty ("strip", t.strip != nullptr ? t.strip->itemID.toString() : juce::String ("master"));
+
     if (t.effect != nullptr)
-        result.getDynamicObject()->setProperty ("effect", t.effect->itemID.toString());
+        o->setProperty (t.channel != nullptr ? "instrument" : "effect", t.effect->itemID.toString());
 
     return result;
 }
@@ -192,7 +200,8 @@ void registerAutomationCommands (CommandRegistry& registry)
 {
     auto stripProp = prop ("string", "Mixer strip id or name, or \"master\"");
     auto effectProp = prop ("string", "To automate an effect's parameter: the effect's id, name or position on the strip");
-    auto parameterProp = prop ("string", "\"volume\" (in dB) or \"pan\" (-1 to 1), or with effect, one of its parameter ids or "
+    auto channelProp = prop ("string", "Instead of strip: a channel (id or name), to automate its instrument's parameter");
+    auto parameterProp = prop ("string", "\"volume\" (in dB) or \"pan\" (-1 to 1), or with effect or channel, one of its parameter ids or "
                                          "names from get_effect (in that parameter's range)");
 
     auto points = prop ("array", "The points, as {beat, value}; the value moves in a straight line from each to the next. "
@@ -200,15 +209,18 @@ void registerAutomationCommands (CommandRegistry& registry)
 
     registry.add ({ "set_automation",
                     "Automates a mixer strip's volume or pan, or an effect parameter, so it changes over the song: a fade-out, "
-                    "a filter sweep, a louder chorus. Replaces the parameter's automation with the points given.",
-                    schema ({ { "strip", stripProp }, { "effect", effectProp }, { "parameter", parameterProp }, { "points", points } },
-                            { "strip", "parameter", "points" }),
+                    "a filter sweep, a louder chorus. With channel instead of strip, automates a parameter of that channel's "
+                    "instrument. Replaces the parameter's automation with the points given.",
+                    schema ({ { "strip", stripProp }, { "effect", effectProp }, { "channel", channelProp },
+                              { "parameter", parameterProp }, { "points", points } },
+                            { "parameter", "points" }),
                     true, setAutomation });
 
     registry.add ({ "get_automation",
                     "Returns a parameter's automation points and its range (get_state lists which parameters have automation).",
-                    schema ({ { "strip", stripProp }, { "effect", effectProp }, { "parameter", parameterProp } },
-                            { "strip", "parameter" }),
+                    schema ({ { "strip", stripProp }, { "effect", effectProp }, { "channel", channelProp },
+                              { "parameter", parameterProp } },
+                            { "parameter" }),
                     false, getAutomation });
 }
 

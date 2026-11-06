@@ -7,8 +7,8 @@ namespace ng
 
 /**
     The Settings window: the audio and MIDI devices (and the buffer size, with advice from the
-    CPU meter), the colour theme, the default project folder, how often to autosave, and the AI
-    provider the chat panel uses (and how to connect Claude Desktop or Claude Code).
+    CPU meter), the colour theme, the default project folder, how often to autosave, and how to
+    connect Claude Code, Claude Desktop or another MCP client.
 */
 class PreferencesPanel  : public juce::Component
 {
