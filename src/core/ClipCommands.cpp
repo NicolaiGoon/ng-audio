@@ -1,4 +1,5 @@
 #include "CommandRegistry.h"
+#include "NoteBuilder.h"
 
 namespace ng
 {
@@ -28,6 +29,23 @@ namespace
         if (lengthBeats <= te::BeatDuration())
             return CommandResult::failure ("add_midi_clip: length_beats must be positive");
 
+        // Check every note (and chord, and repeat) before making the clip.
+        juce::Array<ClipNote> notes;
+
+        if (auto error = notebuilder::build ("add_midi_clip", p, notes); error.isNotEmpty())
+            return CommandResult::failure (error);
+
+        for (auto& n : notes)
+        {
+            if (n.pitch < 0)
+                n.pitch = 60;
+
+            if (n.length <= 0.0 || n.start < 0.0)
+                return CommandResult::failure ("add_midi_clip: invalid note {pitch: " + juce::String (n.pitch) + ", start: "
+                                                 + juce::String (n.start) + ", length: " + juce::String (n.length)
+                                                 + "} (start from 0, length above 0)");
+        }
+
         auto& tempo = edit.tempoSequence;
         te::TimeRange range (tempo.toTime (startBeat), tempo.toTime (startBeat + lengthBeats));
 
@@ -36,23 +54,10 @@ namespace
         if (clip == nullptr)
             return CommandResult::failure ("add_midi_clip: couldn't create the clip");
 
-        if (auto notes = p["notes"].getArray())
-        {
-            for (auto& n : *notes)
-            {
-                auto pitch = static_cast<int> (n.getProperty ("pitch", 60));
-                auto start = static_cast<double> (n.getProperty ("start", 0.0));
-                auto length = static_cast<double> (n.getProperty ("length", 1.0));
-                auto velocity = static_cast<int> (n.getProperty ("velocity", 100));
-
-                if (! juce::isPositiveAndBelow (pitch, 128) || length <= 0.0)
-                    return CommandResult::failure ("add_midi_clip: invalid note " + juce::JSON::toString (n, true));
-
-                clip->getSequence().addNote (pitch, te::BeatPosition::fromBeats (start),
-                                             te::BeatDuration::fromBeats (length),
-                                             juce::jlimit (1, 127, velocity), 0, &session.getUndoManager());
-            }
-        }
+        for (auto& n : notes)
+            clip->getSequence().addNote (n.pitch, te::BeatPosition::fromBeats (n.start),
+                                         te::BeatDuration::fromBeats (n.length),
+                                         juce::jlimit (1, 127, n.velocity), 0, &session.getUndoManager());
 
         return CommandResult::success (object ({ { "clip", clip->itemID.toString() }, { "notes", clip->getSequence().getNotes().size() } }));
     }
@@ -883,29 +888,26 @@ namespace
         if (Session::isPatternClip (*midi))
             return CommandResult::failure ("set_notes: a step pattern's notes follow its steps; change them with set_steps");
 
-        auto list = p["notes"];
-
-        if (! list.isArray())
-            return CommandResult::failure ("set_notes: give notes as an array of {pitch, start, length, velocity} (it can be empty)");
+        if (! p["notes"].isArray() && p["chords"].isVoid())
+            return CommandResult::failure ("set_notes: give notes as an array of {pitch, start, length, velocity} (it can be empty), "
+                                           "or chords");
 
         // Notes are timed from the clip's start; Tracktion times them from where its content starts.
         auto offset = midi->getOffsetInBeats().inBeats();
         juce::Array<ClipNote> notes;
 
-        for (auto& n : *list.getArray())
+        if (auto error = notebuilder::build ("set_notes", p, notes); error.isNotEmpty())
+            return CommandResult::failure (error);
+
+        for (auto& note : notes)
         {
-            ClipNote note;
-            note.pitch = static_cast<int> (n.getProperty ("pitch", -1));
-            note.start = static_cast<double> (n.getProperty ("start", 0.0));
-            note.length = static_cast<double> (n.getProperty ("length", 1.0));
-            note.velocity = static_cast<int> (n.getProperty ("velocity", 100));
-
-            if (! n.isObject() || ! juce::isPositiveAndBelow (note.pitch, 128) || ! (note.length >= minClipBeats / 4.0)
+            if (! juce::isPositiveAndBelow (note.pitch, 128) || ! (note.length >= minClipBeats / 4.0)
                   || ! (note.start + offset >= -1.0e-9) || ! juce::isPositiveAndBelow (note.velocity - 1, 127))
-                return CommandResult::failure ("set_notes: invalid note " + juce::JSON::toString (n, true)
-                                                 + " (pitch 0-127, length above 0, velocity 1-127, not before the clip's content)");
-
-            notes.add (note);
+                return CommandResult::failure ("set_notes: invalid note {pitch: " + juce::String (note.pitch) + ", start: "
+                                                 + juce::String (note.start) + ", length: " + juce::String (note.length)
+                                                 + ", velocity: " + juce::String (note.velocity)
+                                                 + "} (pitch 0-127 or a name like \"C4\", length above 0, velocity 1-127, "
+                                                   "not before the clip's content)");
         }
 
         auto* um = &session.getUndoManager();
@@ -1045,11 +1047,19 @@ juce::var notesToVar (const juce::Array<ClipNote>& notes)
 void registerClipCommands (CommandRegistry& registry)
 {
     registry.add ({ "add_midi_clip",
-                    "Adds a MIDI clip with notes to a channel. Note start and length are in beats from the clip start.",
+                    "Adds a MIDI clip with notes to a channel. Note start and length are in beats from the clip start. "
+                    "Instead of writing every note, chords can be written out as block chords, arpeggios or a bass line, "
+                    "and repeat plays the part again, so a whole part fits in a few lines.",
                     schema ({ { "channel", prop ("string", "Channel id or name") },
                               { "start_beat", prop ("number", "Where the clip starts, in beats (default 0)") },
                               { "length_beats", prop ("number", "Clip length in beats (default 4)") },
-                              { "notes", prop ("array", "Notes as {pitch, start, length, velocity}") } },
+                              { "notes", prop ("array", "Notes as {pitch, start, length, velocity}; pitch is a MIDI number "
+                                                        "or a name like \"C4\" (middle C, 60), \"F#3\", \"Bb5\"") },
+                              { "chords", notebuilder::chordsSchema() },
+                              { "chord_style", notebuilder::chordStyleSchema() },
+                              { "chord_octave", notebuilder::chordOctaveSchema() },
+                              { "chord_rate", notebuilder::chordRateSchema() },
+                              { "repeat", notebuilder::repeatSchema() } },
                             { "channel" }),
                     true, addMidiClip });
 
@@ -1168,10 +1178,17 @@ void registerClipCommands (CommandRegistry& registry)
 
     registry.add ({ "set_notes",
                     "Replaces all of a MIDI clip's notes, e.g. after drawing in the piano roll. Start and length are "
-                    "in beats from the clip's start; notes past the clip's end are kept but don't play.",
+                    "in beats from the clip's start; notes past the clip's end are kept but don't play. Takes chords, "
+                    "chord_style and repeat as add_midi_clip does.",
                     schema ({ { "clip", prop ("string", "Clip id, from get_state") },
-                              { "notes", prop ("array", "Notes as {pitch, start, length, velocity}; velocity defaults to 100") } },
-                            { "clip", "notes" }),
+                              { "notes", prop ("array", "Notes as {pitch, start, length, velocity}; pitch is a number or a name "
+                                                        "like \"C4\"; velocity defaults to 100") },
+                              { "chords", notebuilder::chordsSchema() },
+                              { "chord_style", notebuilder::chordStyleSchema() },
+                              { "chord_octave", notebuilder::chordOctaveSchema() },
+                              { "chord_rate", notebuilder::chordRateSchema() },
+                              { "repeat", notebuilder::repeatSchema() } },
+                            { "clip" }),
                     true, setNotes });
 
     registry.add ({ "quantize_notes",

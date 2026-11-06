@@ -4,7 +4,6 @@
 #include "CommandPalette.h"
 #include "BrowserPanel.h"
 #include "ChannelRack.h"
-#include "ChatPanel.h"
 #include "CommandLogPanel.h"
 #include "core/Autosave.h"
 #include "core/Bridge.h"
@@ -117,7 +116,6 @@ private:
     void updatePlayStep();
     void updatePositionDisplay();
     void showPreferences (const juce::String& tab = {});
-    void showChat (bool);
     void showHistory();
     void checkForRecovery();
     void updateCpuMeter();
@@ -179,8 +177,6 @@ private:
                                   icons::Icon::typingKeys },
                pianoKeysButton { "Show a piano keyboard to play the armed channel with the mouse (Ctrl+Shift+K)", icons::Icon::piano },
                browserButton { "Show or hide the browser: instruments, effects, presets and samples to drag in (Ctrl+B)", icons::Icon::browser },
-               chatButton { "AI chat: ask for changes in plain words, with Claude, OpenAI, Gemini or a model on this computer (Ctrl+J)",
-                            icons::Icon::chat },
                consoleButton { "Show the JSON command console and the log of what AI clients did", icons::Icon::console },
                historyButton { "The undo history: click a step to go back to it (Ctrl+H)", icons::Icon::history },
                exportButton { "Export the song or the loop region as a WAV or MP3 file, or as stems (Ctrl+E)", icons::Icon::exportAudio },
@@ -204,7 +200,6 @@ private:
     SampleEditor sampleEditor { session, dispatcher };
     BrowserPanel browserPanel { session, dispatcher };
     CommandLogPanel commandLog { dispatcher };
-    ChatPanel chatPanel { session, dispatcher };
 
     IconButton addAudioButton { "Import audio files onto new audio channels at the playhead (Ctrl+I), or add an empty audio channel",
                                 icons::Icon::audio, "Audio" },
@@ -234,9 +229,9 @@ private:
               mixerPanel { "mixer", "Mixer", icons::Icon::mixer, mixer, getProperties(), this },
               pianoRollPanel { "pianoroll", "Piano roll", icons::Icon::piano, pianoRoll, getProperties(), this },
               sampleEditorPanel { "sampleeditor", "Sample editor", icons::Icon::audio, sampleEditor, getProperties(), this };
-    SplitterBar browserSplitter { true }, chatSplitter { true }, timelineSplitter { false }, rackSplitter { true };
+    SplitterBar browserSplitter { true }, timelineSplitter { false }, rackSplitter { true };
 
-    int browserWidth = 240, chatWidth = 360;
+    int browserWidth = 240;
     double timelineProportion = 0.48, rackProportion = 0.5;
     int dragStartSize = 0;
     double dragStartProportion = 0.0;

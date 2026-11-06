@@ -105,7 +105,8 @@ void registerAutomationCommands (CommandRegistry&);
 struct AutomationTarget
 {
     te::AutomatableParameter* param = nullptr;
-    te::AudioTrack* strip = nullptr;        // nullptr for the master
+    te::AudioTrack* strip = nullptr;        // nullptr for the master, or for a channel's instrument
+    te::AudioTrack* channel = nullptr;      // set for a parameter of a channel's instrument
     te::Plugin* effect = nullptr;           // nullptr for volume and pan
     juce::String parameterId, name, error;
     bool isVolume = false;                  // values in dB, stored as fader positions
@@ -127,11 +128,15 @@ juce::File findMp3Encoder();
 //==============================================================================
 /** The strip and effect a command names with "strip" and "effect": the effect by its id,
     its position among the strip's effects (0 is the first), or its name if no other effect
-    there shares it. On failure, effect is nullptr and error says why (EffectCommands.cpp). */
+    there shares it. Or, with "channel" instead of "strip", that channel's instrument (the
+    built-in synth or a plugin), so its parameters can be read, set and automated like an
+    effect's; channel is then set. On failure, effect is nullptr and error says why
+    (EffectCommands.cpp). */
 struct EffectRef
 {
     te::PluginList* list = nullptr;
     te::Plugin* effect = nullptr;
+    te::AudioTrack* channel = nullptr;      // set when the plugin is a channel's instrument
     juce::String error;
 };
 

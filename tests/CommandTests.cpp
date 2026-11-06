@@ -3,7 +3,7 @@
 
 #include "core/McpServer.h"
 #include "core/Autosave.h"
-#include "core/AiChat.h"
+#include "core/NoteBuilder.h"
 
 #if ! JUCE_WINDOWS
  #include <sys/stat.h>
@@ -3315,6 +3315,265 @@ namespace
         CHECK (! static_cast<bool> (afterStop["ok"]) && afterStop["error"].toString().contains ("isn't running"));
     }
 
+    void testNoteShorthand (tracktion::Engine& engine)
+    {
+        std::cout << "note shorthand\n";
+        Fixture f (engine);
+        auto run = [&] (const char* name, std::initializer_list<std::pair<const char*, juce::var>> p) { return f.dispatcher.execute (name, obj (p)); };
+        auto chord = [] (const char* symbol, double start, double length) { return obj ({ { "chord", symbol }, { "start", start }, { "length", length } }); };
+        auto pitches = [&] (const juce::String& clip)
+        {
+            juce::StringArray out;
+
+            auto got = run ("get_notes", { { "clip", clip } });
+
+            if (! got.ok || got.value["notes"].getArray() == nullptr)
+                return "get_notes failed: " + got.error;
+
+            for (auto& n : *got.value["notes"].getArray())
+            {
+                auto start = juce::String (static_cast<double> (n["start"]));
+                out.add (n["pitch"].toString() + "@" + (start.endsWith (".0") ? start.dropLastCharacters (2) : start));
+            }
+
+            return out.joinIntoString (" ");
+        };
+
+        // Names and chord symbols, as the builder reads them.
+        CHECK (ng::notebuilder::parsePitch ("C4") == 60 && ng::notebuilder::parsePitch ("F#3") == 54);
+        CHECK (ng::notebuilder::parsePitch ("Bb5") == 82 && ng::notebuilder::parsePitch ("C-1") == 0);
+        CHECK (ng::notebuilder::parsePitch ("H4") == -1 && ng::notebuilder::parsePitch ("C") == -1 && ng::notebuilder::parsePitch ("A9") == -1);
+        CHECK (ng::notebuilder::chordPitches ("Em", 4) == juce::Array<int> ({ 64, 67, 71 }));
+        CHECK (ng::notebuilder::chordPitches ("G7", 3) == juce::Array<int> ({ 55, 59, 62, 65 }));
+        CHECK (ng::notebuilder::chordPitches ("Bm7b5", 4) == juce::Array<int> ({ 71, 74, 77, 81 }));
+        CHECK (ng::notebuilder::chordPitches ("C/E", 4) == juce::Array<int> ({ 52, 60, 64, 67 }));
+        CHECK (ng::notebuilder::chordPitches ("Xm", 4).isEmpty() && ng::notebuilder::chordPitches ("Cwhat", 4).isEmpty());
+        CHECK (ng::notebuilder::chordPitches ("E", 9).isEmpty());   // G#10 is past MIDI's top note
+
+        run ("create_track", { { "name", "Keys" } });
+
+        // Note names in plain notes.
+        auto named = run ("add_midi_clip", { { "channel", "Keys" },
+                                             { "notes", juce::Array<juce::var> { obj ({ { "pitch", "D5" }, { "start", 0 } }),
+                                                                                 obj ({ { "pitch", 67 }, { "start", 1 } }) } } });
+        CHECK (named.ok && pitches (named.value["clip"]) == "74@0 67@1");
+
+        // Block chords, then an upward arpeggio, an Alberti bass and a root-fifth bass line.
+        auto block = run ("add_midi_clip", { { "channel", "Keys" }, { "start_beat", 4 },
+                                             { "chords", juce::Array<juce::var> { chord ("C", 0, 2), chord ("G/B", 2, 2) } } });
+        CHECK (block.ok && pitches (block.value["clip"]) == "60@0 64@0 67@0 59@2 67@2 71@2 74@2");
+
+        auto arp = run ("add_midi_clip", { { "channel", "Keys" }, { "start_beat", 8 }, { "chord_style", "arp_updown" },
+                                           { "chords", juce::Array<juce::var> { chord ("Am", 0, 3) } } });
+        CHECK (arp.ok && pitches (arp.value["clip"]) == "69@0 72@0.5 76@1 72@1.5 69@2 72@2.5");
+
+        auto alberti = run ("add_midi_clip", { { "channel", "Keys" }, { "start_beat", 12 }, { "chord_style", "alberti" },
+                                               { "chord_rate", 1 }, { "chords", juce::Array<juce::var> { chord ("F", 0, 4) } } });
+        CHECK (alberti.ok && pitches (alberti.value["clip"]) == "65@0 72@1 69@2 72@3");
+
+        auto bass = run ("add_midi_clip", { { "channel", "Keys" }, { "start_beat", 16 }, { "chord_style", "bass_root_fifth" },
+                                            { "chord_octave", 2 }, { "chord_rate", 1 },
+                                            { "chords", juce::Array<juce::var> { chord ("D", 0, 2) } },
+                                            { "repeat", obj ({ { "times", 3 }, { "every_beats", 2 } }) } });
+        CHECK (bass.ok && pitches (bass.value["clip"]) == "38@0 45@1 38@2 45@3 38@4 45@5");
+
+        // The last arpeggio note is cut at the chord's end.
+        auto cut = run ("get_notes", { { "clip", run ("add_midi_clip", { { "channel", "Keys" }, { "start_beat", 24 },
+                                                                         { "chord_style", "arp_up" }, { "chord_rate", 1 },
+                                                                         { "chords", juce::Array<juce::var> { chord ("C", 0, 2.5) } } }).value["clip"] } });
+        CHECK (cut.value["notes"].size() == 3 && static_cast<double> (cut.value["notes"][2]["length"]) < 0.5);
+
+        // set_notes takes the same shorthand and replaces what was there.
+        CHECK (run ("set_notes", { { "clip", named.value["clip"] }, { "chords", juce::Array<juce::var> { chord ("Dm", 0, 1) } } }).ok);
+        CHECK (pitches (named.value["clip"]) == "62@0 65@0 69@0");
+
+        // Bad shorthand fails without adding a clip.
+        auto clipsBefore = f.state()["channels"][0]["clips"].size();
+        CHECK (! run ("add_midi_clip", { { "channel", "Keys" }, { "chords", juce::Array<juce::var> { chord ("Q", 0, 4) } } }).ok);
+        CHECK (! run ("add_midi_clip", { { "channel", "Keys" }, { "chord_style", "strum" },
+                                         { "chords", juce::Array<juce::var> { chord ("C", 0, 4) } } }).ok);
+        CHECK (! run ("add_midi_clip", { { "channel", "Keys" }, { "chord_rate", 0 },
+                                         { "chords", juce::Array<juce::var> { chord ("C", 0, 4) } } }).ok);
+        CHECK (! run ("add_midi_clip", { { "channel", "Keys" }, { "notes", juce::Array<juce::var> { obj ({ { "pitch", "Z9" } }) } } }).ok);
+        CHECK (! run ("add_midi_clip", { { "channel", "Keys" }, { "notes", juce::Array<juce::var> { obj ({ { "pitch", 60 } }) } },
+                                         { "repeat", obj ({ { "times", 0 }, { "every_beats", 4 } }) } }).ok);
+        CHECK (f.state()["channels"][0]["clips"].size() == clipsBefore);
+        CHECK (! run ("set_notes", { { "clip", named.value["clip"] } }).ok);
+        CHECK (pitches (named.value["clip"]) == "62@0 65@0 69@0");
+    }
+
+    void testSynthSounds (tracktion::Engine& engine)
+    {
+        std::cout << "synth sounds\n";
+
+        auto list = [&]
+        {
+            Fixture f (engine);
+            return f.dispatcher.execute ("list_sounds").value;
+        }();
+
+        CHECK (list.size() >= 8 && list[0]["name"].toString().isNotEmpty() && list[0]["description"].toString().isNotEmpty());
+
+        // Every sound plays a chord, and none clips at a 0 dB fader.
+        for (auto& sound : *list.getArray())
+        {
+            Fixture f (engine);
+            auto run = [&] (const char* name, std::initializer_list<std::pair<const char*, juce::var>> p) { return f.dispatcher.execute (name, obj (p)); };
+
+            CHECK (run ("create_track", { { "name", "Part" }, { "sound", sound["name"] } }).ok);
+            run ("add_midi_clip", { { "channel", "Part" }, { "length_beats", 4 },
+                                    { "chords", juce::Array<juce::var> { obj ({ { "chord", "Cmaj7" }, { "length", 3 } }) } } });
+
+            auto buffer = renderBuffer (f);
+            auto peak = buffer.getMagnitude (0, buffer.getNumSamples());
+            std::cout << "       " << sound["name"].toString() << ": peak " << juce::Decibels::gainToDecibels (peak) << " dB\n";
+            CHECK (peak > 0.03f && peak < 1.0f);
+        }
+
+        Fixture f (engine);
+        auto run = [&] (const char* name, std::initializer_list<std::pair<const char*, juce::var>> p) { return f.dispatcher.execute (name, obj (p)); };
+        auto decay = [&] { return static_cast<double> (run ("get_effect", { { "channel", "Lead" }, { "filter", "amp decay" } }).value["params"][0]["value"]); };
+
+        // The sound's settings are the synth's, and set_instrument swaps sounds as one undo step.
+        CHECK (run ("create_track", { { "name", "Lead" }, { "sound", "soft bell lead" } }).ok);   // any case
+        CHECK (std::abs (decay() - 0.7) < 1.0e-3);
+        CHECK (static_cast<int> (ng::Session::getInstrument (*f.session.getChannels()[0])->state["waveShape2"]) == 2);
+
+        CHECK (run ("set_instrument", { { "channel", "Lead" }, { "instrument", "4osc" }, { "sound", "Warm Pad" } }).ok);
+        CHECK (std::abs (decay() - 1.0) < 1.0e-3);
+        f.dispatcher.undo();
+        CHECK (std::abs (decay() - 0.7) < 1.0e-3);
+        f.dispatcher.redo();
+        CHECK (std::abs (decay() - 1.0) < 1.0e-3);
+
+        // Bad requests: an unknown sound, or a sound for something other than the 4osc.
+        CHECK (! run ("create_track", { { "name", "X" }, { "sound", "Kazoo" } }).ok);
+        CHECK (! run ("create_track", { { "name", "X" }, { "instrument", "sampler" }, { "sound", "Pluck" } }).ok);
+        CHECK (! run ("set_instrument", { { "channel", "Lead" }, { "instrument", "4osc" }, { "sound", "Kazoo" } }).ok);
+        CHECK (f.session.getChannels().size() == 1 && std::abs (decay() - 1.0) < 1.0e-3);
+    }
+
+    void testLoudnessAndHistory (tracktion::Engine& engine)
+    {
+        std::cout << "loudness, analyze_mix and history\n";
+        Fixture f (engine);
+        auto run = [&] (const char* name, std::initializer_list<std::pair<const char*, juce::var>> p) { return f.dispatcher.execute (name, obj (p)); };
+
+        // A 1 kHz sine at -20 dBFS in both channels measures about -20 LUFS (BS.1770's reference).
+        juce::TemporaryFile sineFile (".wav");
+        {
+            constexpr double rate = 48000.0;
+            juce::AudioBuffer<float> sine (2, static_cast<int> (rate * 5));
+            auto amplitude = juce::Decibels::decibelsToGain (-20.0f);
+
+            for (int i = 0; i < sine.getNumSamples(); ++i)
+                for (int ch = 0; ch < 2; ++ch)
+                    sine.setSample (ch, i, amplitude * std::sin (juce::MathConstants<float>::twoPi * 1000.0f * i / (float) rate));
+
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (new juce::FileOutputStream (sineFile.getFile()),
+                                                                                  rate, 2, 24, {}, 0));
+            writer->writeFromAudioSampleBuffer (sine, 0, sine.getNumSamples());
+        }
+
+        auto sine = run ("analyze_audio", { { "file", sineFile.getFile().getFullPathName() } });
+        std::cout << "       sine: " << juce::JSON::toString (sine.value, true) << "\n";
+        CHECK (sine.ok && std::abs (static_cast<double> (sine.value["loudness_lufs"]) + 20.0) < 0.3);
+        CHECK (std::abs (static_cast<double> (sine.value["rms_db"]) + 23.01) < 0.1);
+        CHECK (std::abs (static_cast<double> (sine.value["peak_db"]) + 20.0) < 0.1);
+        CHECK (static_cast<int> (sine.value["clipped_samples"]) == 0);
+
+        // A mix: two parts; the quieter one reads as quieter, and nothing changes in the project.
+        run ("create_track", { { "name", "Loud" } });
+        run ("create_track", { { "name", "Soft" } });
+        run ("add_midi_clip", { { "channel", "Loud" }, { "length_beats", 4 }, { "chords", juce::Array<juce::var> { obj ({ { "chord", "C" } }) } } });
+        run ("add_midi_clip", { { "channel", "Soft" }, { "length_beats", 4 }, { "notes", juce::Array<juce::var> { note (72, 0, 4) } } });
+        run ("set_mixer_strip", { { "strip", "Soft" }, { "volume_db", -18 } });
+        run ("set_loop", { { "enabled", true }, { "start_beat", 0 }, { "end_beat", 4 } });
+
+        auto history = run ("get_history", {});
+        auto stepsBefore = static_cast<int> (history.value["undo_count"]);
+        CHECK (history.ok && history.value["undo"][0] == "set_mixer_strip" && stepsBefore >= 5);
+        CHECK (history.value["redo"].size() == 0);
+
+        auto mix = run ("analyze_mix", {});
+        std::cout << "       mix: " << juce::JSON::toString (mix.value, true) << "\n";
+        CHECK (mix.ok && mix.value["range"] == "loop" && static_cast<double> (mix.value["master"]["loudness_lufs"]) > -60.0);
+        CHECK (mix.value["strips"].size() == 2);
+
+        auto stripNamed = [&] (const char* name)
+        {
+            for (auto& s : *mix.value["strips"].getArray())
+                if (s["name"] == name)
+                    return s;
+
+            return juce::var();
+        };
+
+        CHECK (near (stripNamed ("Soft")["volume_db"], -18.0));
+        CHECK (static_cast<double> (stripNamed ("Soft")["loudness_lufs"]) < static_cast<double> (stripNamed ("Loud")["loudness_lufs"]) - 10.0);
+        CHECK (near (stripNamed ("Loud")["relative_to_loudest_db"], 0.0));
+        CHECK (static_cast<int> (run ("get_history", {}).value["undo_count"]) == stepsBefore);
+
+        auto masterOnly = run ("analyze_mix", { { "stems", false }, { "range", "song" } });
+        CHECK (masterOnly.ok && ! masterOnly.value.hasProperty ("strips") && masterOnly.value["range"] == "song");
+        CHECK (! run ("analyze_mix", { { "range", "chorus" } }).ok);
+
+        // Undo shows up as a redo step, newest first; limit trims the lists.
+        f.dispatcher.undo();
+        auto after = run ("get_history", { { "limit", 1 } }).value;
+        CHECK (after["redo"].size() == 1 && after["redo"][0] == "set_mixer_strip" && after["undo"].size() == 1);
+        CHECK (static_cast<int> (after["undo_count"]) == stepsBefore - 1);
+    }
+
+    void testInstrumentParameters (tracktion::Engine& engine)
+    {
+        std::cout << "instrument parameters\n";
+        Fixture f (engine);
+        auto run = [&] (const char* name, std::initializer_list<std::pair<const char*, juce::var>> p) { return f.dispatcher.execute (name, obj (p)); };
+
+        run ("create_track", { { "name", "Lead" } });
+
+        // get_effect with a channel lists the built-in synth's parameters; filter narrows them.
+        auto all = run ("get_effect", { { "channel", "Lead" } });
+        CHECK (all.ok && all.value["params"].size() > 20 && all.value["channel"].toString().isNotEmpty());
+
+        auto attack = run ("get_effect", { { "channel", "Lead" }, { "filter", "amp attack" } });
+        CHECK (attack.ok && attack.value["params"].size() >= 1 && attack.value["params"].size() < all.value["params"].size());
+
+        auto id = attack.value["params"][0]["id"].toString();
+        auto range = std::pair<double, double> (attack.value["params"][0]["min"], attack.value["params"][0]["max"]);
+        auto target = range.first + (range.second - range.first) * 0.5;
+
+        // set_effect with a channel changes it as one undo step, and reports only what changed.
+        auto set = run ("set_effect", { { "channel", "Lead" }, { "params", obj ({ { id.toRawUTF8(), target } }) } });
+        CHECK (set.ok && set.value["params"].size() == 1 && near (set.value["params"][0]["value"], target));
+
+        auto value = [&] { return static_cast<double> (run ("get_effect", { { "channel", "Lead" }, { "filter", id } }).value["params"][0]["value"]); };
+        CHECK (near (value(), target));
+        f.dispatcher.undo();
+        CHECK (! near (value(), target));
+        f.dispatcher.redo();
+        CHECK (near (value(), target));
+
+        // Automation on an instrument parameter, listed on the channel in get_state.
+        auto point = [] (double beat, double v) { return obj ({ { "beat", beat }, { "value", v } }); };
+        auto automate = run ("set_automation", { { "channel", "Lead" }, { "parameter", id },
+                                                 { "points", juce::Array<juce::var> { point (0, range.first), point (4, range.second) } } });
+        CHECK (automate.ok && automate.value["points"].size() == 2 && automate.value["channel"].toString().isNotEmpty());
+        CHECK (run ("get_automation", { { "channel", "Lead" }, { "parameter", id } }).value["points"].size() == 2);
+        CHECK (f.state()["channels"][0]["automation"].size() == 1);
+
+        // Bad requests: unknown channel, both channel and strip, removing or moving the instrument.
+        CHECK (! run ("get_effect", { { "channel", "Nowhere" } }).ok);
+        CHECK (! run ("get_effect", { { "channel", "Lead" }, { "strip", "Lead" }, { "effect", 0 } }).ok);
+        CHECK (! run ("get_effect", {}).ok);
+        CHECK (! run ("remove_effect", { { "channel", "Lead" } }).ok);
+        CHECK (! run ("move_effect", { { "channel", "Lead" }, { "index", 0 } }).ok);
+        CHECK (! run ("set_effect", { { "channel", "Lead" }, { "params", obj ({ { "no such thing", 1 } }) } }).ok);
+        CHECK (ng::Session::getInstrument (*f.session.getChannels()[0]) != nullptr);
+    }
+
     void testAutomation (tracktion::Engine& engine)
     {
         std::cout << "automation\n";
@@ -3378,160 +3637,6 @@ namespace
         CHECK (run ("open_project", { { "path", path }, { "discard_changes", true } }).ok);
         CHECK (f.state()["strips"][0]["automation"].size() == 3 && f.state()["master"]["automation"].size() == 1);
         CHECK (near (run ("get_automation", { { "strip", "Pad" }, { "parameter", "pan" } }).value["points"][1]["value"], 1.0));
-    }
-
-    void testAiChat (tracktion::Engine& engine)
-    {
-        std::cout << "\nAI chat\n";
-        Fixture f (engine);
-        ng::AiChat chat (f.registry);
-
-        // A pretend service: hands back scripted replies and remembers each request.
-        juce::Array<juce::var> replies, requests;
-        juce::StringArray endpoints, headers;
-        juce::String failWith;
-
-        auto transport = [&] (const juce::String& url, const juce::String& h, const juce::var& body, juce::String& error) -> juce::var
-        {
-            endpoints.add (url);
-            headers.add (h);
-            requests.add (juce::JSON::parse (juce::JSON::toString (body)));
-
-            if (failWith.isNotEmpty())
-            {
-                error = failWith;
-                return {};
-            }
-
-            auto reply = replies.getFirst();
-            replies.remove (0);
-            return reply;
-        };
-
-        juce::StringArray events;
-        auto onEvent = [&] (const ng::AiChat::Event& e)
-        {
-            using T = ng::AiChat::Event::Type;
-            events.add ((e.type == T::text ? "text: " : e.type == T::toolStarted ? "start: " : e.failed ? "failed: " : "done: ") + e.text);
-        };
-
-        auto runTool = [&] (const juce::String& name, const juce::var& input, bool& isError)
-        {
-            return ng::AiChat::runTool (f.dispatcher, "Test AI", name, input, isError);
-        };
-
-        auto hasChannel = [&] (const juce::String& name)
-        {
-            auto channels = f.state()["channels"];
-
-            for (auto& c : *channels.getArray())
-                if (c["name"] == name)
-                    return true;
-
-            return false;
-        };
-
-        // Claude: a tool call, then an answer.
-        auto claude = ng::AiChat::findProvider ("Claude (Anthropic)");
-        claude.apiKey = "test-key";
-        chat.setProvider (claude);
-        CHECK (chat.getProvider().model == "claude-opus-5-5");
-
-        replies.add (juce::JSON::parse (R"({"stop_reason": "tool_use", "content": [
-            {"type": "thinking", "thinking": "", "signature": "abc"},
-            {"type": "text", "text": "Adding a bass channel."},
-            {"type": "tool_use", "id": "toolu_1", "name": "create_track", "input": {"name": "Bass"}}]})"));
-        replies.add (juce::JSON::parse (R"({"stop_reason": "end_turn", "content": [{"type": "text", "text": "Done."}]})"));
-
-        auto error = chat.runTurn ("Add a bass", transport, runTool, onEvent);
-        CHECK (error.isEmpty());
-        CHECK (hasChannel ("Bass"));
-        CHECK (events == juce::StringArray ({ "text: Adding a bass channel.", "start: create_track", "done: create_track", "text: Done." }));
-        CHECK (chat.getNumMessages() == 4);
-        CHECK (endpoints[0] == "https://api.anthropic.com/v1/messages");
-        CHECK (headers[0].contains ("x-api-key: test-key") && headers[0].contains ("anthropic-version: 2023-06-01"));
-        CHECK (requests[0]["model"] == "claude-opus-5-5");
-        CHECK (requests[0]["tools"][0].hasProperty ("input_schema"));
-        CHECK (requests[0]["fallbacks"] == "default");
-
-        // The second request carries the assistant's turn as it came, then the tool's result.
-        auto second = requests[1]["messages"];
-        CHECK (second[1]["content"][0]["type"] == "thinking" && second[1]["content"][0]["signature"] == "abc");
-        CHECK (second[2]["content"][0]["type"] == "tool_result");
-        CHECK (second[2]["content"][0]["tool_use_id"] == "toolu_1");
-        CHECK (! static_cast<bool> (second[2]["content"][0]["is_error"]));
-
-        // A failed request leaves the conversation as it was; so does a refusal.
-        failWith = "Couldn't reach it";
-        CHECK (chat.runTurn ("Again", transport, runTool, onEvent) == "Couldn't reach it");
-        CHECK (chat.getNumMessages() == 4);
-        failWith = {};
-
-        replies.add (juce::JSON::parse (R"({"stop_reason": "refusal", "content": []})"));
-        CHECK (chat.runTurn ("Something", transport, runTool, onEvent).contains ("declined"));
-        CHECK (chat.getNumMessages() == 4);
-
-        // An OpenAI-style service: switching provider starts a new conversation.
-        auto openAi = ng::AiChat::findProvider ("OpenAI");
-        openAi.apiKey = "sk-test";
-        chat.setProvider (openAi);
-        CHECK (chat.getNumMessages() == 0);
-        CHECK (chat.runTurn ("Add keys", transport, runTool, onEvent).contains ("Pick a model"));
-        CHECK (chat.getNumMessages() == 0);
-
-        openAi.model = "test-model";
-        chat.setProvider (openAi);
-        requests.clear(); endpoints.clear(); headers.clear(); events.clear();
-
-        replies.add (juce::JSON::parse (R"({"choices": [{"finish_reason": "tool_calls", "message": {"role": "assistant", "content": null,
-            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "create_track", "arguments": "{\"name\": \"Keys\"}"}},
-                           {"id": "call_2", "type": "function", "function": {"name": "create_track", "arguments": "{not json"}},
-                           {"id": "call_3", "type": "function", "function": {"name": "no_such_tool", "arguments": "{}"}}]}}]})"));
-        replies.add (juce::JSON::parse (R"({"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "Added keys."}}]})"));
-
-        CHECK (chat.runTurn ("Add keys", transport, runTool, onEvent).isEmpty());
-        CHECK (hasChannel ("Keys"));
-        CHECK (events == juce::StringArray ({ "start: create_track", "done: create_track", "start: create_track", "failed: create_track",
-                                              "start: no_such_tool", "failed: no_such_tool", "text: Added keys." }));
-        CHECK (endpoints[0] == "https://api.openai.com/v1/chat/completions");
-        CHECK (headers[0].contains ("Authorization: Bearer sk-test"));
-        CHECK (requests[0]["model"] == "test-model");
-        CHECK (requests[0]["messages"][0]["role"] == "system");
-        CHECK (requests[0]["tools"][0]["type"] == "function");
-        CHECK (requests[0]["tools"][0]["function"].hasProperty ("parameters"));
-
-        auto followUp = requests[1]["messages"];
-        CHECK (followUp.size() == 6);   // system, user, assistant, three tool results
-        CHECK (followUp[3]["role"] == "tool" && followUp[3]["tool_call_id"] == "call_1");
-        CHECK (followUp[4]["content"].toString().contains ("valid JSON"));
-        CHECK (followUp[5]["content"].toString().contains ("Unknown tool"));
-
-        // A local model needs no key, so it sends none.
-        auto local = ng::AiChat::findProvider ("Ollama (on this computer)");
-        local.model = "llama";
-        chat.setProvider (local);
-        CHECK (! chat.getHeaders().contains ("Authorization"));
-        CHECK (chat.getEndpoint() == "http://localhost:11434/v1/chat/completions");
-
-        // The models list, with Gemini's "models/" prefix taken off.
-        replies.add (juce::JSON::parse (R"({"data": [{"id": "models/gemini-test"}, {"id": "other-model"}]})"));
-        juce::String listError;
-        auto models = ng::AiChat::listModels (ng::AiChat::findProvider ("Google Gemini"), transport, listError);
-        CHECK (listError.isEmpty());
-        CHECK (models == juce::StringArray ({ "gemini-test", "other-model" }));
-        CHECK (requests.getLast().isVoid());
-        CHECK (endpoints[endpoints.size() - 1] == "https://generativelanguage.googleapis.com/v1beta/openai/models");
-
-        // Batch, undo and redo work as tools too.
-        bool isError = false;
-        auto batch = juce::JSON::parse (R"({"label": "Two pads", "commands": [
-            {"command": "create_track", "params": {"name": "Pad 1"}}, {"command": "create_track", "params": {"name": "Pad 2"}}]})");
-        ng::AiChat::runTool (f.dispatcher, "Test AI", "batch", batch, isError);
-        CHECK (! isError && hasChannel ("Pad 1") && hasChannel ("Pad 2"));
-        ng::AiChat::runTool (f.dispatcher, "Test AI", "undo", {}, isError);
-        CHECK (! isError && ! hasChannel ("Pad 1") && ! hasChannel ("Pad 2"));
-        ng::AiChat::runTool (f.dispatcher, "Test AI", "redo", {}, isError);
-        CHECK (! isError && hasChannel ("Pad 2"));
     }
 
     void testAutosaveAndRecovery (tracktion::Engine& engine)
@@ -3698,9 +3803,12 @@ int main (int argc, char* argv[])
         RUN (testAudioClipEditing);
         RUN (testSampleEditing);
         RUN (testExport);
+        RUN (testNoteShorthand);
+        RUN (testSynthSounds);
+        RUN (testLoudnessAndHistory);
+        RUN (testInstrumentParameters);
         RUN (testAutomation);
         RUN (testAutosaveAndRecovery);
-        RUN (testAiChat);
         RUN (testBatchReferences);
         RUN (testStateViews);
         RUN (testTagsAndStripRouting);

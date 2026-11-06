@@ -230,8 +230,7 @@ MainComponent::MainComponent (te::Engine& engine)
     {
         commandLog.add (entry);
 
-        // (Not for the chat, whose own transcript already shows what it did.)
-        if (! commandLogShown && entry.source != "Console" && ! entry.source.endsWith ("(chat)") && ! consoleShown)
+        if (! commandLogShown && entry.source != "Console" && ! consoleShown)
             showConsole (true);
 
         commandLogShown = true;
@@ -350,7 +349,6 @@ void MainComponent::setUpTopBar()
     typingKeysButton.onClick = [this] { setTypingKeyboard (! typingKeyboard::enabled); };
     pianoKeysButton.onClick = [this] { showKeyboard (! keyboard.isVisible()); };
     browserButton.onClick = [this] { showBrowser (! browserPanel.isVisible()); };
-    chatButton.onClick = [this] { showChat (! chatPanel.isVisible()); };
     consoleButton.onClick = [this] { showConsole (! consoleShown); };
     historyButton.onClick = [this] { showHistory(); };
     exportButton.onClick = [this] { showExport(); };
@@ -394,7 +392,7 @@ void MainComponent::setUpTopBar()
     for (auto* c : std::initializer_list<juce::Component*> { &menuBar, &newButton, &openButton, &saveButton, &undoButton, &redoButton,
                                                              &returnButton, &playButton, &recordButton, &tempo, &timeSignature,
                                                              &positionDisplay, &loopButton, &metronomeButton, &typingKeysButton,
-                                                             &pianoKeysButton, &cpuMeter, &browserButton, &chatButton, &consoleButton,
+                                                             &pianoKeysButton, &cpuMeter, &browserButton, &consoleButton,
                                                              &historyButton, &exportButton, &settingsButton, &helpButton })
         addAndMakeVisible (c);
 }
@@ -403,7 +401,6 @@ void MainComponent::setUpPanels()
 {
     auto& props = getProperties();
     browserWidth = juce::jlimit (160, 600, props.getIntValue ("ngBrowserWidth", 240));
-    chatWidth = juce::jlimit (260, 800, props.getIntValue ("ngChatWidth", 360));
     timelineProportion = juce::jlimit (0.1, 0.9, props.getDoubleValue ("ngTimelineProportion", 0.48));
     rackProportion = juce::jlimit (0.1, 0.9, props.getDoubleValue ("ngRackProportion", 0.5));
 
@@ -610,16 +607,7 @@ void MainComponent::setUpPanels()
     };
     rackSplitter.onReset = [this] { rackProportion = 0.5; resized(); };
 
-    // The chat, down the right. Dragging its bar left makes it wider.
-    chatSplitter.onDragStart = [this] { dragStartSize = chatWidth; };
-    chatSplitter.onDrag = [this] (int delta)
-    {
-        chatWidth = juce::jlimit (260, std::max (260, getWidth() / 2), dragStartSize - delta);
-        resized();
-    };
-    chatSplitter.onReset = [this] { chatWidth = 360; resized(); };
-
-    for (auto* bar : { &browserSplitter, &chatSplitter, &timelineSplitter, &rackSplitter })
+    for (auto* bar : { &browserSplitter, &timelineSplitter, &rackSplitter })
     {
         bar->onDragEnd = [this] { saveLayout(); };
         addChildComponent (bar);
@@ -627,10 +615,6 @@ void MainComponent::setUpPanels()
 
     addChildComponent (browserPanel);
     showBrowser (props.getBoolValue ("ngBrowserVisible", true));
-
-    chatPanel.onOpenSettings = [this] { showPreferences ("AI"); };
-    addChildComponent (chatPanel);
-    showChat (props.getBoolValue ("ngChatVisible", false));
 }
 
 void MainComponent::restoreDetachedPanels()
@@ -646,7 +630,6 @@ void MainComponent::resetLayout()
         panel->setDetached (false);
 
     browserWidth = 240;
-    chatWidth = 360;
     timelineProportion = 0.48;
     rackProportion = 0.5;
     showBrowser (true);
@@ -658,7 +641,6 @@ void MainComponent::saveLayout()
 {
     auto& props = getProperties();
     props.setValue ("ngBrowserWidth", browserWidth);
-    props.setValue ("ngChatWidth", chatWidth);
     props.setValue ("ngTimelineProportion", timelineProportion);
     props.setValue ("ngRackProportion", rackProportion);
 }
@@ -703,8 +685,6 @@ void MainComponent::setUpActions()
          [this] { showKeyboard (! keyboard.isVisible()); }, {}, [this] { return keyboard.isVisible(); });
     add ("browser", "Browser", "Show or hide the browser", { KeyPress ('b', command, 0) },
          [this] { showBrowser (! browserPanel.isVisible()); }, {}, [this] { return browserPanel.isVisible(); });
-    add ("chat", "AI chat", "Show or hide the AI chat", { KeyPress ('j', command, 0) },
-         [this] { showChat (! chatPanel.isVisible()); }, {}, [this] { return chatPanel.isVisible(); });
     add ("history", "History...", "The undo history", { KeyPress ('h', command, 0) }, [this] { showHistory(); });
     add ("settings", "Settings...", "Settings", { KeyPress (',', command, 0) }, [this] { showPreferences(); });
     add ("shortcuts", "Keyboard shortcuts", "This list", { KeyPress (KeyPress::F1Key) }, [this] { showShortcuts(); });
@@ -782,7 +762,7 @@ juce::PopupMenu MainComponent::getMenu (int menuIndex)
     }
     else if (menuIndex == 2)
     {
-        add ({ "browser", "typingKeyboard", "pianoKeyboard", "chat", "console" });
+        add ({ "browser", "typingKeyboard", "pianoKeyboard", "console" });
         menu.addSeparator();
 
         for (auto* panel : { &timelinePanel, &rackPanel, &mixerPanel, &pianoRollPanel, &sampleEditorPanel })
@@ -1364,17 +1344,6 @@ void MainComponent::showBrowser (bool shouldShow)
     resized();
 }
 
-void MainComponent::showChat (bool shouldShow)
-{
-    chatButton.setToggleState (shouldShow, juce::dontSendNotification);
-    chatPanel.setVisible (shouldShow);
-    getProperties().setValue ("ngChatVisible", shouldShow);
-    resized();
-
-    if (shouldShow)
-        chatPanel.focusInput();
-}
-
 void MainComponent::showKeyboard (bool shouldShow)
 {
     keyboard.setVisible (shouldShow);
@@ -1445,9 +1414,6 @@ void MainComponent::timerCallback()
         cpuMeterTicks = 0;
         updateCpuMeter();
         autosaveIfDue();
-
-        if (chatPanel.isVisible())
-            chatPanel.updateProvider();   // e.g. after a key was set in Settings
     }
 
     // A key let go while another window had the focus never says so; check.
@@ -1719,15 +1685,6 @@ void MainComponent::resized()
         browserSplitter.setBounds (r.removeFromLeft (8));
     }
 
-    // The chat runs down the right.
-    chatSplitter.setVisible (chatPanel.isVisible());
-
-    if (chatPanel.isVisible())
-    {
-        chatWidth = juce::jlimit (260, std::max (260, getWidth() / 2), chatWidth);
-        chatPanel.setBounds (r.removeFromRight (chatWidth));
-        chatSplitter.setBounds (r.removeFromRight (8));
-    }
 
     layOutPanels (r);
 
@@ -1791,7 +1748,7 @@ void MainComponent::layOutTopBar (juce::Rectangle<int> r)
     place (pianoKeysButton, h + 6);
 
     // Views and dialogs from the right. (The space before the CPU meter is free for more.)
-    for (auto* b : { &helpButton, &settingsButton, &exportButton, &historyButton, &consoleButton, &chatButton, &browserButton })
+    for (auto* b : { &helpButton, &settingsButton, &exportButton, &historyButton, &consoleButton, &browserButton })
     {
         b->setBounds (r.removeFromRight (h));
         r.removeFromRight (2);
